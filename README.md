@@ -1,5 +1,9 @@
 # eucalypt-dos
 
-## WARNING
+## ACKNOWLEDGE
 ### This is NOT a ms-dos like OS
-### DOS standes for Disk-Operating-System
+### DOS stands for Disk-Operating-System
+### Which means it does not use ms-dos syscalls nor does it do half the stuff ms-dos does
+
+## About
+### Eucalypt DOS is a live boot OS
