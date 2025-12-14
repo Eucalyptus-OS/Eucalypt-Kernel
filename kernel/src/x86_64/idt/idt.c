@@ -2,6 +2,7 @@
 
 #include <x86_64/interrupts/pic.h>
 #include <x86_64/interrupts/timer.h>
+#include <x86_64/interrupts/keyboard.h>
 #include <x86_64/serial.h>
 
 #include <stdint.h>
@@ -12,6 +13,7 @@
 
 extern struct flanterm_context *ft_ctx;
 
+extern void isr128_handler();
 extern void* isr_stub_table[];
 static bool vectors[MAX_IDT_DESCS];
 
@@ -35,7 +37,43 @@ static idtr_t idtr;
 __attribute__((aligned(0x10))) 
 static idt_entry_t idt[256];
 
-void exception_handler() {
+void exception_handler(uint8_t exception_number) {
+    switch (exception_number) {
+    case 0:
+        flanterm_write(ft_ctx, "Divide By Zero Exception\n");
+        serial_print("Divide By Zero Exception\n");
+        break;
+    case 2:
+        flanterm_write(ft_ctx, "Non Maskable Interrupt Exception\n");
+        serial_print("Non Maskable Interrupt Exception\n");
+        break;
+    case 6:
+        flanterm_write(ft_ctx, "Invalid Opcode Exception\n");
+        serial_print("Invalid Opcode Exception\n");
+        break;
+    case 8:
+        flanterm_write(ft_ctx, "Double Fault Exception\n");
+        serial_print("Double Fault Exception\n");
+        break;
+    case 13:
+        flanterm_write(ft_ctx, "General Protection Fault Exception\n");
+        serial_print("General Protection Fault Exception\n");
+        break;
+    case 14:
+        flanterm_write(ft_ctx, "Page Fault Exception\n");
+        serial_print("Page Fault Exception\n");
+        break;
+    case 18:
+        flanterm_write(ft_ctx, "Machine Check Exception\n");
+        serial_print("Machine Check Exception\n");
+        break;
+    
+    default:
+        flanterm_write(ft_ctx, "Unhandled Exception\n");
+        serial_print("Unhandled Exception\n");
+        serial_print_num(exception_number);
+        break;
+    }
     while (1) {
         __asm__ volatile ("hlt");
     }
@@ -45,11 +83,12 @@ void irq_handler(uint8_t irq) {
     switch (irq) {
     case 0:
         on_irq0();
-        serial_print(".");
-        flanterm_write(ft_ctx, ".");
         pic_send_eoi(0);
         break;
-    
+    case 1:
+        keyboard_handler();
+        pic_send_eoi(1);
+        break;
     default:
         break;
     }
@@ -80,7 +119,10 @@ void idt_init() {
         vectors[32 + vector] = true;
     }
 
+    // Syscall desc
+    idt_set_descriptor(128, isr128_handler, 0x8E);
     IRQ_clear_mask(0);
+    IRQ_clear_mask(1);
 
     __asm__ volatile ("lidt %0" : : "m"(idtr));
     __asm__ volatile ("sti");

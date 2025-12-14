@@ -9,6 +9,8 @@ QEMUFLAGS := -m 2G
 
 override IMAGE_NAME := EUCALYPTUS_DOS-$(ARCH)
 
+RAMDISK_IMG := build/ramdisk/ramdisk.img
+
 # Toolchain for building the 'limine' executable for the host.
 HOST_CC := cc
 HOST_CFLAGS := -g -O2 -pipe
@@ -27,6 +29,11 @@ run: run-$(ARCH)
 
 .PHONY: run-hdd
 run-hdd: run-hdd-$(ARCH)
+
+.PHONY: ramdisk
+ramdisk:
+	mkdir -p $(dir $(RAMDISK_IMG))
+	dd if=/dev/zero of=$(RAMDISK_IMG) bs=256K count=4
 
 .PHONY: run-x86_64
 run-x86_64: edk2-ovmf $(IMAGE_NAME).iso
@@ -158,12 +165,13 @@ kernel/.deps-obtained:
 kernel: kernel/.deps-obtained
 	$(MAKE) -C kernel
 
-$(IMAGE_NAME).iso: limine/limine kernel
+$(IMAGE_NAME).iso: limine/limine kernel ramdisk
 	rm -rf iso_root
 	mkdir -p iso_root/boot
 	cp -v kernel/bin-$(ARCH)/kernel iso_root/boot/
 	mkdir -p iso_root/boot/limine
 	cp -v limine.conf iso_root/boot/limine/
+	if [ -f $(RAMDISK_IMG) ]; then cp -v $(RAMDISK_IMG) iso_root/boot/; fi
 	mkdir -p iso_root/EFI/BOOT
 ifeq ($(ARCH),x86_64)
 	cp -v limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
@@ -205,7 +213,7 @@ ifeq ($(ARCH),loongarch64)
 endif
 	rm -rf iso_root
 
-$(IMAGE_NAME).hdd: limine/limine kernel
+$(IMAGE_NAME).hdd: limine/limine kernel ramdisk
 	rm -f $(IMAGE_NAME).hdd
 	dd if=/dev/zero bs=1M count=0 seek=64 of=$(IMAGE_NAME).hdd
 ifeq ($(ARCH),x86_64)
@@ -218,6 +226,7 @@ endif
 	mmd -i $(IMAGE_NAME).hdd@@1M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 	mcopy -i $(IMAGE_NAME).hdd@@1M kernel/bin-$(ARCH)/kernel ::/boot
 	mcopy -i $(IMAGE_NAME).hdd@@1M limine.conf ::/boot/limine
+	if [ -f $(RAMDISK_IMG) ]; then mcopy -i $(IMAGE_NAME).hdd@@1M $(RAMDISK_IMG) ::/boot; fi
 ifeq ($(ARCH),x86_64)
 	mcopy -i $(IMAGE_NAME).hdd@@1M limine/limine-bios.sys ::/boot/limine
 	mcopy -i $(IMAGE_NAME).hdd@@1M limine/BOOTX64.EFI ::/EFI/BOOT
@@ -236,9 +245,9 @@ endif
 .PHONY: clean
 clean:
 	$(MAKE) -C kernel clean
-	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd
+	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd build
 
 .PHONY: distclean
 distclean:
 	$(MAKE) -C kernel distclean
-	rm -rf iso_root *.iso *.hdd kernel-deps limine edk2-ovmf
+	rm -rf iso_root *.iso *.hdd kernel-deps limine edk2-ovmf build

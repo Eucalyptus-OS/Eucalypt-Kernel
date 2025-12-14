@@ -10,7 +10,10 @@
 #include <x86_64/interrupts/pic.h>
 #include <x86_64/idt/idt.h>
 #include <x86_64/interrupts/timer.h>
-#include <x86_64/memory/heap.h>
+#include <x86_64/interrupts/keyboard.h>
+#include <x86_64/allocator/heap.h>
+#include <ramdisk/ramdisk.h>
+#include <ramdisk/ramfs.h>
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(4);
@@ -18,6 +21,24 @@ static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(4);
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
     .revision = 0
 };
 
@@ -29,13 +50,7 @@ static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARK
 
 static void hcf(void) {
     for (;;) {
-#if defined (__x86_64__)
-        asm ("hlt");
-#elif defined (__aarch64__) || defined (__riscv)
-        asm ("wfi");
-#elif defined (__loongarch64)
-        asm ("idle 0");
-#endif
+        __asm__ volatile ("hlt");
     }
 }
 
@@ -47,8 +62,20 @@ void kmain(void) {
         hcf();
     }
 
+    if (module_request.response == NULL || module_request.response->module_count < 1) {
+        hcf();
+    }
+    
+    if (hhdm_request.response == NULL) {
+        hcf();
+    }
+
+    if (rsdp_request.response == NULL) {
+        hcf();
+    }
+
     if (framebuffer_request.response == NULL
-     || framebuffer_request.response->framebuffer_count < 1) {
+    || framebuffer_request.response->framebuffer_count < 1) {
         hcf();
     }
 
@@ -73,33 +100,24 @@ void kmain(void) {
         0, 0,
         0, 0
     );
+
     serial_init();
-    flanterm_write(ft_ctx, "Initializing Heap...\n");
-    serial_print("Initializing Heap...\n");
-    heap_init((void *)0xFFFF800000100000, 0x100000);
-    flanterm_write(ft_ctx, "Heap Initialized\n");
-    serial_print("Heap Initialized\n");
-    serial_print("Initializing GDT...\n");
-    flanterm_write(ft_ctx, "Initializing GDT...\n");
+
     init_gdt();
     load_gdt();
-    flanterm_write(ft_ctx, "GDT initialized\nRemapping PIC\n");
-    serial_print("GDT initialized\nRemapping PIC\n");
     PIC_remap(32, 47);
-    flanterm_write(ft_ctx, "PIC Remapped Successfully\nInitializing IDT\n");
-    serial_print("PIC Remapped Successfully\nInitializing IDT\n");
+
+    heap_init((void *)hhdm_request.response->offset + 0x100000, 0x100000);
+
     idt_init();
-    flanterm_write(ft_ctx, "IDT Intiialized and Loaded\nInitializing Timer\n");
-    serial_print("IDT Intiialized and Loaded\nInitializing Timer\n");
     init_timer();
-    flanterm_write(ft_ctx, "Timer Initialized\nEnabling Interrupts\n");
-    serial_print("Timer Initialized\nEnabling Interrupts\n");
+    init_keyboard();
+
     __asm__ volatile ("sti");
-    flanterm_write(ft_ctx, "Interrupts Enabled\nTesting Kmalloc");
-    serial_print("Interrupts Enabled\nTesting Kmalloc\n");
-    kmalloc(1024);
-    flanterm_write(ft_ctx, "Kmalloc Test Successful\nSystem Halted\n");
-    serial_print("Kmalloc Test Successful\nSystem Halted\n");
+    init_ramdisk();
+
+    file_system_t ramfs;
+    init_ramfs(&ramfs);
 
     hcf();
 }

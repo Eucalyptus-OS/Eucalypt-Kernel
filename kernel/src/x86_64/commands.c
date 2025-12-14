@@ -15,3 +15,17 @@ void outb(uint16_t port, uint8_t val) {
         "outb %b0, %w1":: "a" (val),"Nd" (port): "memory"
     );
 }
+
+void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile (
+        "outw %w0, %w1":: "a" (val), "Nd" (port): "memory"
+    );
+}
+
+uint16_t inw(uint16_t port) {
+    uint16_t result;
+    __asm__ volatile (
+        "inw %w1, %w0": "=a" (result): "Nd" (port): "memory"
+    );
+    return result;
+}
