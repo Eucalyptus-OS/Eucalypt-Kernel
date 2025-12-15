@@ -7,3 +7,4 @@
 
 ## About
 ### Eucalypt DOS is a live boot OS
+### - Single tasking

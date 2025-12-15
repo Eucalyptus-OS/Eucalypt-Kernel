@@ -181,6 +181,8 @@ ifeq ($(ARCH),x86_64)
 override OBJ += $(addprefix obj-$(ARCH)/,$(NASMFILES:.asm=.asm.o))
 endif
 override HEADER_DEPS := $(addprefix obj-$(ARCH)/,$(CFILES:.c=.c.d) $(ASFILES:.S=.S.d))
+# Compile the applications
+APPLICATION_FILES := $(shell find -L applications -type f -name '*.c' 2>/dev/null | LC_ALL=C sort)
 
 # Default target. This must come first, before header dependencies.
 .PHONY: all

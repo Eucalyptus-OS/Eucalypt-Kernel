@@ -33,7 +33,9 @@ run-hdd: run-hdd-$(ARCH)
 .PHONY: ramdisk
 ramdisk:
 	mkdir -p $(dir $(RAMDISK_IMG))
-	dd if=/dev/zero of=$(RAMDISK_IMG) bs=256K count=4
+	dd if=/dev/zero of=$(RAMDISK_IMG) bs=512 count=2880
+	mkfs.fat -F 12 -S 512 -s 1 -R 1 -f 2 -r 224 -n "FAT12THING" $(RAMDISK_IMG)
+	mcopy -i $(RAMDISK_IMG) zfiles_to_copy/* ::
 
 .PHONY: run-x86_64
 run-x86_64: edk2-ovmf $(IMAGE_NAME).iso
