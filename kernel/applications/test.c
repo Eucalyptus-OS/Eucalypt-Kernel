@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-void _start(void) {
+int main() {
     print("Allocating...\n");
 
     char *buf = malloc(1024);
@@ -15,4 +15,5 @@ void _start(void) {
     }
 
     write_file("Syscall_Test.txt", "This is a syscall test for write");
+    return 0;
 }
