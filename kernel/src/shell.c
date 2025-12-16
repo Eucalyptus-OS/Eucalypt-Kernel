@@ -13,33 +13,36 @@ extern struct flanterm_context *ft_ctx;
 #define MAX_PARAMS 4
 #define MAX_PARAM_LENGTH 64
 
+// Magic number to identify executables: "BIN" in little-endian + null
+#define EXEC_MAGIC 0x004E4942  // 0x42='B', 0x49='I', 0x4E='N', 0x00=null
+
 char input_buffer[MAX_INPUT_LENGTH + 1];
 char params[MAX_PARAMS][MAX_PARAM_LENGTH];
 int param_count = 0;
 
 typedef void (*command_handler_func)(void);
-typedef void (*app_entry_t)(void);
 
 void help_command(void);
 void clear_command(void);
-void listfs_command(void);
-void readfile_command(void);
-void writefile_command(void);
-void execute_command(void);
+void ls_command(void);
+void rdf_command(void);
+void wef_command(void);
+void exec_command(void);
 void handle_backspace(void);
 
 typedef struct {
 	const char *name;
+	const char *desc;
 	command_handler_func handler;
 } command_t;
 
 const command_t command_table[] = {
-	{"help", help_command},
-	{"clear", clear_command},
-	{"listfs", listfs_command},
-	{"readfile", readfile_command},
-	{"writefile", writefile_command},
-	{"execute", execute_command},
+	{"help", "Displays this message", help_command},
+	{"clear", "Clears the screen", clear_command},
+	{"ls","List all the files in the fs", ls_command},
+	{"rdf", "Read a file", rdf_command},
+	{"wef", "Write a file", wef_command},
+	{"exec", "Execute a file", exec_command},
 };
 
 #define NUM_COMMANDS (sizeof(command_table) / sizeof(command_t))
@@ -51,8 +54,12 @@ void help_command() {
 	for (size_t i = 0; i < NUM_COMMANDS; i++) {
 		flanterm_write(ft_ctx, "  ");
 		flanterm_write(ft_ctx, command_table[i].name);
+		flanterm_write(ft_ctx, ": ");
+		flanterm_write(ft_ctx, command_table[i].desc);
 		flanterm_write(ft_ctx, "\n");
 	}
+	flanterm_write(ft_ctx, "You can also execute files directly by typing their name\n");
+	flanterm_write(ft_ctx, "Example: > MYAPP\n");
 }
 
 void parse_params(char *command) {
@@ -79,6 +86,49 @@ void parse_params(char *command) {
 	}
 }
 
+void try_execute_as_file(const char *filename) {
+	dir_entry_t *file = find_file(filename);
+	if (!file) {
+		flanterm_write(ft_ctx, "Unknown command: ");
+		flanterm_write(ft_ctx, filename);
+		flanterm_write(ft_ctx, "\n");
+		return;
+	}
+	
+	uint32_t size;
+	uint8_t *data = read_file(file, &size);
+	
+	if (!data || size == 0) {
+		flanterm_write(ft_ctx, "File found but could not be read: ");
+		flanterm_write(ft_ctx, filename);
+		flanterm_write(ft_ctx, "\n");
+		kfree(file);
+		return;
+	}
+	
+	flanterm_write(ft_ctx, "Executing ");
+	flanterm_write(ft_ctx, filename);
+	flanterm_write(ft_ctx, "...\n");
+	
+	// load_and_execute_app now handles the header check internally
+	int result = load_and_execute_app(data, size);
+	
+	kfree(data);
+	kfree(file);
+	
+	if (result == 0) {
+		flanterm_write(ft_ctx, "Application returned\n");
+	} else {
+		flanterm_write(ft_ctx, "Error: Failed to execute ");
+		flanterm_write(ft_ctx, filename);
+		flanterm_write(ft_ctx, " (code ");
+		char code[8];
+		int_to_str(-result, code);
+		flanterm_write(ft_ctx, code);
+		flanterm_write(ft_ctx, ")\n");
+	}
+}
+
 void compare_command(char *command) {
 	if (command == NULL || command[0] == '\0') {
 		return;
@@ -97,9 +147,7 @@ void compare_command(char *command) {
 		}
 	}
 	
-	flanterm_write(ft_ctx, "Unknown command: ");
-	flanterm_write(ft_ctx, params[0]);
-	flanterm_write(ft_ctx, "\n");
+	try_execute_as_file(params[0]);
 }
 
 void shell_print(uint32_t v) {
@@ -148,29 +196,7 @@ void clear_command(void) {
 	memset(input_buffer, 0, sizeof(input_buffer));
 }
 
-void int_to_str(uint32_t value, char *buffer) {
-	if (value == 0) {
-		buffer[0] = '0';
-		buffer[1] = '\0';
-		return;
-	}
-	
-	char temp[16];
-	int i = 0;
-	
-	while (value > 0) {
-		temp[i++] = '0' + (value % 10);
-		value /= 10;
-	}
-	
-	int j = 0;
-	while (i > 0) {
-		buffer[j++] = temp[--i];
-	}
-	buffer[j] = '\0';
-}
-
-void listfs_command(void) {
+void ls_command(void) {
 	uint8_t *buffer = kmalloc(512);
 	int found_files = 0;
 	
@@ -228,9 +254,9 @@ void listfs_command(void) {
 	}
 }
 
-void readfile_command(void) {
+void rdf_command(void) {
 	if (param_count < 2) {
-		flanterm_write(ft_ctx, "Usage: readfile <filename>\n");
+		flanterm_write(ft_ctx, "Usage: rdf <filename>\n");
 		return;
 	}
 	
@@ -266,9 +292,9 @@ void readfile_command(void) {
 	kfree(file);
 }
 
-void writefile_command(void) {
+void wef_command(void) {
 	if (param_count < 3) {
-		flanterm_write(ft_ctx, "Usage: writefile <filename> <content>\n");
+		flanterm_write(ft_ctx, "Usage: wef <filename> <content>\n");
 		return;
 	}
 	
@@ -296,9 +322,9 @@ void writefile_command(void) {
 	flanterm_write(ft_ctx, "\n");
 }
 
-void execute_command(void) {
+void exec_command(void) {
     if (param_count < 2) {
-        flanterm_write(ft_ctx, "Usage: execute <filename>\n");
+        flanterm_write(ft_ctx, "Usage: exec <filename>\n");
         return;
     }
     
@@ -323,10 +349,21 @@ void execute_command(void) {
     flanterm_write(ft_ctx, params[1]);
     flanterm_write(ft_ctx, "...\n");
     
-    load_and_execute_app(data, size);
+    // load_and_execute_app now handles the header check internally
+    int result = load_and_execute_app(data, size);
     
     kfree(data);
     kfree(file);
     
-    flanterm_write(ft_ctx, "Application returned\n");
+    if (result == 0) {
+        flanterm_write(ft_ctx, "Application returned\n");
+    } else {
+        flanterm_write(ft_ctx, "Error: Failed to execute ");
+        flanterm_write(ft_ctx, params[1]);
+        flanterm_write(ft_ctx, " (code ");
+        char code[8];
+        int_to_str(-result, code);
+        flanterm_write(ft_ctx, code);
+        flanterm_write(ft_ctx, ")\n");
+    }
 }

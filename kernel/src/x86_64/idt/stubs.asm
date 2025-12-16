@@ -33,7 +33,7 @@ isr_common_stub:
     push r14
     push r15
     
-    mov rdi, rsp
+    mov rdi, [rsp + 15*8]
     call exception_handler
     
     pop r15
@@ -51,8 +51,8 @@ isr_common_stub:
     pop rcx
     pop rbx
     pop rax
-    
     add rsp, 16
+    iretq
     iretq
 
 %macro irq_stub 1

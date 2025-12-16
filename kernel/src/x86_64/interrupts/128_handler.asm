@@ -41,5 +41,5 @@ isr128_handler:
     pop rdx
     pop rcx
     pop rbx
-    pop rax
+    add rsp, 8
     iretq

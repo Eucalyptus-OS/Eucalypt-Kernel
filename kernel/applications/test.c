@@ -1,21 +1,16 @@
+#include "sys.h"
 #include <stdint.h>
-
-void other_function(void) {
-    char msg[] = "Hello world!\n";
-
-    __asm__ volatile (
-        "mov $1, %%rax\n\t"
-        "mov %0, %%rbx\n\t"
-        "int $0x80"
-        :
-        : "r"(msg)
-        : "rax", "rbx", "rcx", "rdx",
-          "rsi", "rdi",
-          "r8", "r9", "r10", "r11",
-          "cc", "memory"
-    );
-}
+#include <stddef.h>
 
 void _start(void) {
-    other_function();
+    print("Allocating...\n");
+
+    char *buf = malloc(1024);
+    
+    if (buf) {
+        buf[0]='D'; buf[1]='o'; buf[2]='n'; buf[3]='e'; buf[4]='\n'; buf[5]='\0';
+
+        print(buf);
+        free(buf);
+    }
 }

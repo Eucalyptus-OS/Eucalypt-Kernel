@@ -72,3 +72,25 @@ size_t strlen(const char *s) {
     }
     return len;
 }
+
+void int_to_str(uint32_t value, char *buffer) {
+	if (value == 0) {
+		buffer[0] = '0';
+		buffer[1] = '\0';
+		return;
+	}
+	
+	char temp[16];
+	int i = 0;
+	
+	while (value > 0) {
+		temp[i++] = '0' + (value % 10);
+		value /= 10;
+	}
+	
+	int j = 0;
+	while (i > 0) {
+		buffer[j++] = temp[--i];
+	}
+	buffer[j] = '\0';
+}

@@ -11,5 +11,6 @@ int memcmp(const void *s1, const void *s2, size_t n);
 int strncmp(const char *s1, const char *s2, size_t n);
 int strcmp(const char *s1, const char *s2);
 size_t strlen(const char *s);
+void int_to_str(uint32_t value, char *buffer);
 
 #endif

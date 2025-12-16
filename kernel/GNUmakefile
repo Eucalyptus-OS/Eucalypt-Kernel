@@ -183,6 +183,8 @@ endif
 override HEADER_DEPS := $(addprefix obj-$(ARCH)/,$(CFILES:.c=.c.d) $(ASFILES:.S=.S.d))
 
 # Application files handling
+APP_CFLAGS := $(filter-out -mcmodel=kernel, $(CFLAGS))
+APP_CFLAGS += -fPIC -fPIE -mcmodel=small
 override APP_CFILES := $(shell find -L applications -type f -name '*.c' 2>/dev/null | LC_ALL=C sort)
 override APP_BINS := $(patsubst applications/%.c,../zfiles_to_copy/%,$(APP_CFILES))
 override APP_OBJ := $(addprefix obj-$(ARCH)/applications/,$(notdir $(APP_CFILES:.c=.c.o)))
@@ -192,6 +194,7 @@ override APP_HEADER_DEPS := $(addprefix obj-$(ARCH)/applications/,$(notdir $(APP
 override APP_LDFLAGS := \
     -nostdlib \
     -static \
+    --pie \
     -T linker-scripts/applications.lds
 
 # Default target. This must come first, before header dependencies.
@@ -231,7 +234,7 @@ endif
 # Compilation rules for application *.c files
 obj-$(ARCH)/applications/%.c.o: applications/%.c GNUmakefile
 	mkdir -p "$(dir $@)"
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(APP_CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 # Link and copy application binaries
 ../zfiles_to_copy/%: obj-$(ARCH)/applications/%.c.o linker-scripts/applications.lds
