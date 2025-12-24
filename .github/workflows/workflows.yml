@@ -15,8 +15,5 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y xorriso ovmf nasm
     
-    - name: configure
-      run: ./configure
-    
     - name: make
       run: make
