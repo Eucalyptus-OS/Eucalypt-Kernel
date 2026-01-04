@@ -1,10 +1,10 @@
 #include <x86_64/interrupts/keyboard.h>
-
 #include <shell.h>
 #include <x86_64/commands.h>
 #include <x86_64/serial.h>
 #include <flanterm/flanterm.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 extern struct flanterm_context *ft_ctx;
 
@@ -47,7 +47,6 @@ const uint32_t NONE = 0xFFFFFFFF - 30;
 const uint32_t ALTGR = 0xFFFFFFFF - 31;
 const uint32_t NUMLCK = 0xFFFFFFFF - 32;
 
-
 const uint32_t lowercase[128] = {
     UNKNOWN,ESC,'1','2','3','4','5','6','7','8',
     '9','0','-','=','\b','\t','q','w','e','r',
@@ -84,51 +83,47 @@ void init_keyboard() {
         inb(KB_DATA_PORT);
         for (volatile int i = 0; i < 1000; i++);
     }
-    
+
     while (inb(KB_STATUS_PORT) & KB_STATUS_INPUT_FULL);
     outb(KB_COMMAND_PORT, 0xAD);
     for (volatile int i = 0; i < 10000; i++);
-    
+
     while (inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) {
         inb(KB_DATA_PORT);
         for (volatile int i = 0; i < 1000; i++);
     }
-    
+
     while (inb(KB_STATUS_PORT) & KB_STATUS_INPUT_FULL);
     outb(KB_COMMAND_PORT, KB_ENABLE_KEYBOARD);
     for (volatile int i = 0; i < 10000; i++);
-    
+
     while (inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) {
         inb(KB_DATA_PORT);
         for (volatile int i = 0; i < 1000; i++);
     }
-    
+
     const int max_retries = 10;
     int attempt;
-    
+
     for (attempt = 0; attempt < max_retries; attempt++) {
         int timeout = 100000;
         while ((inb(KB_STATUS_PORT) & KB_STATUS_INPUT_FULL) && --timeout > 0);
-        
         if (timeout <= 0) {
             for (volatile int i = 0; i < 10000; i++);
             continue;
         }
 
         outb(KB_DATA_PORT, 0xFF);
-        
         for (volatile int i = 0; i < 100000; i++);
-        
+
         timeout = 200000;
         while (!(inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) && --timeout > 0);
-        
         if (timeout <= 0) {
             for (volatile int i = 0; i < 10000; i++);
             continue;
         }
 
         uint8_t resp = inb(KB_DATA_PORT);
-        
         if (resp == 0xFA) {
             timeout = 200000;
             while (!(inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) && --timeout > 0);
@@ -141,50 +136,52 @@ void init_keyboard() {
         } else if (resp == 0xAA) {
             break;
         }
-        
+
         for (volatile int i = 0; i < 10000; i++);
     }
-    
+
     for (attempt = 0; attempt < max_retries; attempt++) {
         int timeout = 100000;
         while ((inb(KB_STATUS_PORT) & KB_STATUS_INPUT_FULL) && --timeout > 0);
-        
         if (timeout <= 0) {
             for (volatile int i = 0; i < 10000; i++);
             continue;
         }
 
         outb(KB_DATA_PORT, 0xF4);
-        
         for (volatile int i = 0; i < 50000; i++);
-        
+
         timeout = 100000;
         while (!(inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) && --timeout > 0);
-        
         if (timeout <= 0) {
             for (volatile int i = 0; i < 10000; i++);
             continue;
         }
 
         uint8_t resp = inb(KB_DATA_PORT);
-        
         if (resp == 0xFA) {
             break;
         } else if (resp == 0xFE) {
             continue;
         }
     }
-    
+
     while (inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) {
         inb(KB_DATA_PORT);
     }
+}
+
+static bool is_letter(uint8_t scancode) {
+    return (scancode >= 16 && scancode <= 25) ||
+           (scancode >= 30 && scancode <= 38) ||
+           (scancode >= 44 && scancode <= 50);
 }
 
 void keyboard_handler() {
     if (!(inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL)) {
         return;
     }
-    
+
     uint8_t raw = inb(KB_DATA_PORT);
     bool pressed = (raw & 0x80) == 0;
     uint8_t scancode = raw & 0x7F;
@@ -193,38 +190,44 @@ void keyboard_handler() {
         shift_pressed = pressed;
         return;
     }
-    
+
     if (scancode == 29) {
         ctrl_pressed = pressed;
         return;
     }
-    
+
     if (scancode == 56) {
         alt_pressed = pressed;
         return;
     }
-    
+
     if (scancode == 58 && pressed) {
         caps_lock = !caps_lock;
         return;
     }
-    
+
     if (!pressed) {
         return;
     }
-    
+
     if (scancode == 14) {
         handle_backspace();
         return;
     }
-    
+
     if (scancode >= 128) {
         return;
     }
-    
-    bool use_uppercase = shift_pressed ^ caps_lock;
+
+    bool use_uppercase;
+    if (is_letter(scancode)) {
+        use_uppercase = shift_pressed ^ caps_lock;
+    } else {
+        use_uppercase = shift_pressed;
+    }
+
     uint32_t val = use_uppercase ? uppercase[scancode] : lowercase[scancode];
-    
+
     if (val != UNKNOWN && val != CAPS && val != LSHFT && val != RSHFT && 
         val != CTRL && val != ALT && val != ESC && val < 0xFFFFFF00) {
         shell_print(val);

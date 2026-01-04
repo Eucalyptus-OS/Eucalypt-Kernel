@@ -1,4 +1,5 @@
 #include <string.h>
+#include <x86_64/allocator/heap.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -93,4 +94,20 @@ void int_to_str(uint32_t value, char *buffer) {
 		buffer[j++] = temp[--i];
 	}
 	buffer[j] = '\0';
+}
+
+char *toupper(const char *str) {
+    int len = strlen(str);
+    char *result = kmalloc(len + 1);
+    
+    for (int i = 0; i < len; i++) {
+        if (str[i] >= 'a' && str[i] <= 'z') {
+            result[i] = str[i] - 32;
+        } else {
+            result[i] = str[i];
+        }
+    }
+    result[len] = '\0';
+    
+    return result;
 }

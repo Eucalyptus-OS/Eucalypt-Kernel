@@ -158,7 +158,7 @@ dir_entry_t *find_file(const char *filename) {
 dir_entry_t *create_file(const char *filename) {
 	uint8_t *buffer = kmalloc(g_fat12->bpb->bytes_per_sector);
 	uint32_t entries_per_sector = g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t);
-	
+	filename = toupper(filename);
 	for (uint32_t i = 0; i < g_fat12->root_dir_sectors; i++) {
 		read_ramdisk_sector(g_fat12->root_dir_start_sector + i, buffer);
 		

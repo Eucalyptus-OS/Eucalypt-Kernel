@@ -67,11 +67,6 @@ void exception_handler(uint8_t exception_number) {
         flanterm_write(ft_ctx, "Machine Check Exception\n");
         serial_print("Machine Check Exception\n");
         break;
-    case 128:
-        // I think this should work
-        flanterm_write(ft_ctx, "There was an error running the application\nPlease review your code");
-        return;
-        break;
     
     default:
         flanterm_write(ft_ctx, "Unhandled Exception\n");

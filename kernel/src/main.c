@@ -16,6 +16,7 @@
 #include <x86_64/memory/vmm.h>
 #include <ramdisk/ramdisk.h>
 #include <ramdisk/fat12.h>
+#include <elf.h>
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(4);
@@ -116,12 +117,8 @@ void kmain(void) {
     __asm__ volatile ("sti");
     init_ramdisk();
     init_fat12();
-    uint8_t buf[512] = {0};
-    read_ramdisk_sector(0, buf);
-    for (int i = 0; i < 512; i++) {
-        serial_print_hex(buf[i]);
-        serial_putchar(' ');
-    }
+
+    execute_elf("TEST");
 
     hcf();
 }
