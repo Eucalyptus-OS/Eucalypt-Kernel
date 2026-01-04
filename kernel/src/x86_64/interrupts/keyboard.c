@@ -8,8 +8,10 @@
 
 extern struct flanterm_context *ft_ctx;
 
-bool caps_on = false;
-bool caps_lock = false;
+static bool shift_pressed = false;
+static bool caps_lock = false;
+static bool ctrl_pressed = false;
+static bool alt_pressed = false;
 
 const uint32_t UNKNOWN = 0xFFFFFFFF;
 const uint32_t ESC = 0xFFFFFFFF - 1;
@@ -187,47 +189,44 @@ void keyboard_handler() {
     bool pressed = (raw & 0x80) == 0;
     uint8_t scancode = raw & 0x7F;
 
-    switch (scancode) {
-        case 1:
-            break;
-        case 14:
-            if (pressed) {
-                handle_backspace();
-            }
-            break;
-        case 29:
-        case 56:
-        case 59:
-        case 60:
-        case 61:
-        case 62:
-        case 63:
-        case 64:
-        case 65:
-        case 67:
-        case 68:
-        case 87:
-        case 88:
-            break;
-        case 42:
-            if (pressed) {
-                caps_on = true;
-            } else {
-                caps_on = false;
-            }
-            break;
-        case 58:
-            if (pressed) {
-                caps_lock = !caps_lock;
-            }
-            break;
-        default:
-            if (pressed) {
-                uint32_t val = (caps_on || caps_lock) ? uppercase[scancode] : lowercase[scancode];
-                if (val != UNKNOWN && val != CAPS && val != LSHFT && val != RSHFT && val != CTRL && val != ALT) {
-                    shell_print(val);
-                }
-            }
-            break;
+    if (scancode == 42 || scancode == 54) {
+        shift_pressed = pressed;
+        return;
+    }
+    
+    if (scancode == 29) {
+        ctrl_pressed = pressed;
+        return;
+    }
+    
+    if (scancode == 56) {
+        alt_pressed = pressed;
+        return;
+    }
+    
+    if (scancode == 58 && pressed) {
+        caps_lock = !caps_lock;
+        return;
+    }
+    
+    if (!pressed) {
+        return;
+    }
+    
+    if (scancode == 14) {
+        handle_backspace();
+        return;
+    }
+    
+    if (scancode >= 128) {
+        return;
+    }
+    
+    bool use_uppercase = shift_pressed ^ caps_lock;
+    uint32_t val = use_uppercase ? uppercase[scancode] : lowercase[scancode];
+    
+    if (val != UNKNOWN && val != CAPS && val != LSHFT && val != RSHFT && 
+        val != CTRL && val != ALT && val != ESC && val < 0xFFFFFF00) {
+        shell_print(val);
     }
 }

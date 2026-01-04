@@ -12,6 +12,8 @@
 #include <x86_64/interrupts/timer.h>
 #include <x86_64/interrupts/keyboard.h>
 #include <x86_64/allocator/heap.h>
+#include <x86_64/memory/pmm.h>
+#include <x86_64/memory/vmm.h>
 #include <ramdisk/ramdisk.h>
 #include <ramdisk/fat12.h>
 
@@ -31,14 +33,14 @@ volatile struct limine_module_request module_request = {
 };
 
 __attribute__((used, section(".limine_requests")))
-volatile struct limine_rsdp_request rsdp_request = {
-    .id = LIMINE_RSDP_REQUEST_ID,
+volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
     .revision = 0
 };
 
 __attribute__((used, section(".limine_requests")))
-volatile struct limine_hhdm_request hhdm_request = {
-    .id = LIMINE_HHDM_REQUEST_ID,
+volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
     .revision = 0
 };
 
@@ -67,10 +69,6 @@ void kmain(void) {
     }
     
     if (hhdm_request.response == NULL) {
-        hcf();
-    }
-
-    if (rsdp_request.response == NULL) {
         hcf();
     }
 
@@ -107,7 +105,9 @@ void kmain(void) {
     load_gdt();
     PIC_remap(32, 47);
 
-    heap_init((void *)hhdm_request.response->offset + 0x100000, 0x100000);
+    vmm_init();
+    pmm_init();
+    heap_init();
 
     idt_init();
     init_timer();

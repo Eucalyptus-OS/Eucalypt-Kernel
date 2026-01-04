@@ -112,11 +112,12 @@ uint32_t cluster_to_sector(uint16_t cluster) {
 
 dir_entry_t *find_file(const char *filename) {
 	uint8_t *buffer = kmalloc(g_fat12->bpb->bytes_per_sector);
+	uint32_t entries_per_sector = g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t);
 	
 	for (uint32_t i = 0; i < g_fat12->root_dir_sectors; i++) {
 		read_ramdisk_sector(g_fat12->root_dir_start_sector + i, buffer);
 		
-		for (int j = 0; j < (g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t)); j++) {
+		for (uint32_t j = 0; j < entries_per_sector; j++) {
 			dir_entry_t *entry = (dir_entry_t *)(buffer + j * sizeof(dir_entry_t));
 			
 			if (entry->name[0] == 0x00) {
@@ -156,11 +157,12 @@ dir_entry_t *find_file(const char *filename) {
 
 dir_entry_t *create_file(const char *filename) {
 	uint8_t *buffer = kmalloc(g_fat12->bpb->bytes_per_sector);
+	uint32_t entries_per_sector = g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t);
 	
 	for (uint32_t i = 0; i < g_fat12->root_dir_sectors; i++) {
 		read_ramdisk_sector(g_fat12->root_dir_start_sector + i, buffer);
 		
-		for (int j = 0; j < (g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t)); j++) {
+		for (uint32_t j = 0; j < entries_per_sector; j++) {
 			dir_entry_t *entry = (dir_entry_t *)(buffer + j * sizeof(dir_entry_t));
 			
 			if (entry->name[0] == 0x00 || entry->name[0] == 0xE5) {
@@ -239,7 +241,11 @@ uint8_t *read_file(dir_entry_t *file, uint32_t *size) {
 
 void write_file(const char *filename, uint8_t *data) {
 	dir_entry_t *file = find_file(filename);
-	uint32_t size = strlen(data);
+	
+	uint32_t size = 0;
+	while (data[size] != '\0') {
+		size++;
+	}
 	
 	if (!file) {
 		file = create_file(filename);
@@ -251,7 +257,7 @@ void write_file(const char *filename, uint8_t *data) {
 	
 	if (!file) return;
 	
-	file->file_size = strlen(data);
+	file->file_size = size;
 	
 	uint32_t bytes_written = 0;
 	uint16_t prev_cluster = 0;
@@ -288,10 +294,12 @@ void write_file(const char *filename, uint8_t *data) {
 	file->first_cluster_low = first_cluster;
 	
 	uint8_t *root_buffer = kmalloc(g_fat12->bpb->bytes_per_sector);
+	uint32_t entries_per_sector = g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t);
+	
 	for (uint32_t i = 0; i < g_fat12->root_dir_sectors; i++) {
 		read_ramdisk_sector(g_fat12->root_dir_start_sector + i, root_buffer);
 		
-		for (int j = 0; j < (g_fat12->bpb->bytes_per_sector / sizeof(dir_entry_t)); j++) {
+		for (uint32_t j = 0; j < entries_per_sector; j++) {
 			dir_entry_t *entry = (dir_entry_t *)(root_buffer + j * sizeof(dir_entry_t));
 			
 			int match = 1;

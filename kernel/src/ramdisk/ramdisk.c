@@ -6,15 +6,23 @@ extern struct limine_module_request module_request;
 
 #define SECTOR_SIZE 512
 
+#ifdef DEBUG
+#define DPRINT(s) serial_print(s)
+#define DPRINTNUM(s) serial_print_num(s)
+#else
+#define DPRINT(s)
+#define DPRINTNUM(s)
+#endif
+
 void init_ramdisk() {
     struct limine_module_response *module_response = module_request.response;
     uint32_t ramdisk_size = module_response->modules[0]->size;
-    serial_print("Ramdisk Size: ");
-    serial_print_num(ramdisk_size);
-    serial_print(" bytes\n");
-    serial_print("Ramdisk Sectors: ");
-    serial_print_num(ramdisk_size / SECTOR_SIZE);
-    serial_print("\n");
+    DPRINT("Ramdisk Size: ");
+    DPRINTNUM(ramdisk_size);
+    DPRINT(" bytes\n");
+    DPRINT("Ramdisk Sectors: ");
+    DPRINTNUM(ramdisk_size / SECTOR_SIZE);
+    DPRINT("\n");
 }
 
 void write_ramdisk_sector(uint32_t sector, const uint8_t *data) {
@@ -23,9 +31,9 @@ void write_ramdisk_sector(uint32_t sector, const uint8_t *data) {
     uint32_t offset = sector * SECTOR_SIZE;
     
     if (offset + SECTOR_SIZE > ramdisk_size) {
-        serial_print("Error: Sector ");
-        serial_print_num(sector);
-        serial_print(" exceeds ramdisk size\n");
+        DPRINT("Error: Sector ");
+        DPRINTNUM(sector);
+        DPRINT(" exceeds ramdisk size\n");
         return;
     }
     
@@ -41,9 +49,9 @@ void read_ramdisk_sector(uint32_t sector, uint8_t *buffer) {
     uint32_t offset = sector * SECTOR_SIZE;
     
     if (offset + SECTOR_SIZE > ramdisk_size) {
-        serial_print("Error: Sector ");
-        serial_print_num(sector);
-        serial_print(" exceeds ramdisk size\n");
+        DPRINT("Error: Sector ");
+        DPRINTNUM(sector);
+        DPRINT(" exceeds ramdisk size\n");
         return;
     }
     
