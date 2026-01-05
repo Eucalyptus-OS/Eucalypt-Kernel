@@ -17,6 +17,7 @@
 #include <ramdisk/ramdisk.h>
 #include <ramdisk/fat12.h>
 #include <elf.h>
+#include <shell.h>
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(4);
@@ -61,6 +62,7 @@ struct flanterm_context *ft_ctx = NULL;
 
 void kmain(void) {
     __asm__ volatile ("cli");
+    
     if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false) {
         hcf();
     }
@@ -101,24 +103,55 @@ void kmain(void) {
     );
 
     serial_init();
-
     init_gdt();
     load_gdt();
     PIC_remap(32, 47);
 
     vmm_init();
     pmm_init();
+    
+    serial_print("\nTesting PMM BEFORE heap_init...\n");
+    void *test = pmm_alloc();
+    if (test) {
+        serial_print("SUCCESS: Allocated at ");
+        serial_print_hex((uint64_t)test);
+        serial_print("\n");
+        pmm_free(test);
+    } else {
+        serial_print("FAILED\n");
+    }
+    
+    serial_print("Free memory before heap: ");
+    serial_print_hex(pmm_get_free_memory() / 1024 / 1024);
+    serial_print(" MB\n");
+    
     heap_init();
+    
+    serial_print("Free memory after heap: ");
+    serial_print_hex(pmm_get_free_memory() / 1024 / 1024);
+    serial_print(" MB\n");
+    
+    serial_print("\nTesting PMM AFTER heap_init...\n");
+    test = pmm_alloc();
+    if (test) {
+        serial_print("SUCCESS: Allocated at ");
+        serial_print_hex((uint64_t)test);
+        serial_print("\n");
+        pmm_free(test);
+    } else {
+        serial_print("FAILED - heap_init consumed all memory!\n");
+    }
 
     idt_init();
     init_timer();
     init_keyboard();
 
     __asm__ volatile ("sti");
+    
     init_ramdisk();
     init_fat12();
 
-    execute_elf("TEST");
+    shell_init();
 
     hcf();
 }

@@ -1,6 +1,7 @@
 #include <x86_64/allocator/heap.h>
 #include <x86_64/memory/pmm.h>
 #include <x86_64/memory/vmm.h>
+#include <x86_64/serial.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -25,7 +26,7 @@ static page_table_t kernel_page_table = NULL;
 
 #define INITIAL_HEAP_PAGES 256
 #define HEAP_EXPANSION_PAGES 64
-#define HEAP_VIRTUAL_BASE 0xFFFF800000000000ULL
+#define HEAP_VIRTUAL_BASE 0xFFFFFF8000000000ULL
 
 void heap_init() {
     uint64_t cr3;
@@ -34,17 +35,25 @@ void heap_init() {
     
     void *phys_pages = pmm_alloc_pages(INITIAL_HEAP_PAGES);
     if (!phys_pages) {
+        serial_print("ERROR: pmm_alloc_pages failed\n");
         return;
     }
     
-    heap_start = (uint8_t *)HEAP_VIRTUAL_BASE;
+    heap_start = (uint8_t *)0xFFFFFFFF81000000ULL;
     heap_current = heap_start;
     heap_size = INITIAL_HEAP_PAGES * PAGE_SIZE;
     
+    serial_print("Mapping heap at virtual: ");
+    serial_print_hex((uint64_t)heap_start);
+    serial_print("\n");
+    
     if (!vmm_map_range(kernel_page_table, (uint64_t)heap_start, (uint64_t)phys_pages, INITIAL_HEAP_PAGES, PTE_WRITABLE)) {
+        serial_print("ERROR: vmm_map_range failed\n");
         pmm_free_pages(phys_pages, INITIAL_HEAP_PAGES);
         return;
     }
+    
+    serial_print("Heap mapped successfully\n");
     
     heap_list.first = NULL;
     heap_list.last = NULL;
@@ -56,6 +65,8 @@ void heap_init() {
     node->used = false;
     heap_list.first = node;
     heap_list.last = node;
+    
+    serial_print("Heap initialized successfully\n");
 }
 
 static bool heap_expand() {

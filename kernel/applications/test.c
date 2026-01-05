@@ -3,17 +3,19 @@
 #include <stddef.h>
 
 int main() {
-    print("Allocating...\n");
-
-    char *buf = malloc(1024);
+    print("Before malloc\n");
+    void *ptr = malloc(1024);
     
-    if (buf) {
-        buf[0]='D'; buf[1]='o'; buf[2]='n'; buf[3]='e'; buf[4]='\n'; buf[5]='\0';
-
-        print(buf);
-        free(buf);
+    if (ptr == 0) {
+        print("malloc returned NULL!\n");
+    } else {
+        print("malloc returned valid pointer\n");
+        free(ptr);
     }
 
-    write_file("Syscall_Test.txt", "This is a syscall test for write");
+    while (1) {
+        malloc(1024);
+    }
+    
     return 0;
 }

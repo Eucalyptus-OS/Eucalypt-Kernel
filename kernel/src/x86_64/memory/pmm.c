@@ -1,5 +1,6 @@
 #include <x86_64/memory/pmm.h>
 #include <x86_64/memory/vmm.h>
+#include <x86_64/serial.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -30,7 +31,9 @@ static uint64_t find_free_pages(size_t count) {
                 found = false;
             }
         }
-        if (found) return i;
+        if (found) {
+            return i;
+        }
     }
     return (uint64_t)-1;
 }
@@ -58,6 +61,11 @@ void pmm_init() {
         }
     }
     
+    if (!bitmap) {
+        serial_print("ERROR: Could not find space for bitmap!\n");
+        return;
+    }
+    
     for (uint64_t i = 0; i < bitmap_size; i++) {
         bitmap[i] = 0xFF;
     }
@@ -75,11 +83,31 @@ void pmm_init() {
     
     uint64_t bitmap_start = virt_to_phys(bitmap) / PAGE_SIZE;
     uint64_t bitmap_end = (virt_to_phys(bitmap) + bitmap_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    
     for (uint64_t i = bitmap_start; i < bitmap_end; i++) {
         if (!bitmap_test(i)) {
             bitmap_set(i);
             used_pages++;
         }
+    }
+    
+    serial_print("PMM initialized: ");
+    serial_print_hex(total_pages);
+    serial_print(" pages, ");
+    serial_print_hex(pmm_get_free_memory() / 1024 / 1024);
+    serial_print(" MB free\n");
+    
+    void *test1 = pmm_alloc();
+    void *test2 = pmm_alloc();
+    void *test3 = pmm_alloc();
+    
+    if (test1 && test2 && test3) {
+        serial_print("PMM self-test: PASSED\n");
+        pmm_free(test1);
+        pmm_free(test2);
+        pmm_free(test3);
+    } else {
+        serial_print("PMM self-test: FAILED\n");
     }
 }
 

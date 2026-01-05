@@ -24,7 +24,7 @@ extern volatile struct limine_kernel_address_request kernel_address_request;
 
 typedef uint64_t* page_table_t;
 
-static page_table_t kernel_pml4;
+page_table_t kernel_pml4;
 
 void* phys_to_virt(uint64_t phys_addr) {
     return (void*)(phys_addr + hhdm_request.response->offset);

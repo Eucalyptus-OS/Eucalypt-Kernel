@@ -10,18 +10,17 @@ isr128_handler:
     push rsi
     push rdx
     push rcx
-    push rax
+    push rbx
 
     mov rdi, rax
     mov rsi, rbx
+    mov r8, rdx
     mov rdx, rcx
-    mov rcx, rdx
-    mov r8, rsi
-    mov r9, rdi
+    mov rcx, r8
 
     call syscall_handler
 
-    pop rax
+    pop rbx
     pop rcx
     pop rdx
     pop rsi

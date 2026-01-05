@@ -18,5 +18,6 @@
 #define free(ptr)                   SYSCALL(3, ptr, 0, 0)
 #define write_file(f, d)            SYSCALL(4, f, d, 0)
 #define read_file(f, out_size_ptr)  (uint8_t*)SYSCALL(5, f, out_size_ptr, 0)
+#define exec(f)                     SYSCALL(6, f, 0, 0)
 
 #endif
