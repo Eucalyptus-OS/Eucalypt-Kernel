@@ -1,4 +1,3 @@
-// shell.c
 #include <shell.h>
 #include <x86_64/allocator/heap.h>
 #include <ramdisk/ramdisk.h>
@@ -10,26 +9,21 @@
 
 extern struct flanterm_context *ft_ctx;
 
-// Constants
 #define MAX_INPUT_LENGTH    128
 #define MAX_PARAMS          4
 #define MAX_PARAM_LENGTH    64
 
-// Global state
 static char input_buffer[MAX_INPUT_LENGTH + 1];
 static char params[MAX_PARAMS][MAX_PARAM_LENGTH];
 static int param_count = 0;
 static size_t input_pos = 0;
 
-// Forward declarations
 void help_command(void);
 void clear_command(void);
-void ls_command(void);
 void rdf_command(void);
 void wef_command(void);
 void exec_command(void);
 
-// Command table
 typedef void (*command_handler_func)(void);
 
 typedef struct {
@@ -39,12 +33,12 @@ typedef struct {
 } command_t;
 
 const command_t command_table[] = {
-    {"help",  "Displays this message",      help_command},
-    {"clear", "Clears the screen",          clear_command},
-    {"ls",    "List all files in the fs",   ls_command},
-    {"rdf",   "Read a file",                rdf_command},
-    {"wef",   "Write a file",               wef_command},
-    {"exec",  "Run a program",              exec_command},
+    {"HELP",  "Displays this message",      help_command},
+    {"CLEAR", "Clears the screen",          clear_command},
+    {"LS",    "List all files in the fs",   (void *)0},
+    {"RDF",   "Read a file",                rdf_command},
+    {"WEF",   "Write a file",               wef_command},
+    {"EXEC",  "Run a program",              exec_command},
 };
 
 #define NUM_COMMANDS (sizeof(command_table) / sizeof(command_t))
@@ -95,16 +89,43 @@ static void compare_command(char *command) {
         return;
     }
     
+    char *upper_cmd = toupper(params[0]);
+    
     for (size_t i = 0; i < NUM_COMMANDS; i++) {
-        if (strcmp(params[0], command_table[i].name) == 0) {
-            command_table[i].handler();
+        if (strcmp(upper_cmd, command_table[i].name) == 0) {
+            if (command_table[i].handler) {
+                kfree(upper_cmd);
+                command_table[i].handler();
+            } else {
+                dir_entry_t *file = find_file(upper_cmd);
+                if (file) {
+                    if (execute_elf(upper_cmd) != 0) {
+                        flanterm_write(ft_ctx, "Error while running program\n");
+                        flanterm_write(ft_ctx, "Is it a valid ELF file?\n");
+                    }
+                    kfree(file);
+                }
+                kfree(upper_cmd);
+            }
             return;
         }
     }
     
+    dir_entry_t *file = find_file(upper_cmd);
+    if (file) {
+        if (execute_elf(upper_cmd) != 0) {
+            flanterm_write(ft_ctx, "Error while running program\n");
+            flanterm_write(ft_ctx, "Is it a valid ELF file?\n");
+        }
+        kfree(file);
+        kfree(upper_cmd);
+        return;
+    }
+    
     flanterm_write(ft_ctx, "Unknown command: ");
-    flanterm_write(ft_ctx, params[0]);
+    flanterm_write(ft_ctx, upper_cmd);
     flanterm_write(ft_ctx, "\n");
+    kfree(upper_cmd);
 }
 
 void shell_print(uint32_t v) {
@@ -156,77 +177,20 @@ void clear_command(void) {
     memset(input_buffer, 0, sizeof(input_buffer));
 }
 
-void ls_command(void) {
-    uint8_t *buffer = kmalloc(512);
-    if (!buffer) {
-        flanterm_write(ft_ctx, "Memory allocation failed\n");
-        return;
-    }
-    
-    int found_files = 0;
-    flanterm_write(ft_ctx, "Files in root directory:\n");
-    
-    for (uint32_t sector = 0; sector < 14; sector++) {
-        read_ramdisk_sector(19 + sector, buffer);
-        
-        for (int i = 0; i < 16; i++) {
-            dir_entry_t *entry = (dir_entry_t *)(buffer + i * 32);
-            
-            if (entry->name[0] == 0x00) {
-                goto done;
-            }
-            
-            if (entry->name[0] == 0xE5) {
-                continue;
-            }
-            
-            if (entry->attr & 0x08) {
-                continue;
-            }
-            
-            found_files = 1;
-            flanterm_write(ft_ctx, "  ");
-            
-            for (int j = 0; j < 8 && entry->name[j] != ' '; j++) {
-                char c[2] = {entry->name[j], '\0'};
-                flanterm_write(ft_ctx, c);
-            }
-            
-            if (entry->ext[0] != ' ') {
-                flanterm_write(ft_ctx, ".");
-                for (int j = 0; j < 3 && entry->ext[j] != ' '; j++) {
-                    char c[2] = {entry->ext[j], '\0'};
-                    flanterm_write(ft_ctx, c);
-                }
-            }
-            
-            flanterm_write(ft_ctx, " (");
-            char size_buf[16];
-            int_to_str(entry->file_size, size_buf);
-            flanterm_write(ft_ctx, size_buf);
-            flanterm_write(ft_ctx, " bytes)\n");
-        }
-    }
-    
-	done:
-		kfree(buffer);
-	
-		if (found_files == 0) {
-			flanterm_write(ft_ctx, "  (empty)\n");
-		}
-}
-
 void rdf_command(void) {
     if (param_count < 2) {
         flanterm_write(ft_ctx, "Usage: rdf <filename>\n");
         return;
     }
     
-    dir_entry_t *file = find_file(params[1]);
+    char *upper_filename = toupper(params[1]);
+    
+    dir_entry_t *file = find_file(upper_filename);
     if (!file) {
         flanterm_write(ft_ctx, "File not found: ");
-        flanterm_write(ft_ctx, params[1]);
+        flanterm_write(ft_ctx, upper_filename);
         flanterm_write(ft_ctx, "\n");
+        kfree(upper_filename);
         return;
     }
     
@@ -236,11 +200,12 @@ void rdf_command(void) {
     if (!data || size == 0) {
         flanterm_write(ft_ctx, "File is empty or could not be read\n");
         kfree(file);
+        kfree(upper_filename);
         return;
     }
     
     flanterm_write(ft_ctx, "Contents of ");
-    flanterm_write(ft_ctx, params[1]);
+    flanterm_write(ft_ctx, upper_filename);
     flanterm_write(ft_ctx, ":\n");
     
     for (uint32_t i = 0; i < size; i++) {
@@ -251,6 +216,7 @@ void rdf_command(void) {
     
     kfree(data);
     kfree(file);
+    kfree(upper_filename);
 }
 
 void wef_command(void) {
@@ -273,15 +239,19 @@ void wef_command(void) {
         }
     }
     
-    write_file(params[1], (uint8_t *)content);
+    char *upper_filename = toupper(params[1]);
+    
+    write_file(upper_filename, (uint8_t *)content);
     
     flanterm_write(ft_ctx, "Wrote ");
     char size_buf[16];
     int_to_str(content_pos, size_buf);
     flanterm_write(ft_ctx, size_buf);
     flanterm_write(ft_ctx, " bytes to ");
-    flanterm_write(ft_ctx, params[1]);
+    flanterm_write(ft_ctx, upper_filename);
     flanterm_write(ft_ctx, "\n");
+    
+    kfree(upper_filename);
 }
 
 void exec_command(void) {
@@ -290,8 +260,12 @@ void exec_command(void) {
         return;
     }
     
-    if (execute_elf(params[1]) != 0) {
+    char *upper_filename = toupper(params[1]);
+    
+    if (execute_elf(upper_filename) != 0) {
         flanterm_write(ft_ctx, "Error while running program\n");
         flanterm_write(ft_ctx, "Is it a valid ELF file?\n");
     }
+    
+    kfree(upper_filename);
 }

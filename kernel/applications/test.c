@@ -13,9 +13,9 @@ int main() {
         free(ptr);
     }
 
-    while (1) {
-        malloc(1024);
-    }
+    print("Waiting 5 seconds...\n");
+    sleep(5000);
+    print("Done waiting!\n");
     
     return 0;
 }

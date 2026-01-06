@@ -83,6 +83,7 @@ void irq_handler(uint8_t irq) {
     switch (irq) {
     case 0:
         on_irq0();
+        serial_print(".");
         pic_send_eoi(0);
         break;
     case 1:

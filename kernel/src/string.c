@@ -74,6 +74,12 @@ size_t strlen(const char *s) {
     return len;
 }
 
+char *strcpy(char *dest, const char *src) {
+    char *ret = dest;
+    while ((*dest++ = *src++) != '\0');
+    return ret;
+}
+
 void int_to_str(uint32_t value, char *buffer) {
 	if (value == 0) {
 		buffer[0] = '0';

@@ -16,9 +16,17 @@ void timer_wait(uint32_t ticks) {
     }
 }
 
-void init_timer() {
-    uint16_t divisor = 11932;
+void timer_wait_ms(uint32_t milliseconds) {
+    uint64_t target = get_timer_ticks() + milliseconds;
+    
+    while (get_timer_ticks() < target) {
+        __asm__ volatile ("hlt");
+    }
+}
 
+void init_timer() {
+    uint16_t divisor = 1193;
+    
     outb(0x43, 0x36);
     outb(0x40, divisor & 0xFF);
     outb(0x40, (divisor >> 8) & 0xFF);

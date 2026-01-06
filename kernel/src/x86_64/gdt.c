@@ -109,7 +109,3 @@ void init_gdt() {
     kernel_tss.iopb_offset = sizeof(struct tss);
     gdt_set_tss(5, (uint64_t)&kernel_tss, sizeof(struct tss) - 1, 0x89, 0x0);
 }
-
-void usermod() {
-    
-}

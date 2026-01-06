@@ -3,5 +3,6 @@
 
 void init_gdt();
 void load_gdt();
+void usermode();
 
 #endif

@@ -126,32 +126,15 @@ void kmain(void) {
     serial_print(" MB\n");
     
     heap_init();
-    
-    serial_print("Free memory after heap: ");
-    serial_print_hex(pmm_get_free_memory() / 1024 / 1024);
-    serial_print(" MB\n");
-    
-    serial_print("\nTesting PMM AFTER heap_init...\n");
-    test = pmm_alloc();
-    if (test) {
-        serial_print("SUCCESS: Allocated at ");
-        serial_print_hex((uint64_t)test);
-        serial_print("\n");
-        pmm_free(test);
-    } else {
-        serial_print("FAILED - heap_init consumed all memory!\n");
-    }
 
     idt_init();
     init_timer();
     init_keyboard();
-
+    shell_init();
     __asm__ volatile ("sti");
     
     init_ramdisk();
     init_fat12();
-
-    shell_init();
 
     hcf();
 }

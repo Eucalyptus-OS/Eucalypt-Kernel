@@ -2,6 +2,12 @@
 #define SYS_H
 #include <stdint.h>
 
+typedef struct {
+    char name[13];
+    uint32_t size;
+    uint8_t attr;
+} file_info_t;
+
 #define SYSCALL(n, a1, a2, a3) ({ \
     int64_t _ret; \
     __asm__ volatile ( \
@@ -19,5 +25,7 @@
 #define write_file(f, d)            SYSCALL(4, f, d, 0)
 #define read_file(f, out_size_ptr)  (uint8_t*)SYSCALL(5, f, out_size_ptr, 0)
 #define exec(f)                     SYSCALL(6, f, 0, 0)
+#define ls(buf_ptr, max_entries)    SYSCALL(7, buf_ptr, max_entries, 0)
+#define sleep(ms)                   SYSCALL(8, ms, 0, 0)
 
 #endif
