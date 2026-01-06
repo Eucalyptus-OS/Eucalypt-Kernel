@@ -18,7 +18,9 @@ isr128_handler:
     mov rdx, rcx
     mov rcx, r8
 
+    sti
     call syscall_handler
+    cli
 
     pop rbx
     pop rcx
