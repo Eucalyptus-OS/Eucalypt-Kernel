@@ -8,11 +8,11 @@ void main() {
         return;
     }
     
-    int64_t count = ls((uint64_t)buf, 255);
+    int64_t count = ls(buf, 255);
     
     if (count < 0) {
         print("Error listing files\n");
-        free((uint64_t)buf);
+        free(buf);
         return;
     }
     
@@ -50,5 +50,5 @@ void main() {
         }
     }
     
-    free((uint64_t)buf);
+    free(buf);
 }

@@ -2,6 +2,7 @@ global isr128_handler
 extern syscall_handler
 
 isr128_handler:
+    sti
     push r11
     push r10
     push r9
@@ -18,9 +19,7 @@ isr128_handler:
     mov rdx, rcx
     mov rcx, r8
 
-    sti
     call syscall_handler
-    cli
 
     pop rbx
     pop rcx

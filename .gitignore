@@ -1,4 +1,5 @@
 /limine
 /edk2-ovmf
+/build
 *.iso
 *.hdd

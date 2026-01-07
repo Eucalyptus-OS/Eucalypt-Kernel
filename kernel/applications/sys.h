@@ -8,6 +8,13 @@ typedef struct {
     uint8_t attr;
 } file_info_t;
 
+typedef struct {
+    uint64_t width;
+    uint64_t height;
+    uint64_t pitch;
+    uint32_t bpp;
+} fb_info_t;
+
 static inline int64_t syscall(uint64_t n, uint64_t a1, uint64_t a2, uint64_t a3) {
     int64_t ret;
     __asm__ volatile (
@@ -49,6 +56,26 @@ static inline int64_t ls(file_info_t *buf_ptr, uint64_t max_entries) {
 
 static inline int64_t sleep(uint64_t ms) {
     return syscall(8, ms, 0, 0);
+}
+
+static inline int64_t plot_pixel(uint64_t x, uint64_t y, uint32_t color) {
+    return syscall(9, x, y, color);
+}
+
+static inline int64_t fill_rect(uint64_t x, uint64_t y, uint64_t w, uint64_t h, uint32_t color) {
+    return syscall(10, x, (y | (w << 32)), (h | ((uint64_t)color << 32)));
+}
+
+static inline int64_t get_fb_info(fb_info_t *buf) {
+    return syscall(11, (uint64_t)buf, 0, 0);
+}
+
+static inline int64_t clear_screen(uint32_t color) {
+    return syscall(12, color, 0, 0);
+}
+
+static inline uint32_t get_key(void) {
+    return (uint32_t)syscall(13, 0, 0, 0);
 }
 
 #endif

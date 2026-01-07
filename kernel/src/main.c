@@ -23,7 +23,7 @@ __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(4);
 
 __attribute__((used, section(".limine_requests")))
-static volatile struct limine_framebuffer_request framebuffer_request = {
+volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
     .revision = 0
 };
@@ -81,7 +81,7 @@ void kmain(void) {
     }
 
     struct limine_framebuffer *framebuffer = framebuffer_request.response->framebuffers[0];
-    uint32_t *fb_ptr = framebuffer->address;
+    volatile uint32_t *fb_ptr = framebuffer->address;
     uint64_t fb_width = framebuffer->width;
     uint64_t fb_height = framebuffer->height;
     uint64_t fb_pitch = framebuffer->pitch;
@@ -131,7 +131,6 @@ void kmain(void) {
     init_timer();
     init_keyboard();
     shell_init();
-    __asm__ volatile ("sti");
     
     init_ramdisk();
     init_fat12();
