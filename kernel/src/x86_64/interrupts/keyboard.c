@@ -6,7 +6,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-extern void syscall_set_key(uint32_t key);
 extern struct flanterm_context *ft_ctx;
 
 static bool shift_pressed = false;
@@ -179,7 +178,6 @@ static bool is_letter(uint8_t scancode) {
 }
 
 void keyboard_handler() {
-    serial_print("k");
     if (!(inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL)) {
         return;
     }
@@ -232,8 +230,6 @@ void keyboard_handler() {
 
     if (val != UNKNOWN && val != CAPS && val != LSHFT && val != RSHFT && 
         val != CTRL && val != ALT && val != ESC && val < 0xFFFFFF00) {
-        syscall_set_key(val);
         shell_print(val);
-        serial_putchar(val);
     }
 }

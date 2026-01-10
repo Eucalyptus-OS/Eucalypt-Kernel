@@ -2,7 +2,6 @@
 #include <x86_64/allocator/heap.h>
 #include <ramdisk/ramdisk.h>
 #include <ramdisk/fat12.h>
-#include <elf.h>
 #include <string.h>
 #include <stdint.h>
 #include <flanterm/flanterm.h>
@@ -22,7 +21,6 @@ void help_command(void);
 void clear_command(void);
 void rdf_command(void);
 void wef_command(void);
-void exec_command(void);
 
 typedef void (*command_handler_func)(void);
 
@@ -35,10 +33,8 @@ typedef struct {
 const command_t command_table[] = {
     {"HELP",  "Displays this message",      help_command},
     {"CLEAR", "Clears the screen",          clear_command},
-    {"LS",    "List all files in the fs",   (void *)0},
     {"RDF",   "Read a file",                rdf_command},
     {"WEF",   "Write a file",               wef_command},
-    {"EXEC",  "Run a program",              exec_command},
 };
 
 #define NUM_COMMANDS (sizeof(command_table) / sizeof(command_t))
@@ -96,30 +92,9 @@ static void compare_command(char *command) {
             if (command_table[i].handler) {
                 kfree(upper_cmd);
                 command_table[i].handler();
-            } else {
-                dir_entry_t *file = find_file(upper_cmd);
-                if (file) {
-                    if (execute_elf(upper_cmd) != 0) {
-                        flanterm_write(ft_ctx, "Error while running program\n");
-                        flanterm_write(ft_ctx, "Is it a valid ELF file?\n");
-                    }
-                    kfree(file);
-                }
-                kfree(upper_cmd);
             }
             return;
         }
-    }
-    
-    dir_entry_t *file = find_file(upper_cmd);
-    if (file) {
-        if (execute_elf(upper_cmd) != 0) {
-            flanterm_write(ft_ctx, "Error while running program\n");
-            flanterm_write(ft_ctx, "Is it a valid ELF file?\n");
-        }
-        kfree(file);
-        kfree(upper_cmd);
-        return;
     }
     
     flanterm_write(ft_ctx, "Unknown command: ");
@@ -250,22 +225,6 @@ void wef_command(void) {
     flanterm_write(ft_ctx, " bytes to ");
     flanterm_write(ft_ctx, upper_filename);
     flanterm_write(ft_ctx, "\n");
-    
-    kfree(upper_filename);
-}
-
-void exec_command(void) {
-    if (param_count < 2) {
-        flanterm_write(ft_ctx, "Usage: exec <filename>\n");
-        return;
-    }
-    
-    char *upper_filename = toupper(params[1]);
-    
-    if (execute_elf(upper_filename) != 0) {
-        flanterm_write(ft_ctx, "Error while running program\n");
-        flanterm_write(ft_ctx, "Is it a valid ELF file?\n");
-    }
     
     kfree(upper_filename);
 }

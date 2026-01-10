@@ -16,7 +16,6 @@
 #include <x86_64/memory/vmm.h>
 #include <ramdisk/ramdisk.h>
 #include <ramdisk/fat12.h>
-#include <elf.h>
 #include <shell.h>
 
 __attribute__((used, section(".limine_requests")))

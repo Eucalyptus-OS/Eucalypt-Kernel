@@ -34,4 +34,6 @@ uint64_t vmm_virt_to_phys(page_table_t pml4, uint64_t virt);
 bool vmm_map_range(page_table_t pml4, uint64_t virt_start, uint64_t phys_start, size_t pages, uint64_t flags);
 void vmm_unmap_range(page_table_t pml4, uint64_t virt_start, size_t pages);
 
+uint64_t create_user_pages(size_t num_pages, uint64_t virt_start);
+
 #endif

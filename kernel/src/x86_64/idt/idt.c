@@ -13,7 +13,6 @@
 
 extern struct flanterm_context *ft_ctx;
 
-extern void isr128_handler();
 extern void* isr_stub_table[];
 static bool vectors[MAX_IDT_DESCS];
 
@@ -119,10 +118,6 @@ void idt_init() {
         idt_set_descriptor(32 + vector, isr_stub_table[32 + vector], 0x8E);
         vectors[32 + vector] = true;
     }
-
-    idt_set_descriptor(128, isr128_handler, 0x8E);
-    IRQ_clear_mask(0);
-    IRQ_clear_mask(1);
 
     __asm__ volatile ("lidt %0" : : "m"(idtr));
     __asm__ volatile ("sti");

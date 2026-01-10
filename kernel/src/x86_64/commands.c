@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+void io_wait() {
+    outb(0x80, 0);
+}
+
 uint8_t inb(uint16_t port) {
     uint8_t result;
     __asm__ volatile (
@@ -28,4 +32,8 @@ uint16_t inw(uint16_t port) {
         "inw %w1, %w0": "=a" (result): "Nd" (port): "memory"
     );
     return result;
+}
+
+void break_point() {
+    __asm__ volatile ("1: jmp 1b");
 }

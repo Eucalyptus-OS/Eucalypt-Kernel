@@ -93,6 +93,11 @@ void vmm_destroy_address_space(page_table_t pml4) {
             for (size_t pde = 0; pde < ENTRIES_PER_TABLE; pde++) {
                 if (!(pd[pde] & PTE_PRESENT)) continue;
                 
+                page_table_t pt = (page_table_t)phys_to_virt(pd[pde] & 0x000FFFFFFFFFF000);
+                for (size_t pte = 0; pte < ENTRIES_PER_TABLE; pte++) {
+                    if (!(pt[pte] & PTE_PRESENT)) continue;
+                    pmm_free((void*)(pt[pte] & 0x000FFFFFFFFFF000));
+                }
                 pmm_free((void*)(pd[pde] & 0x000FFFFFFFFFF000));
             }
             pmm_free((void*)(pdpt[pdpte] & 0x000FFFFFFFFFF000));
@@ -189,6 +194,48 @@ void vmm_unmap_range(page_table_t pml4, uint64_t virt_start, size_t pages) {
     for (size_t i = 0; i < pages; i++) {
         vmm_unmap_page(pml4, virt_start + i * PAGE_SIZE);
     }
+}
+
+uint64_t create_user_pages(size_t num_pages, uint64_t virt_start) {
+    if (num_pages == 0) return 0;
+    
+    for (size_t i = 0; i < num_pages; i++) {
+        void* phys = pmm_alloc();
+        if (!phys) {
+            for (size_t j = 0; j < i; j++) {
+                uint64_t virt = virt_start + j * PAGE_SIZE;
+                uint64_t phys_addr = vmm_virt_to_phys(kernel_pml4, virt);
+                if (phys_addr) {
+                    vmm_unmap_page(kernel_pml4, virt);
+                    pmm_free((void*)phys_addr);
+                }
+            }
+            return 0;
+        }
+        
+        uint64_t virt = virt_start + i * PAGE_SIZE;
+        uint64_t flags = PTE_WRITABLE | PTE_USER;
+        
+        if (!vmm_map_page(kernel_pml4, virt, (uint64_t)phys, flags)) {
+            pmm_free(phys);
+            for (size_t j = 0; j < i; j++) {
+                uint64_t virt_j = virt_start + j * PAGE_SIZE;
+                uint64_t phys_addr = vmm_virt_to_phys(kernel_pml4, virt_j);
+                if (phys_addr) {
+                    vmm_unmap_page(kernel_pml4, virt_j);
+                    pmm_free((void*)phys_addr);
+                }
+            }
+            return 0;
+        }
+        
+        uint64_t* page = (uint64_t*)virt;
+        for (size_t k = 0; k < PAGE_SIZE / sizeof(uint64_t); k++) {
+            page[k] = 0;
+        }
+    }
+    
+    return virt_start;
 }
 
 void vmm_init() {
