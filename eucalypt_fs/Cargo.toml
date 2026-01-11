@@ -1,0 +1,18 @@
+[package]
+name = "eucalypt_fs"
+version = "0.1.0"
+edition = "2024"
+authors = ["GhostedGaming <epicrobloxgamer41@gmail.com>"]
+description = "A lightweight no_std inode-based filesystem for bare-metal Rust"
+license = "MIT"
+repository = "https://github.com/GhostedGaming/eclipse-os"
+documentation = "https://docs.rs/eclipse_fs"
+homepage = "https://github.com/GhostedGaming/eclipse-os"
+readme = "README.md"
+keywords = ["no-std", "fs", "limine", "osdev", "bare-metal"]
+categories = ["no-std", "os", "embedded"]
+
+[dependencies]
+ide = { workspace = true }
+framebuffer = { workspace = true }
+ahci = { workspace = true }

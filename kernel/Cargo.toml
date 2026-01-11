@@ -1,0 +1,27 @@
+[package]
+name = "eucalypt_os"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+limine = { workspace = true}
+x86_64 = { workspace = true}
+uart_16550 = { workspace = true }
+framebuffer = { workspace = true }
+ide = { workspace = true}
+eucalypt_fs = { workspace = true }
+ahci = { workspace = true }
+pci = { workspace = true }
+bare_x86_64 = { workspace = true }
+
+pic8259 = "0.11.0"
+spin = { workspace = true }
+
+[build-dependencies]
+cc = "1.2.43"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -1,0 +1,8 @@
+[package]
+name = "pci"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bare_x86_64 = { workspace = true}
+framebuffer = { workspace = true }
