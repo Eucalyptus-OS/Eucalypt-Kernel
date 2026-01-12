@@ -1,5 +1,8 @@
 /limine
-/edk2-ovmf
-/build
+/ovmf
+/target
+/kernel/target
+*.lock
 *.iso
 *.hdd
+*.img
