@@ -164,7 +164,6 @@ extern "x86-interrupt" fn security_exception_handler(
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     print!(".");
-    
     unsafe { PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET); }
 }
 

@@ -11,6 +11,9 @@ $(call USER_VARIABLE,KARCH,x86_64)
 # Default user QEMU flags. These are appended to the QEMU command calls.
 $(call USER_VARIABLE,QEMUFLAGS,-m 2G)
 
+# Directory structure
+override OVMF_DIR := ovmf
+override DISK_DIR := disks
 override IMAGE_NAME := eucalypt-$(KARCH)
 
 .PHONY: all
@@ -25,48 +28,50 @@ run: run-$(KARCH)
 .PHONY: run-hdd
 run-hdd: run-hdd-$(KARCH)
 
-ide_disk.img:
-	rm -rf ide_disk.img
-	qemu-img create -f raw ide_disk.img 512M
+$(DISK_DIR)/ide_disk.img:
+	mkdir -p $(DISK_DIR)
+	rm -f $@
+	qemu-img create -f raw $@ 512M
 
-ahci_disk.img:
-	rm -rf ahci_disk.img
-	qemu-img create -f raw ahci_disk.img 512M
+$(DISK_DIR)/ahci_disk.img:
+	mkdir -p $(DISK_DIR)
+	rm -f $@
+	qemu-img create -f raw $@ 512M
 
 .PHONY: run-x86_64
-run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso ide_disk.img ahci_disk.img
+run-x86_64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso $(DISK_DIR)/ide_disk.img $(DISK_DIR)/ahci_disk.img
 	qemu-system-$(KARCH) \
 		-M pc \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
-		-drive file=ide_disk.img,format=raw,if=ide,index=0,media=disk \
-		-drive file=ahci_disk.img,format=raw,if=none,id=ahci0 \
+		-drive file=$(DISK_DIR)/ide_disk.img,format=raw,if=ide,index=0,media=disk \
+		-drive file=$(DISK_DIR)/ahci_disk.img,format=raw,if=none,id=ahci0 \
 		-device ahci,id=ahci \
 		-device ide-hd,drive=ahci0,bus=ahci.0 \
 		$(QEMUFLAGS)
 
 .PHONY: run-codespace-x86_64
-run-codespace-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso ide_disk.img
+run-codespace-x86_64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso $(DISK_DIR)/ide_disk.img
 	qemu-system-$(KARCH) \
 	    -M pc \
-	    -drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-	    -drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+	    -drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+	    -drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 	    -cdrom $(IMAGE_NAME).iso \
-	    -drive file=ide_disk.img,format=raw,if=ide,index=0,media=disk \
+	    -drive file=$(DISK_DIR)/ide_disk.img,format=raw,if=ide,index=0,media=disk \
 	    $(QEMUFLAGS) -display curses
 
 .PHONY: run-hdd-x86_64
-run-hdd-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
+run-hdd-x86_64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
 		-M q35 \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
 .PHONY: run-aarch64
-run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+run-aarch64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu cortex-a72 \
@@ -74,13 +79,13 @@ run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 		-device qemu-xhci \
 		-device usb-kbd \
 		-device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-aarch64
-run-hdd-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
+run-hdd-aarch64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu cortex-a72 \
@@ -88,13 +93,13 @@ run-hdd-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-device qemu-xhci \
 		-device usb-kbd \
 		-device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
 .PHONY: run-riscv64
-run-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+run-riscv64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu rv64 \
@@ -102,13 +107,13 @@ run-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 		-device qemu-xhci \
 		-device usb-kbd \
 		-device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-riscv64
-run-hdd-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
+run-hdd-riscv64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu rv64 \
@@ -116,13 +121,13 @@ run-hdd-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-device qemu-xhci \
 		-device usb-kbd \
 		-device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
 .PHONY: run-loongarch64
-run-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+run-loongarch64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu la464 \
@@ -130,13 +135,13 @@ run-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-device qemu-xhci \
 		-device usb-kbd \
 		-device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-loongarch64
-run-hdd-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
+run-hdd-loongarch64: $(OVMF_DIR)/ovmf-code-$(KARCH).fd $(OVMF_DIR)/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu la464 \
@@ -144,8 +149,8 @@ run-hdd-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMA
 		-device qemu-xhci \
 		-device usb-kbd \
 		-device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive if=pflash,unit=0,format=raw,file=$(OVMF_DIR)/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=$(OVMF_DIR)/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
@@ -165,8 +170,8 @@ run-hdd-bios: $(IMAGE_NAME).hdd
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
-ovmf/ovmf-code-$(KARCH).fd:
-	mkdir -p ovmf
+$(OVMF_DIR)/ovmf-code-$(KARCH).fd:
+	mkdir -p $(OVMF_DIR)
 	curl -Lo $@ https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/ovmf-code-$(KARCH).fd
 	case "$(KARCH)" in \
 		aarch64) dd if=/dev/zero of=$@ bs=1 count=0 seek=67108864 2>/dev/null;; \
@@ -174,8 +179,8 @@ ovmf/ovmf-code-$(KARCH).fd:
 		riscv64) dd if=/dev/zero of=$@ bs=1 count=0 seek=33554432 2>/dev/null;; \
 	esac
 
-ovmf/ovmf-vars-$(KARCH).fd:
-	mkdir -p ovmf
+$(OVMF_DIR)/ovmf-vars-$(KARCH).fd:
+	mkdir -p $(OVMF_DIR)
 	curl -Lo $@ https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/ovmf-vars-$(KARCH).fd
 	case "$(KARCH)" in \
 		aarch64) dd if=/dev/zero of=$@ bs=1 count=0 seek=67108864 2>/dev/null;; \
@@ -289,4 +294,4 @@ clean:
 distclean: clean
 	@echo "Deep cleaning eucalyptOS..."
 	$(MAKE) -C kernel distclean
-	rm -rf limine ovmf
+	rm -rf limine $(OVMF_DIR) $(DISK_DIR)

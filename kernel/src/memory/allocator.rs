@@ -1,5 +1,6 @@
 //! A FIFO (First In, First Out) allocator implemented using a linked list.
 //! Each block in the allocator is represented as a node in the list.
+#![allow(unused)]
 
 use core::{
     alloc::{GlobalAlloc, Layout},

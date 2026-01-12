@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use alloc::vec;
 use framebuffer::println;
 use ide::{ide_read_sectors, ide_write_sectors};

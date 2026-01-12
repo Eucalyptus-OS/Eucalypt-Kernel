@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(unused)]
 
 use core::fmt;
 use core::cell::UnsafeCell;
@@ -53,7 +54,7 @@ impl RendererCell {
 static RENDERER: RendererCell = RendererCell::new();
 
 pub struct ScrollingTextRenderer {
-    framebuffer: *mut u8,
+    framebuffer: *mut u32,
     width: usize,
     height: usize,
     pitch: usize,
@@ -83,7 +84,7 @@ impl ScrollingTextRenderer {
         let (char_width, char_height, bytes_per_glyph) = Self::parse_psf(font_data);
         
         let renderer = Self {
-            framebuffer,
+            framebuffer: framebuffer as *mut u32,
             width,
             height,
             pitch,
@@ -153,10 +154,9 @@ impl ScrollingTextRenderer {
             return;
         }
 
-        let offset = y * self.pitch + x * (self.bpp / 8);
         unsafe {
-            let pixel = self.framebuffer.add(offset) as *mut u32;
-            *pixel = color;
+            let offset = y * (self.pitch / 4) + x;
+            *self.framebuffer.add(offset) = color;
         }
     }
 
@@ -168,15 +168,27 @@ impl ScrollingTextRenderer {
         
         for row in 0..self.char_height {
             let line_offset = row * bytes_per_line;
+            let py = y + row;
+            if py >= self.height {
+                break;
+            }
             
-            for col in 0..self.char_width {
-                let byte_idx = line_offset + (col / 8);
-                let bit_idx = 7 - (col % 8);
+            unsafe {
+                let row_ptr = self.framebuffer.add(py * (self.pitch / 4) + x);
                 
-                if byte_idx < glyph_data.len() {
-                    let bit = (glyph_data[byte_idx] >> bit_idx) & 1;
-                    let color = if bit == 1 { self.fg_color } else { self.bg_color };
-                    self.put_pixel(x + col, y + row, color);
+                for col in 0..self.char_width {
+                    if x + col >= self.width {
+                        break;
+                    }
+                    
+                    let byte_idx = line_offset + (col / 8);
+                    let bit_idx = 7 - (col % 8);
+                    
+                    if byte_idx < glyph_data.len() {
+                        let bit = (glyph_data[byte_idx] >> bit_idx) & 1;
+                        let color = if bit == 1 { self.fg_color } else { self.bg_color };
+                        *row_ptr.add(col) = color;
+                    }
                 }
             }
         }
@@ -184,26 +196,18 @@ impl ScrollingTextRenderer {
 
     fn scroll(&mut self) {
         let line_height = self.char_height;
-        let bytes_per_pixel = self.bpp / 8;
+        let pixels_per_row = self.pitch / 4;
         
         unsafe {
-            for y in line_height..self.height {
-                for x in 0..self.width {
-                    let src_offset = y * self.pitch + x * bytes_per_pixel;
-                    let dst_offset = (y - line_height) * self.pitch + x * bytes_per_pixel;
-                    
-                    let src = self.framebuffer.add(src_offset) as *const u32;
-                    let dst = self.framebuffer.add(dst_offset) as *mut u32;
-                    *dst = *src;
-                }
-            }
+            let src = self.framebuffer.add(line_height * pixels_per_row);
+            let dst = self.framebuffer;
+            let count = (self.height - line_height) * pixels_per_row;
+            core::ptr::copy(src, dst, count);
             
             let start_y = self.height - line_height;
-            for y in start_y..self.height {
-                for x in 0..self.width {
-                    self.put_pixel(x, y, self.bg_color);
-                }
-            }
+            let clear_start = self.framebuffer.add(start_y * pixels_per_row);
+            let clear_count = line_height * pixels_per_row;
+            core::ptr::write_bytes(clear_start, 0, clear_count);
         }
         
         self.y -= line_height;
@@ -249,10 +253,9 @@ impl ScrollingTextRenderer {
     }
 
     pub fn clear(&mut self) {
-        for y in 0..self.height {
-            for x in 0..self.width {
-                self.put_pixel(x, y, self.bg_color);
-            }
+        unsafe {
+            let total_pixels = self.height * (self.pitch / 4);
+            core::ptr::write_bytes(self.framebuffer, 0, total_pixels);
         }
         self.x = 0;
         self.y = 0;

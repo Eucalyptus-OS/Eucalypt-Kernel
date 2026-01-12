@@ -1,5 +1,4 @@
 use core::ptr::{addr_of, addr_of_mut};
-use x86_64;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]

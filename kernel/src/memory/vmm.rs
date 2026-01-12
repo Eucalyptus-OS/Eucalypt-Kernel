@@ -1,11 +1,11 @@
 //! Virtual memory manager for page table management
+#![allow(unused)]
 
 use core::ptr::null_mut;
 use limine::response::MemoryMapResponse;
 use super::addr::{PhysAddr, VirtAddr};
 use super::frame_allocator::FrameAllocator;
 
-const PAGE_SIZE: usize = 4096;
 const ENTRIES_PER_TABLE: usize = 512;
 
 #[repr(transparent)]

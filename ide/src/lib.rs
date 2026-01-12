@@ -9,12 +9,8 @@ use framebuffer::println;
 use bare_x86_64::*;
 
 const ATA_SR_BSY: u8 = 0x80;
-const ATA_SR_DRDY: u8 = 0x40;
 const ATA_SR_DF: u8 = 0x20;
-const ATA_SR_DSC: u8 = 0x10;
 const ATA_SR_DRQ: u8 = 0x08;
-const ATA_SR_CORR: u8 = 0x04;
-const ATA_SR_IDX: u8 = 0x02;
 const ATA_SR_ERR: u8 = 0x01;
 
 const ATA_ER_BBK: u8 = 0x80;
@@ -28,42 +24,20 @@ const ATA_ER_AMNF: u8 = 0x01;
 
 const ATA_CMD_READ_PIO: u8 = 0x20;
 const ATA_CMD_READ_PIO_EXT: u8 = 0x24;
-const ATA_CMD_READ_DMA: u8 = 0xC8;
-const ATA_CMD_READ_DMA_EXT: u8 = 0x25;
 const ATA_CMD_WRITE_PIO: u8 = 0x30;
 const ATA_CMD_WRITE_PIO_EXT: u8 = 0x34;
-const ATA_CMD_WRITE_DMA: u8 = 0xCA;
-const ATA_CMD_WRITE_DMA_EXT: u8 = 0x35;
 const ATA_CMD_CACHE_FLUSH: u8 = 0xE7;
-const ATA_CMD_CACHE_FLUSH_EXT: u8 = 0xEA;
-const ATA_CMD_PACKET: u8 = 0xA0;
-const ATA_CMD_IDENTIFY_PACKET: u8 = 0xA1;
 const ATA_CMD_IDENTIFY: u8 = 0xEC;
 
-const ATAPI_CMD_READ: u8 = 0xA8;
-const ATAPI_CMD_EJECT: u8 = 0x1B;
-
-const ATA_IDENT_DEVICETYPE: usize = 0;
-const ATA_IDENT_CYLINDERS: usize = 2;
-const ATA_IDENT_HEADS: usize = 6;
-const ATA_IDENT_SECTORS: usize = 12;
-const ATA_IDENT_SERIAL: usize = 20;
 const ATA_IDENT_MODEL: usize = 54;
-const ATA_IDENT_CAPABILITIES: usize = 98;
-const ATA_IDENT_FIELDVALID: usize = 106;
 const ATA_IDENT_MAX_LBA: usize = 120;
 const ATA_IDENT_COMMANDSETS: usize = 164;
 const ATA_IDENT_MAX_LBA_EXT: usize = 200;
 
 const IDE_ATA: u8 = 0x00;
-const IDE_ATAPI: u8 = 0x01;
-
-const ATA_MASTER: u8 = 0x00;
-const ATA_SLAVE: u8 = 0x01;
 
 const ATA_REG_DATA: u8 = 0x00;
 const ATA_REG_ERROR: u8 = 0x01;
-const ATA_REG_FEATURES: u8 = 0x01;
 const ATA_REG_SECCOUNT0: u8 = 0x02;
 const ATA_REG_LBA0: u8 = 0x03;
 const ATA_REG_LBA1: u8 = 0x04;
@@ -75,15 +49,10 @@ const ATA_REG_SECCOUNT1: u8 = 0x08;
 const ATA_REG_LBA3: u8 = 0x09;
 const ATA_REG_LBA4: u8 = 0x0A;
 const ATA_REG_LBA5: u8 = 0x0B;
-const ATA_REG_CONTROL: u8 = 0x0C;
 const ATA_REG_ALTSTATUS: u8 = 0x0C;
-const ATA_REG_DEVADDRESS: u8 = 0x0D;
 
 const ATA_PRIMARY: u8 = 0x00;
 const ATA_SECONDARY: u8 = 0x01;
-
-const ATA_READ: u8 = 0x00;
-const ATA_WRITE: u8 = 0x01;
 
 const MAX_SECTORS_PER_TRANSFER: usize = 128;
 

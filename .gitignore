@@ -2,6 +2,7 @@
 /ovmf
 /target
 /kernel/target
+*.lock
 *.iso
 *.hdd
 *.img

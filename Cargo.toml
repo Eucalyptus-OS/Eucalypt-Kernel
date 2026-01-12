@@ -1,5 +1,5 @@
 [workspace]
-members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64"]
+members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -15,3 +15,5 @@ ide = { path = "./ide" }
 pci = { path = "./pci" }
 bare_x86_64 = { path = "./bare_x86_64" }
 eucalypt_fs ={ path = "./eucalypt_fs" }
+sched = { path = "./sched" }
+process = { path = "./process" }

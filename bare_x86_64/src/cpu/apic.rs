@@ -11,11 +11,6 @@ const APIC_BASE_MSR_ENABLE: u64 = 0x800;
 const APIC_SPURIOUS_INTERRUPT_VECTOR: usize = 0xFF;
 const APIC_SOFTWARE_ENABLE: u32 = 0x100;
 
-fn is_apic_enabled() -> bool {
-    let msr_value: u64 = read_msr(APIC_BASE_MSR);
-    (msr_value & APIC_BASE_MSR_ENABLE) != 0
-}
-
 fn set_apic_base(apic: usize) {
     let eax: u32 = ((apic & 0xfffff000) | APIC_BASE_MSR_ENABLE as usize) as u32;
     let edx: u32 = 0;

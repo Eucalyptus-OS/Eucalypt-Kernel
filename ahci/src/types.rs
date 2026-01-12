@@ -1,5 +1,3 @@
-#![no_std]
-
 use core::ptr::{read_volatile, write_volatile};
 
 #[repr(C)]
