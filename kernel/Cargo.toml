@@ -15,7 +15,8 @@ pci = { workspace = true }
 bare_x86_64 = { workspace = true }
 sched = { workspace = true }
 process = { workspace = true }
-memory ={ workspace = true }
+memory = { workspace = true }
+usb = { workspace = true }
 
 pic8259 = "0.11.0"
 spin = { workspace = true }

@@ -18,3 +18,4 @@ eucalypt_fs = { path = "./eucalypt_fs" }
 sched =       { path = "./sched" }
 process =     { path = "./process" }
 memory =      { path = "./memory" }
+usb =         { path = "./usb" }

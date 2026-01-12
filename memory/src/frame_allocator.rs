@@ -1,5 +1,3 @@
-//! Physical frame allocator
-
 use core::ptr::null_mut;
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
 use super::addr::PhysAddr;
@@ -32,7 +30,7 @@ impl FrameAllocator {
                     FRAME_BITMAP = (entry.base + 0xFFFF800000000000) as *mut u64;
                     
                     for i in 0..BITMAP_SIZE {
-                        *FRAME_BITMAP.add(i) = 0xFFFFFFFFFFFFFFFF;
+                        *FRAME_BITMAP.add(i) = 0;
                     }
                     
                     let bitmap_frames = (BITMAP_SIZE * 8 + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -52,6 +50,17 @@ impl FrameAllocator {
                     
                     for i in 0..frame_count {
                         Self::mark_free(start_frame + i);
+                    }
+                }
+            }
+            
+            for entry in memory_map.entries() {
+                if entry.entry_type != EntryType::USABLE {
+                    let start_frame = (entry.base as usize) / PAGE_SIZE;
+                    let frame_count = (entry.length as usize) / PAGE_SIZE;
+                    
+                    for i in 0..frame_count {
+                        Self::mark_used(start_frame + i);
                     }
                 }
             }
@@ -80,7 +89,7 @@ impl FrameAllocator {
         }
     }
     
-    pub unsafe fn alloc_frame() -> Option<PhysAddr> {
+    pub unsafe fn alloc() -> Option<PhysAddr> {
         unsafe {
             for i in 0..BITMAP_SIZE {
                 let bitmap = *FRAME_BITMAP.add(i);
@@ -98,10 +107,18 @@ impl FrameAllocator {
         }
     }
     
-    pub unsafe fn free_frame(addr: PhysAddr) {
+    pub unsafe fn alloc_frame() -> Option<PhysAddr> {
+        unsafe { Self::alloc() }
+    }
+    
+    pub unsafe fn free(addr: PhysAddr) {
         unsafe {
             let frame = (addr.as_u64() / PAGE_SIZE as u64) as usize;
             Self::mark_free(frame);
         }
+    }
+    
+    pub unsafe fn free_frame(addr: PhysAddr) {
+        unsafe { Self::free(addr) }
     }
 }

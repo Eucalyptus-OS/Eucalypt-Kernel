@@ -1,5 +1,3 @@
-//! A FIFO (First In, First Out) allocator implemented using a linked list.
-//! Each block in the allocator is represented as a node in the list.
 #![allow(unused)]
 
 use core::{
@@ -10,6 +8,7 @@ use core::{
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
 
 static mut HEAP_START: *mut u8 = null_mut();
+static mut HEAP_SIZE: usize = 0;
 static mut HEAP_OFFSET: usize = 0;
 
 struct LinkedListBlock {
@@ -119,17 +118,20 @@ unsafe impl GlobalAlloc for LinkAllocator {
                 return null_mut();
             }
 
+            let align = layout.align().max(mem::align_of::<LinkedListBlock>());
+            let aligned_offset = (HEAP_OFFSET + align - 1) & !(align - 1);
             let total_size = mem::size_of::<LinkedListBlock>() + layout.size();
             
-            let align = layout.align().max(mem::align_of::<LinkedListBlock>());
-            let offset = (HEAP_OFFSET + align - 1) & !(align - 1);
+            if aligned_offset + total_size > HEAP_SIZE {
+                return null_mut();
+            }
             
-            let block = HEAP_START.add(offset) as *mut LinkedListBlock;
+            let block = HEAP_START.add(aligned_offset) as *mut LinkedListBlock;
             (*block).size = layout.size();
             (*block).next = null_mut();
             (*block).prev = null_mut();
             
-            HEAP_OFFSET = offset + total_size;
+            HEAP_OFFSET = aligned_offset + total_size;
             
             (block as *mut u8).add(mem::size_of::<LinkedListBlock>())
         }
@@ -157,8 +159,9 @@ pub unsafe fn init_allocator(memory_map: &MemoryMapResponse) {
         FREE_LIST = LinkedList::new();
         
         for entry in memory_map.entries() {
-            if entry.entry_type == EntryType::USABLE && entry.length > 1024 * 1024 {
+            if entry.entry_type == EntryType::USABLE && entry.length > 16 * 1024 * 1024 {
                 HEAP_START = (entry.base + 0xFFFF800000000000) as *mut u8;
+                HEAP_SIZE = entry.length as usize;
                 HEAP_OFFSET = 0;
                 break;
             }

@@ -1,11 +1,10 @@
 use crate::vmm;
 use crate::addr;
 
-static mut MMIO_LOWER: u64 = 0;     // Lower address for MMIO
-static mut MMIO_UPPER: u64 = 0;     // Upper Address for MMIO
-static mut MMIO_CURRENT: u64 = 0;   // Current allocation pointer
+static mut MMIO_LOWER: u64 = 0;
+static mut MMIO_UPPER: u64 = 0;
+static mut MMIO_CURRENT: u64 = 0;
 
-/// Sets the range for MMIO mappings
 pub fn mmio_map_range(lower: u64, upper: u64) {
     unsafe {
         MMIO_LOWER = lower;
@@ -14,8 +13,7 @@ pub fn mmio_map_range(lower: u64, upper: u64) {
     }
 }
 
-/// Maps a physical MMIO address to the predefined virtual MMIO region
-pub fn map_mmio(addr: u64, size: u64) -> Result<u64, &'static str> {
+pub fn map_mmio(phys_addr: u64, size: u64) -> Result<u64, &'static str> {
     unsafe {
         let pages_needed = (size + 0xFFF) / 0x1000;
         let total_size = pages_needed * 0x1000;
@@ -25,14 +23,20 @@ pub fn map_mmio(addr: u64, size: u64) -> Result<u64, &'static str> {
         }
         
         let virt_addr = MMIO_CURRENT;
+        let mut mapper = vmm::VMM::get_mapper();
         
-        vmm::VMM::map_range(
-            addr::VirtAddr::new(virt_addr),
-            addr::PhysAddr::new(addr),
-            vmm::PageTableEntry::WRITABLE | 
-            vmm::PageTableEntry::NO_CACHE | 
-            vmm::PageTableEntry::WRITE_THROUGH,
-        ).expect("Failed to map MMIO region");
+        for i in 0..pages_needed {
+            let virt = addr::VirtAddr::new(virt_addr + (i * 0x1000));
+            let phys = addr::PhysAddr::new(phys_addr + (i * 0x1000));
+            
+            mapper.map_page(
+                virt,
+                phys,
+                vmm::PageTableEntry::WRITABLE | 
+                vmm::PageTableEntry::NO_CACHE | 
+                vmm::PageTableEntry::WRITE_THROUGH,
+            ).ok_or("Failed to map MMIO page")?;
+        }
         
         MMIO_CURRENT += total_size;
         
@@ -40,7 +44,6 @@ pub fn map_mmio(addr: u64, size: u64) -> Result<u64, &'static str> {
     }
 }
 
-/// Returns the amount of MMIO space remaining
 pub fn mmio_remaining() -> u64 {
     unsafe {
         MMIO_UPPER.saturating_sub(MMIO_CURRENT)

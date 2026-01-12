@@ -21,6 +21,7 @@ use ahci::ahci_write;
 use pci::{check_all_buses, pci_find_ahci_controller, pci_enable_bus_master, pci_enable_memory_space};
 use eucalypt_os::{gdt, idt, init_allocator, VMM, VirtAddr, PhysAddr, PageTableEntry};
 use memory::mmio::{mmio_map_range, map_mmio};
+use usb;
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/altc-8x16.psf");
 
@@ -95,39 +96,6 @@ unsafe extern "C" fn kmain() -> ! {
         println!("Initializing PCI");
         check_all_buses();
         println!("PCI scan complete");
-
-        println!("Initializing AHCI");
-        match pci_find_ahci_controller() {
-            Some(ahci_dev) => {
-                let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
-                println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
-
-                if abar_phys == 0 {
-                    println!("Invalid AHCI BAR address");
-                } else {
-                    pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                    pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-
-                    println!("Mapping AHCI MMIO region...");
-                    match map_mmio(abar_phys, 0x4000) {
-                        Ok(abar_virt) => {
-                            println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
-                            println!("AHCI ABAR mapped successfully");
-                            find_ahci_controller();
-                        }
-                        Err(e) => {
-                            println!("Failed to map AHCI MMIO: {}", e);
-                        }
-                    }
-                }
-            }
-            None => {
-                println!("No AHCI controller found");
-            }
-        }
-
-        println!("Mapping APIC...");
 
         println!("Writing filesystem...");
         write_eucalypt_fs(0);
@@ -232,6 +200,41 @@ unsafe extern "C" fn kmain() -> ! {
 
         println!();
         println!("Filesystem Tests Complete");
+        
+        println!("Initializing USB...");
+        usb::init_usb(0xDEADBEEF);
+        println!("USB Initialized");
+
+        println!("Initializing AHCI");
+        match pci_find_ahci_controller() {
+            Some(ahci_dev) => {
+                let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
+                println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
+
+                if abar_phys == 0 {
+                    println!("Invalid AHCI BAR address");
+                } else {
+                    pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                    pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+
+                    println!("Mapping AHCI MMIO region...");
+                    match map_mmio(abar_phys, 0x4000) {
+                        Ok(abar_virt) => {
+                            println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
+                            println!("AHCI ABAR mapped successfully");
+                            find_ahci_controller();
+                        }
+                        Err(e) => {
+                            println!("Failed to map AHCI MMIO: {}", e);
+                        }
+                    }
+                }
+            }
+            None => {
+                println!("No AHCI controller found");
+            }
+        }
         println!("Halting system...");
 
         hcf();

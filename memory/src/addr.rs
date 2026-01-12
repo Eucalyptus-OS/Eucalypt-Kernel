@@ -1,5 +1,3 @@
-//! Physical and virtual address types
-
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct PhysAddr(u64);
@@ -10,11 +8,19 @@ pub struct VirtAddr(u64);
 
 impl PhysAddr {
     pub fn new(addr: u64) -> Self {
-        PhysAddr(addr & 0x000F_FFFF_FFFF_F000)
+        PhysAddr(addr)
     }
     
     pub fn as_u64(&self) -> u64 {
         self.0
+    }
+    
+    pub fn align_up(&self, align: u64) -> Self {
+        PhysAddr((self.0 + align - 1) & !(align - 1))
+    }
+    
+    pub fn align_down(&self, align: u64) -> Self {
+        PhysAddr(self.0 & !(align - 1))
     }
 }
 
@@ -45,5 +51,13 @@ impl VirtAddr {
     
     pub fn p1_index(&self) -> usize {
         ((self.0 >> 12) & 0x1FF) as usize
+    }
+    
+    pub fn align_up(&self, align: u64) -> Self {
+        VirtAddr((self.0 + align - 1) & !(align - 1))
+    }
+    
+    pub fn align_down(&self, align: u64) -> Self {
+        VirtAddr(self.0 & !(align - 1))
     }
 }
