@@ -17,11 +17,9 @@ pub fn mmio_map_range(lower: u64, upper: u64) {
 /// Maps a physical MMIO address to the predefined virtual MMIO region
 pub fn map_mmio(addr: u64, size: u64) -> Result<u64, &'static str> {
     unsafe {
-        // Align size to page boundary (4KB)
         let pages_needed = (size + 0xFFF) / 0x1000;
         let total_size = pages_needed * 0x1000;
         
-        // Check if we have space
         if MMIO_CURRENT + total_size > MMIO_UPPER {
             return Err("MMIO region exhausted");
         }
