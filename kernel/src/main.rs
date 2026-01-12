@@ -17,8 +17,10 @@ use eucalypt_fs::file_ops::{create_file, read_file, delete_file};
 use eucalypt_fs::directory::DirectoryManager;
 use eucalypt_fs::inodes::InodeManager;
 use ahci::find_ahci_controller;
+use ahci::ahci_write;
 use pci::{check_all_buses, pci_find_ahci_controller, pci_enable_bus_master, pci_enable_memory_space};
 use eucalypt_os::{gdt, idt, init_allocator, VMM, VirtAddr, PhysAddr, PageTableEntry};
+use memory::mmio::{mmio_map_range, map_mmio};
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/altc-8x16.psf");
 
@@ -44,206 +46,196 @@ static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
-    assert!(BASE_REVISION.is_supported());
-    
-    let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().expect("No framebuffer");
-    let framebuffer = framebuffer_response.framebuffers().next().expect("No framebuffer available");
-    
-    ScrollingTextRenderer::init(
-        framebuffer.addr(),
-        framebuffer.width() as usize,
-        framebuffer.height() as usize,
-        framebuffer.pitch() as usize,
-        framebuffer.bpp() as usize,
-        FONT,
-    );
-    
-    println!("eucalyptOS Starting...");
-    println!("Initializing Memory Management...");
-    
-    if let Some(memmap_response) = MEMMAP_REQUEST.get_response() {
-        // Initialize VMM first (sets up frame allocator and page tables)
-        VMM::init(memmap_response);
-        println!("VMM Initialized");
-        
-        // Then initialize the heap allocator
-        init_allocator(memmap_response);
-        println!("Heap Allocator Initialized");
-    } else {
-        panic!("No memory map available!");
-    }
+    unsafe {
+        assert!(BASE_REVISION.is_supported());
 
-    println!("Initializing GDT...");
-    gdt::gdt_init();
-    
-    println!("Initializing IDT...");
-    idt::idt_init();
-    println!("IDT Initialized");
-    
-    asm!("sti");
-    println!("Interrupts enabled");
-    
-    println!("Initializing IDE");
-    ide_init(0, 0, 0, 0, 0);
-    println!("IDE Initialized");
-    
-    println!("Initializing PCI");
-    check_all_buses();
-    println!("PCI scan complete");
+        let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().expect("No framebuffer");
+        let framebuffer = framebuffer_response.framebuffers().next().expect("No framebuffer available");
 
-    println!("Initializing AHCI");
-    match pci_find_ahci_controller() {
-        Some(ahci_dev) => {
-            let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
-            println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-            println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
+        ScrollingTextRenderer::init(
+            framebuffer.addr(),
+            framebuffer.width() as usize,
+            framebuffer.height() as usize,
+            framebuffer.pitch() as usize,
+            framebuffer.bpp() as usize,
+            FONT,
+        );
 
-            if abar_phys == 0 {
-                println!("Invalid AHCI BAR address");
-            } else {
-                pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+        println!("eucalyptOS Starting...");
+        println!("Initializing Memory Management...");
 
-                let abar_virt = abar_phys | 0xFFFF800000000000;
-                println!("AHCI ABAR (virtual): 0x{:X}", abar_virt);
+        if let Some(memmap_response) = MEMMAP_REQUEST.get_response() {
+            VMM::init(memmap_response);
+            println!("VMM Initialized");
 
-                let pages_to_map = 4;
-                for i in 0..pages_to_map {
-                    let offset = i * 0x1000;
-                    let phys_addr = abar_phys + offset;
-                    let virt_addr = abar_virt + offset;
+            init_allocator(memmap_response);
+            println!("Heap Allocator Initialized");
+        } else {
+            panic!("No memory map available!");
+        }
 
-                    match VMM::map_page(
-                        VirtAddr::new(virt_addr),
-                        PhysAddr::new(phys_addr),
-                        PageTableEntry::PRESENT | 
-                        PageTableEntry::WRITABLE | 
-                        PageTableEntry::NO_CACHE
-                    ) {
-                        Some(()) => {},
-                        None => {
-                            println!("Failed to map AHCI page at offset 0x{:X}", offset);
-                            hcf();
+        println!("Initializing GDT...");
+        gdt::gdt_init();
+
+        println!("Initializing IDT...");
+        idt::idt_init();
+        println!("IDT Initialized");
+
+        asm!("sti");
+        println!("Interrupts enabled");
+
+        println!("Setting up MMIO region...");
+        mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
+        println!("MMIO range configured");
+
+        println!("Initializing IDE");
+        ide_init(0, 0, 0, 0, 0);
+        println!("IDE Initialized");
+
+        println!("Initializing PCI");
+        check_all_buses();
+        println!("PCI scan complete");
+
+        println!("Initializing AHCI");
+        match pci_find_ahci_controller() {
+            Some(ahci_dev) => {
+                let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
+                println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
+
+                if abar_phys == 0 {
+                    println!("Invalid AHCI BAR address");
+                } else {
+                    pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                    pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+
+                    println!("Mapping AHCI MMIO region...");
+                    match map_mmio(abar_phys, 0x4000) {
+                        Ok(abar_virt) => {
+                            println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
+                            println!("AHCI ABAR mapped successfully");
+                            find_ahci_controller();
+                        }
+                        Err(e) => {
+                            println!("Failed to map AHCI MMIO: {}", e);
                         }
                     }
                 }
-
-                println!("AHCI ABAR mapped successfully");
-                find_ahci_controller();
+            }
+            None => {
+                println!("No AHCI controller found");
             }
         }
-        None => {
-            println!("No AHCI controller found");
-        }
-    }
 
-    println!("Mapping APIC...");
-    
-    println!("Writing filesystem...");
-    write_eucalypt_fs(0);
-    
-    println!("Reading superblock from disk...");
-    let super_block = match SuperBlock::read_super_block(0) {
-        Ok(sb) => {
-            println!("Superblock loaded: {}", sb);
-            sb
-        }
-        Err(e) => {
-            println!("Failed to read superblock: {}", e);
-            hcf();
-        }
-    };
-    
-    println!("Loading bitmap from disk...");
-    let bitmap = match eucalypt_fs::BlockBitmap::from_disk(0, &super_block) {
-        Ok(bm) => {
-            println!("Bitmap loaded successfully");
-            println!("Free blocks: {}", bm.free_blocks());
-            println!("Used blocks: {}", bm.used_blocks());
-            bm
-        }
-        Err(e) => {
-            println!("Failed to load bitmap: {:?}", e);
-            hcf();
-        }
-    };
-    
-    println!("\nInitializing Inode Manager...");
-    match InodeManager::new(0, super_block, bitmap) {
-        Ok(mut inode_manager) => {
-            println!("Inode Manager initialized");
-            
-            println!("\nTesting File Creation...");
-            let test_data = b"Hello from eucalyptOS!";
-            match create_file(&mut inode_manager, test_data) {
-                Ok(inode_idx) => {
-                    println!("File created at inode {}", inode_idx);
-                    
-                    println!("\nTesting File Reading...");
-                    match read_file(&inode_manager, inode_idx) {
-                        Ok(file_data) => {
-                            println!("File read successfully: {} bytes", file_data.len());
-                            print!("File content: ");
-                            for &byte in file_data.iter() {
-                                print!("{}", byte as char);
-                            }
-                            println!();
-                        }
-                        Err(e) => println!("Failed to read file: {:?}", e),
-                    }
-                    
-                    println!("\nTesting Directory Creation...");
-                    match DirectoryManager::create_directory(&mut inode_manager) {
-                        Ok(dir_inode) => {
-                            println!("Directory created at inode {}", dir_inode);
-                            
-                            println!("\nTesting Directory Entry Addition...");
-                            match DirectoryManager::add_entry(&mut inode_manager, dir_inode, b"test_file.txt", inode_idx) {
-                                Ok(()) => {
-                                    println!("Entry added to directory");
-                                    
-                                    println!("\nTesting File Lookup...");
-                                    match DirectoryManager::find_entry(&inode_manager, dir_inode, b"test_file.txt") {
-                                        Ok(Some(found_inode)) => {
-                                            println!("Found file at inode {}", found_inode);
-                                        }
-                                        Ok(None) => println!("File not found in directory"),
-                                        Err(e) => println!("Error searching directory: {:?}", e),
-                                    }
-                                    
-                                    println!("\nTesting Directory Listing...");
-                                    match DirectoryManager::list_directory(&inode_manager, dir_inode) {
-                                        Ok(entries) => {
-                                            println!("Directory contains {} entries:", entries.len());
-                                            for (inode, name) in entries {
-                                                println!("  inode {}: {:?}", inode, core::str::from_utf8(&name).unwrap_or("invalid_utf8"));
-                                            }
-                                        }
-                                        Err(e) => println!("Error listing directory: {:?}", e),
-                                    }
+        println!("Mapping APIC...");
+
+        println!("Writing filesystem...");
+        write_eucalypt_fs(0);
+
+        println!("Reading superblock from disk...");
+        let super_block = match SuperBlock::read_super_block(0) {
+            Ok(sb) => {
+                println!("Superblock loaded: {}", sb);
+                sb
+            }
+            Err(e) => {
+                println!("Failed to read superblock: {}", e);
+                hcf();
+            }
+        };
+
+        println!("Loading bitmap from disk...");
+        let bitmap = match eucalypt_fs::BlockBitmap::from_disk(0, &super_block) {
+            Ok(bm) => {
+                println!("Bitmap loaded successfully");
+                println!("Free blocks: {}", bm.free_blocks());
+                println!("Used blocks: {}", bm.used_blocks());
+                bm
+            }
+            Err(e) => {
+                println!("Failed to load bitmap: {:?}", e);
+                hcf();
+            }
+        };
+
+        println!("\nInitializing Inode Manager...");
+        match InodeManager::new(0, super_block, bitmap) {
+            Ok(mut inode_manager) => {
+                println!("Inode Manager initialized");
+
+                println!("\nTesting File Creation...");
+                let test_data = b"Hello from eucalyptOS!";
+                match create_file(&mut inode_manager, test_data) {
+                    Ok(inode_idx) => {
+                        println!("File created at inode {}", inode_idx);
+
+                        println!("\nTesting File Reading...");
+                        match read_file(&inode_manager, inode_idx) {
+                            Ok(file_data) => {
+                                println!("File read successfully: {} bytes", file_data.len());
+                                print!("File content: ");
+                                for &byte in file_data.iter() {
+                                    print!("{}", byte as char);
                                 }
-                                Err(e) => println!("Failed to add entry: {:?}", e),
+                                println!();
                             }
+                            Err(e) => println!("Failed to read file: {:?}", e),
                         }
-                        Err(e) => println!("Failed to create directory: {:?}", e),
-                    }
-                    
-                    println!("\nTesting File Deletion...");
-                    match delete_file(&mut inode_manager, inode_idx) {
-                        Ok(()) => println!("File deleted successfully"),
-                        Err(e) => println!("Failed to delete file: {:?}", e),
-                    }
-                }
-                Err(e) => println!("Failed to create file: {:?}", e),
-            }
-        }
-        Err(e) => println!("Failed to initialize inode manager: {:?}", e),
-    }
-    
-    println!("\nFilesystem Tests Complete");
-    println!("Halting system...");
 
-    hcf();
+                        println!("\nTesting Directory Creation...");
+                        match DirectoryManager::create_directory(&mut inode_manager) {
+                            Ok(dir_inode) => {
+                                println!("Directory created at inode {}", dir_inode);
+
+                                println!("\nTesting Directory Entry Addition...");
+                                match DirectoryManager::add_entry(&mut inode_manager, dir_inode, b"test_file.txt", inode_idx) {
+                                    Ok(()) => {
+                                        println!("Entry added to directory");
+
+                                        println!("\nTesting File Lookup...");
+                                        match DirectoryManager::find_entry(&inode_manager, dir_inode, b"test_file.txt") {
+                                            Ok(Some(found_inode)) => {
+                                                println!("Found file at inode {}", found_inode);
+                                            }
+                                            Ok(None) => println!("File not found in directory"),
+                                            Err(e) => println!("Error searching directory: {:?}", e),
+                                        }
+
+                                        println!("\nTesting Directory Listing...");
+                                        match DirectoryManager::list_directory(&inode_manager, dir_inode) {
+                                            Ok(entries) => {
+                                                println!("Directory contains {} entries:", entries.len());
+                                                for (inode, name) in entries {
+                                                    println!("  inode {}: {:?}", inode, core::str::from_utf8(&name).unwrap_or("invalid_utf8"));
+                                                }
+                                            }
+                                            Err(e) => println!("Error listing directory: {:?}", e),
+                                        }
+                                    }
+                                    Err(e) => println!("Failed to add entry: {:?}", e),
+                                }
+                            }
+                            Err(e) => println!("Failed to create directory: {:?}", e),
+                        }
+
+                        println!("\nTesting File Deletion...");
+                        match delete_file(&mut inode_manager, inode_idx) {
+                            Ok(()) => println!("File deleted successfully"),
+                            Err(e) => println!("Failed to delete file: {:?}", e),
+                        }
+                    }
+                    Err(e) => println!("Failed to create file: {:?}", e),
+                }
+            }
+            Err(e) => println!("Failed to initialize inode manager: {:?}", e),
+        }
+
+        println!();
+        println!("Filesystem Tests Complete");
+        println!("Halting system...");
+
+        hcf();
+    }
 }
 
 #[panic_handler]

@@ -1,11 +1,11 @@
 [package]
 name = "eucalypt_os"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-limine = { workspace = true}
-x86_64 = { workspace = true}
+limine = { workspace = true }
+x86_64 = { workspace = true }
 uart_16550 = { workspace = true }
 framebuffer = { workspace = true }
 ide = { workspace = true}
@@ -15,6 +15,7 @@ pci = { workspace = true }
 bare_x86_64 = { workspace = true }
 sched = { workspace = true }
 process = { workspace = true }
+memory ={ workspace = true }
 
 pic8259 = "0.11.0"
 spin = { workspace = true }

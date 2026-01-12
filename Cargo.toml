@@ -1,5 +1,5 @@
 [workspace]
-members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched"]
+members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "xhci"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -9,11 +9,12 @@ uart_16550 = "0.4.0"
 spin = "0.10.0"
 
 # Eucalypt crates
-ahci = { path = "./ahci" }
+ahci =        { path = "./ahci" }
 framebuffer = { path = "./framebuffer" }
-ide = { path = "./ide" }
-pci = { path = "./pci" }
+ide =         { path = "./ide" }
+pci =         { path = "./pci" }
 bare_x86_64 = { path = "./bare_x86_64" }
-eucalypt_fs ={ path = "./eucalypt_fs" }
-sched = { path = "./sched" }
-process = { path = "./process" }
+eucalypt_fs = { path = "./eucalypt_fs" }
+sched =       { path = "./sched" }
+process =     { path = "./process" }
+memory =      { path = "./memory" }

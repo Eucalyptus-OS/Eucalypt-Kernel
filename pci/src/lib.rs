@@ -303,6 +303,20 @@ pub fn check_all_buses() {
     }
 }
 
+pub fn pci_get_all_devices() -> &'static [PCIDevice] {
+    unsafe {
+        &PCI_DEVICES[0..PCI_DEVICE_COUNT as usize]
+    }
+}
+
+pub fn pci_find_xhci_controller() -> Option<&'static PCIDevice> {
+    pci_find_class_prog_if(0x0C, 0x03, 0x30)
+}
+
+pub fn pci_get_device_count() -> u32 {
+    unsafe { PCI_DEVICE_COUNT }
+}
+
 pub fn pci_find_ahci_controller() -> Option<&'static PCIDevice> {
     pci_find_class_prog_if(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROG_IF_AHCI)
 }
