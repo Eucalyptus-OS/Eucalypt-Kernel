@@ -66,6 +66,7 @@ impl PageTable {
 
 static mut KERNEL_PAGE_TABLE: *mut PageTable = null_mut();
 
+#[derive(Clone, Copy)]
 pub struct Mapper {
     page_table: *mut PageTable,
 }
@@ -178,7 +179,7 @@ impl VMM {
     
     pub unsafe fn get_mapper() -> Mapper {
         Mapper {
-            page_table: KERNEL_PAGE_TABLE,
+            page_table: unsafe { KERNEL_PAGE_TABLE },
         }
     }
     

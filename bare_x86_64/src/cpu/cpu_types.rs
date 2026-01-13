@@ -12,7 +12,7 @@ impl CPUFunctions {
     }
 
     fn check_apic() -> bool {
-        let result: CpuidResult = unsafe { __cpuid(1) };
+        let result: CpuidResult = __cpuid(1);
         (result.edx & (1 << 9)) != 0
     }
 }

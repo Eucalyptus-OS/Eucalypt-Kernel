@@ -17,9 +17,8 @@ use eucalypt_fs::file_ops::{create_file, read_file, delete_file};
 use eucalypt_fs::directory::DirectoryManager;
 use eucalypt_fs::inodes::InodeManager;
 use ahci::find_ahci_controller;
-use ahci::ahci_write;
 use pci::{check_all_buses, pci_find_ahci_controller, pci_enable_bus_master, pci_enable_memory_space};
-use eucalypt_os::{gdt, idt, init_allocator, VMM, VirtAddr, PhysAddr, PageTableEntry};
+use eucalypt_os::{gdt, idt, init_allocator, VMM,};
 use memory::mmio::{mmio_map_range, map_mmio};
 use usb;
 
@@ -202,7 +201,7 @@ unsafe extern "C" fn kmain() -> ! {
         println!("Filesystem Tests Complete");
         
         println!("Initializing USB...");
-        usb::init_usb(0xDEADBEEF);
+        usb::init_usb();
         println!("USB Initialized");
 
         println!("Initializing AHCI");

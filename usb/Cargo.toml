@@ -7,3 +7,4 @@ edition = "2024"
 pci = { workspace = true }
 memory = { workspace = true }
 framebuffer = { workspace = true }
+xhci = "0.9.2"

@@ -15,7 +15,7 @@ pub static PICS: Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 pub unsafe fn idt_init() {
-    let idt = &mut *addr_of_mut!(IDT);
+    let idt = unsafe { &mut *addr_of_mut!(IDT) };
     
     idt.divide_error.set_handler_fn(divide_error_handler);
     idt.debug.set_handler_fn(debug_handler);
@@ -39,13 +39,13 @@ pub unsafe fn idt_init() {
     idt.security_exception.set_handler_fn(security_exception_handler);
 
     let mut pics = PICS.lock();
-    pics.initialize();
+    unsafe { pics.initialize() };
 
-    let mut masks = pics.read_masks();
+    let mut masks = unsafe { pics.read_masks() };
     masks[0] &= !(1 << 0);
     masks[1] &= !(1 << 6);
     masks[1] &= !(1 << 7);
-    pics.write_masks(masks[0], masks[1]);
+    unsafe { pics.write_masks(masks[0], masks[1]) };
     drop(pics);
 
     idt[PIC_1_OFFSET].set_handler_fn(timer_handler);
