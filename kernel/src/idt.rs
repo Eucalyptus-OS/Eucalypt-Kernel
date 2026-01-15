@@ -115,14 +115,14 @@ unsafe extern "C" fn timer_handler() {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn timer_interrupt_handler(rsp: u64) -> u64 {
-    use sched::timer_tick_with_stack;
+    use sched::handle_timer_interrupt;
     
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     
     print!(".");
     unsafe { PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET); }
     
-    timer_tick_with_stack(rsp)
+    handle_timer_interrupt(rsp)
 }
 
 pub fn timer_wait_ms(ms: u64) {

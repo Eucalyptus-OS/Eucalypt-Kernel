@@ -36,7 +36,7 @@ pub fn timer_tick() {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn timer_tick_with_stack(current_rsp: u64) -> u64 {
+pub fn handle_timer_interrupt(current_rsp: u64) -> u64 {
     if !SCHEDULER_ENABLED.load(Ordering::Relaxed) {
         return current_rsp;
     }
@@ -63,8 +63,10 @@ fn schedule_from_interrupt(current_rsp: u64) -> u64 {
         }
         
         if let Some(from_proc) = PROCESS_TABLE.processes[current].as_mut() {
-            from_proc.rsp = current_rsp;
-            from_proc.state = ProcessState::Ready;
+            if from_proc.state != ProcessState::Terminated {
+                from_proc.rsp = current_rsp;
+                from_proc.state = ProcessState::Ready;
+            }
         }
         
         let mut next = (current + 1) % (PROCESS_COUNT as usize);
@@ -86,6 +88,12 @@ fn schedule_from_interrupt(current_rsp: u64) -> u64 {
             }
             next = (next + 1) % (PROCESS_COUNT as usize);
             attempts += 1;
+        }
+        
+        if let Some(curr_proc) = PROCESS_TABLE.processes[current].as_mut() {
+            if curr_proc.state == ProcessState::Ready {
+                curr_proc.state = ProcessState::Running;
+            }
         }
         
         current_rsp

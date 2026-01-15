@@ -4,7 +4,6 @@
 extern crate alloc;
 
 use core::arch::asm;
-use eucalypt_os::idt::timer_wait_ms;
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
 use framebuffer::{ScrollingTextRenderer, println, panic_print};
@@ -191,12 +190,7 @@ unsafe extern "C" fn kmain() -> ! {
         
         println!("Scheduler enabled - preemptive multitasking active\n");
         
-        loop {
-            for _ in 0..10000000 {
-                unsafe { asm!("pause"); }
-            }
-            println!("Kernel main still running");
-        }
+        hcf();
     }
 }
 
@@ -290,13 +284,15 @@ fn hcf() -> ! {
 fn test1() {
     loop {
         println!("Process 1 running");
-        timer_wait_ms(1000);
+        break;
     }
+    return;
 }
 
 fn test2() {
     loop {
         println!("Process 2 running");
-        timer_wait_ms(1000);
+        break;
     }
+    return;
 }

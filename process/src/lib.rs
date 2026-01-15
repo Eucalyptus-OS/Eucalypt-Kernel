@@ -28,6 +28,7 @@ pub enum ProcessState {
     Ready,
     Running,
     Blocked,
+    Terminated,
 }
 
 pub struct ProcessTable {
@@ -52,27 +53,66 @@ fn setup_initial_stack(stack_base: *mut u8, entry: *mut ()) -> u64 {
         let stack_top = stack_base.add(KERNEL_STACK_SIZE) as *mut u64;
         let mut rsp = stack_top;
         
+        // Set up the fake interrupt frame for iretq
+        // SS (stack segment)
         rsp = rsp.sub(1);
         *rsp = 0x10;
         
+        // RSP (stack pointer after iretq)  
         rsp = rsp.sub(1);
         *rsp = stack_top as u64;
         
+        // RFLAGS (with interrupts enabled)
         rsp = rsp.sub(1);
         *rsp = 0x202;
         
+        // CS (code segment)
         rsp = rsp.sub(1);
         *rsp = 0x08;
         
+        // RIP (instruction pointer - points to wrapper)
         rsp = rsp.sub(1);
-        *rsp = entry as u64;
+        *rsp = process_entry_wrapper as *const () as u64;
         
-        for _ in 0..15 {
+        // Push all 15 general-purpose registers
+        // We'll put the real entry point in RBX (register 1)
+        for i in 0..15 {
             rsp = rsp.sub(1);
-            *rsp = 0;
+            if i == 1 {  // RBX is the second register popped
+                *rsp = entry as u64;
+            } else {
+                *rsp = 0;
+            }
         }
         
         rsp as u64
+    }
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn process_entry_wrapper() {
+    core::arch::naked_asm!(
+        // Entry point is already in RBX from initial stack setup
+        "call rbx",           // Call the process entry point
+        "mov rdi, rax",       // Pass return value to exit function
+        "call process_exit",  // Call exit (never returns)
+        "ud2",                // Invalid instruction if we somehow get here
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn process_exit(_return_value: u64) -> ! {
+    unsafe {
+        let current = PROCESS_TABLE.current;
+        if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
+            println!("Process {} exited", proc.pid);
+            proc.state = ProcessState::Terminated;
+        }
+        
+        // Halt forever - scheduler will skip us
+        loop {
+            core::arch::asm!("hlt");
+        }
     }
 }
 
@@ -183,6 +223,33 @@ pub fn destroy_process(pid: u64) -> bool {
             true
         } else {
             false
+        }
+    }
+}
+
+pub fn cleanup_terminated_processes() {
+    unsafe {
+        for i in 0..PROCESS_COUNT as usize {
+            if let Some(proc) = PROCESS_TABLE.processes[i].as_ref() {
+                if proc.state == ProcessState::Terminated {
+                    println!("Cleaning up terminated process {}", proc.pid);
+                    destroy_process(proc.pid);
+                }
+            }
+        }
+    }
+}
+
+pub fn exit_current_process() -> ! {
+    unsafe {
+        let current = PROCESS_TABLE.current;
+        if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
+            println!("Process {} exiting", proc.pid);
+            proc.state = ProcessState::Terminated;
+        }
+        
+        loop {
+            core::arch::asm!("hlt");
         }
     }
 }
