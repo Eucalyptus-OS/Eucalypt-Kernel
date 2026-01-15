@@ -52,33 +52,24 @@ fn setup_initial_stack(stack_base: *mut u8, entry: *mut ()) -> u64 {
     unsafe {
         let stack_top = stack_base.add(KERNEL_STACK_SIZE) as *mut u64;
         let mut rsp = stack_top;
-        
-        // Set up the fake interrupt frame for iretq
-        // SS (stack segment)
         rsp = rsp.sub(1);
         *rsp = 0x10;
         
-        // RSP (stack pointer after iretq)  
         rsp = rsp.sub(1);
         *rsp = stack_top as u64;
         
-        // RFLAGS (with interrupts enabled)
         rsp = rsp.sub(1);
         *rsp = 0x202;
         
-        // CS (code segment)
         rsp = rsp.sub(1);
         *rsp = 0x08;
         
-        // RIP (instruction pointer - points to wrapper)
         rsp = rsp.sub(1);
         *rsp = process_entry_wrapper as *const () as u64;
         
-        // Push all 15 general-purpose registers
-        // We'll put the real entry point in RBX (register 1)
         for i in 0..15 {
             rsp = rsp.sub(1);
-            if i == 1 {  // RBX is the second register popped
+            if i == 1 {
                 *rsp = entry as u64;
             } else {
                 *rsp = 0;
@@ -92,11 +83,10 @@ fn setup_initial_stack(stack_base: *mut u8, entry: *mut ()) -> u64 {
 #[unsafe(naked)]
 unsafe extern "C" fn process_entry_wrapper() {
     core::arch::naked_asm!(
-        // Entry point is already in RBX from initial stack setup
-        "call rbx",           // Call the process entry point
-        "mov rdi, rax",       // Pass return value to exit function
-        "call process_exit",  // Call exit (never returns)
-        "ud2",                // Invalid instruction if we somehow get here
+        "call rbx",
+        "mov rdi, rax",
+        "call process_exit",
+        "ud2",
     );
 }
 
@@ -109,7 +99,6 @@ extern "C" fn process_exit(_return_value: u64) -> ! {
             proc.state = ProcessState::Terminated;
         }
         
-        // Halt forever - scheduler will skip us
         loop {
             core::arch::asm!("hlt");
         }
