@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use core::arch::asm;
+use eucalypt_os::idt::timer_wait_ms;
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
 use framebuffer::{ScrollingTextRenderer, println, panic_print};
@@ -175,22 +176,27 @@ unsafe extern "C" fn kmain() -> ! {
         println!("Initializing AHCI");
         init_ahci();
         
-        //println!("\nStarting multitasking...");
-        //
-        //let kernel_main_rsp: u64;
-        //asm!("mov {}, rsp", out(reg) kernel_main_rsp);
-        //
-        //process::init_kernel_process(kernel_main_rsp);
-        //
-        //create_process(test1 as *mut ()).expect("Failed to create process 1");
-        //create_process(test2 as *mut ()).expect("Failed to create process 2");
-        //
-        //sched::init_scheduler();
-        //sched::enable_scheduler();
-        //
-        //println!("Scheduler enabled - processes running\n");
+        println!("\nStarting multitasking...");
         
-        hcf();
+        let kernel_main_rsp: u64;
+        asm!("mov {}, rsp", out(reg) kernel_main_rsp);
+        
+        process::init_kernel_process(kernel_main_rsp);
+        
+        create_process(test1 as *mut ()).expect("Failed to create process 1");
+        create_process(test2 as *mut ()).expect("Failed to create process 2");
+        
+        sched::init_scheduler();
+        sched::enable_scheduler();
+        
+        println!("Scheduler enabled - preemptive multitasking active\n");
+        
+        loop {
+            for _ in 0..10000000 {
+                unsafe { asm!("pause"); }
+            }
+            println!("Kernel main still running");
+        }
     }
 }
 
@@ -283,18 +289,14 @@ fn hcf() -> ! {
 
 fn test1() {
     loop {
-        println!("Process 1");
-        for _ in 0..5000000 {
-            unsafe { asm!("pause"); }
-        }
+        println!("Process 1 running");
+        timer_wait_ms(1000);
     }
 }
 
 fn test2() {
     loop {
-        println!("Process 2");
-        for _ in 0..5000000 {
-            unsafe { asm!("pause"); }
-        }
+        println!("Process 2 running");
+        timer_wait_ms(1000);
     }
 }

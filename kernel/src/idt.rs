@@ -1,11 +1,11 @@
 //! The IDT(Interrupt Descriptor Table) is a data structure used by the CPU for interrupts handling
 
 use core::ptr::addr_of_mut;
-use framebuffer::{println, print};
+use core::sync::atomic::{AtomicU64, Ordering};
+use framebuffer::print;
 use spin::Mutex;
 use pic8259::ChainedPics;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
-use sched::timer_tick;
 use ide::ide_irq_handler;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
@@ -13,6 +13,9 @@ pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub static PICS: Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+
+static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
+const TIMER_FREQ_HZ: u64 = 1000;
 
 pub unsafe fn idt_init() {
     let idt = unsafe { &mut *addr_of_mut!(IDT) };
@@ -48,11 +51,102 @@ pub unsafe fn idt_init() {
     unsafe { pics.write_masks(masks[0], masks[1]) };
     drop(pics);
 
-    idt[PIC_1_OFFSET].set_handler_fn(timer_handler);
+    set_raw_idt_entry(idt, PIC_1_OFFSET, timer_handler as u64);
+    
     idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
     idt[PIC_2_OFFSET + 7].set_handler_fn(ide_secondary_handler);
 
     idt.load();
+}
+
+unsafe fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
+    let idt_ptr = idt as *mut InterruptDescriptorTable as *mut u64;
+    let entry_ptr = idt_ptr.add(index as usize * 2);
+    
+    let low = (handler_addr & 0xFFFF) 
+        | (0x08 << 16)
+        | (0x8E00 << 32)
+        | ((handler_addr & 0xFFFF_0000) << 32);
+    let high = handler_addr >> 32;
+    
+    *entry_ptr = low;
+    *entry_ptr.add(1) = high;
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn timer_handler() {
+    core::arch::naked_asm!(
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rbp",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "mov rdi, rsp",
+        "call timer_interrupt_handler",
+        "mov rsp, rax",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        "iretq",
+    );
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn timer_interrupt_handler(rsp: u64) -> u64 {
+    use sched::timer_tick_with_stack;
+    
+    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    
+    print!(".");
+    unsafe { PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET); }
+    
+    timer_tick_with_stack(rsp)
+}
+
+pub fn timer_wait_ms(ms: u64) {
+    let start = TIMER_TICKS.load(Ordering::Relaxed);
+    let target = start + ms;
+    
+    while TIMER_TICKS.load(Ordering::Relaxed) < target {
+        core::hint::spin_loop();
+    }
+}
+
+pub fn timer_wait_us(us: u64) {
+    let ms = (us + 999) / 1000;
+    if ms > 0 {
+        timer_wait_ms(ms);
+    } else {
+        for _ in 0..(us * 100) {
+            unsafe { core::arch::asm!("pause"); }
+        }
+    }
+}
+
+pub fn get_timer_ticks() -> u64 {
+    TIMER_TICKS.load(Ordering::Relaxed)
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
@@ -160,12 +254,6 @@ extern "x86-interrupt" fn security_exception_handler(
     error_code: u64,
 ) {
     panic!("EXCEPTION: SECURITY EXCEPTION\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    timer_tick();
-    print!(".");
-    unsafe { PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET); }
 }
 
 extern "x86-interrupt" fn ide_primary_handler(_stack_frame: InterruptStackFrame) {

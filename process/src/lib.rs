@@ -53,6 +53,18 @@ fn setup_initial_stack(stack_base: *mut u8, entry: *mut ()) -> u64 {
         let mut rsp = stack_top;
         
         rsp = rsp.sub(1);
+        *rsp = 0x10;
+        
+        rsp = rsp.sub(1);
+        *rsp = stack_top as u64;
+        
+        rsp = rsp.sub(1);
+        *rsp = 0x202;
+        
+        rsp = rsp.sub(1);
+        *rsp = 0x08;
+        
+        rsp = rsp.sub(1);
         *rsp = entry as u64;
         
         for _ in 0..15 {
@@ -93,6 +105,8 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         }
         
         let stack_base = allocate_kernel_stack()?;
+        println!("Allocated stack for process {} at 0x{:x}", pid, stack_base as u64);
+        
         let rsp = setup_initial_stack(stack_base, entry);
         
         let kernel_pml4 = VMM::get_page_table();
@@ -109,7 +123,7 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         PROCESS_TABLE.processes[pid as usize] = Some(process);
         PROCESS_COUNT += 1;
         
-        println!("Created process {} at RSP: 0x{:x}", pid, rsp);
+        println!("Created process {} with entry 0x{:x}, RSP: 0x{:x}", pid, entry as u64, rsp);
         
         Some(pid)
     }
@@ -158,8 +172,10 @@ pub fn destroy_process(pid: u64) -> bool {
         }
         
         if let Some(process) = PROCESS_TABLE.processes[pid as usize].take() {
-            let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 4096).unwrap();
-            alloc::alloc::dealloc(process.stack_base, layout);
+            if !process.stack_base.is_null() {
+                let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 4096).unwrap();
+                alloc::alloc::dealloc(process.stack_base, layout);
+            }
             
             if PROCESS_TABLE.current == pid as usize {
                 PROCESS_TABLE.current = 0;

@@ -1,11 +1,13 @@
 #![no_std]
 
+use framebuffer::println;
 use process::{PROCESS_COUNT, PROCESS_TABLE, ProcessState};
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use core::arch::asm;
 
 static SCHEDULER_ENABLED: AtomicBool = AtomicBool::new(false);
 static QUANTUM: AtomicU64 = AtomicU64::new(3);
+static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn init_scheduler() {
     unsafe {
@@ -27,17 +29,66 @@ pub fn disable_scheduler() {
 }
 
 pub fn timer_tick() {
-    static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
-    
     if !SCHEDULER_ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    
+    TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+}
 
+pub fn timer_tick_with_stack(current_rsp: u64) -> u64 {
+    if !SCHEDULER_ENABLED.load(Ordering::Relaxed) {
+        return current_rsp;
+    }
+    
     let ticks = TICK_COUNT.fetch_add(1, Ordering::Relaxed);
     let quantum = QUANTUM.load(Ordering::Relaxed);
     
     if ticks % quantum == 0 {
-        schedule();
+        schedule_from_interrupt(current_rsp)
+    } else {
+        current_rsp
+    }
+}
+
+fn schedule_from_interrupt(current_rsp: u64) -> u64 {
+    unsafe {
+        if PROCESS_COUNT <= 1 {
+            return current_rsp;
+        }
+
+        let current = PROCESS_TABLE.current;
+        if current == usize::MAX {
+            return current_rsp;
+        }
+        
+        if let Some(from_proc) = PROCESS_TABLE.processes[current].as_mut() {
+            from_proc.rsp = current_rsp;
+            from_proc.state = ProcessState::Ready;
+        }
+        
+        let mut next = (current + 1) % (PROCESS_COUNT as usize);
+        let mut attempts = 0;
+        
+        while attempts < PROCESS_COUNT {
+            if let Some(proc) = PROCESS_TABLE.processes[next].as_ref() {
+                if proc.state == ProcessState::Ready {
+                    if next != current {
+                        println!("IRQ: Switching from {} to {}", current, next);
+                        
+                        if let Some(to_proc) = PROCESS_TABLE.processes[next].as_mut() {
+                            to_proc.state = ProcessState::Running;
+                            PROCESS_TABLE.current = next;
+                            return to_proc.rsp;
+                        }
+                    }
+                }
+            }
+            next = (next + 1) % (PROCESS_COUNT as usize);
+            attempts += 1;
+        }
+        
+        current_rsp
     }
 }
 
@@ -63,6 +114,7 @@ pub fn schedule() {
             if let Some(proc) = PROCESS_TABLE.processes[next].as_ref() {
                 if proc.state == ProcessState::Ready || proc.state == ProcessState::Running {
                     if next != current {
+                        println!("Yield: Switching from {} to {}", current, next);
                         do_switch(current, next);
                         return;
                     }
@@ -87,49 +139,36 @@ fn do_switch(from: usize, to: usize) {
         PROCESS_TABLE.current = to;
         
         let from_rsp = &mut PROCESS_TABLE.processes[from].as_mut().unwrap().rsp as *mut u64;
-        let to_rsp = &PROCESS_TABLE.processes[to].as_ref().unwrap().rsp as *const u64;
+        let to_rsp = PROCESS_TABLE.processes[to].as_ref().unwrap().rsp;
         
         context_switch(from_rsp, to_rsp);
+        
+        PROCESS_TABLE.current = from;
     }
 }
 
-fn context_switch(curr_rsp: *mut u64, next_rsp: *const u64) {
+#[inline(never)]
+fn context_switch(curr_rsp_ptr: *mut u64, next_rsp: u64) {
     unsafe {
         asm!(
-            "push rax",
-            "push rbx",
-            "push rcx",
-            "push rdx",
             "push rbp",
-            "push rsi",
-            "push rdi",
-            "push r8",
-            "push r9",
-            "push r10",
-            "push r11",
+            "push rbx",
             "push r12",
             "push r13",
             "push r14",
             "push r15",
             "mov [rdi], rsp",
-            "mov rsp, [rsi]",
+            "mov rsp, rsi",
             "pop r15",
             "pop r14",
             "pop r13",
             "pop r12",
-            "pop r11",
-            "pop r10",
-            "pop r9",
-            "pop r8",
-            "pop rdi",
-            "pop rsi",
-            "pop rbp",
-            "pop rdx",
-            "pop rcx",
             "pop rbx",
-            "pop rax",
-            in("rdi") curr_rsp,
+            "pop rbp",
+            "ret",
+            in("rdi") curr_rsp_ptr,
             in("rsi") next_rsp,
+            options(noreturn)
         );
     }
 }
