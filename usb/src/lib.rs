@@ -17,18 +17,18 @@ impl xhci::accessor::Mapper for UsbMapper {
         let phys = memory::addr::PhysAddr::new(phys_u64);
         let flags = memory::vmm::PageTableEntry::WRITABLE;
 
-        unsafe { self.0.map_range(virt, phys, bytes, flags).expect("UsbMapper: map_range failed") };
+        self.0.map_range(virt, phys, bytes, flags).expect("UsbMapper: map_range failed");
         unsafe { core::num::NonZeroUsize::new_unchecked(virt_u64 as usize) }
     }
 
     fn unmap(&mut self, virt_start: usize, bytes: usize) {
         let virt = memory::addr::VirtAddr::new(virt_start as u64);
-        unsafe { self.0.unmap_range(virt, bytes) };
+        self.0.unmap_range(virt, bytes);
     }
 }
 
 pub fn init_usb() {
-    let mapper = unsafe { memory::vmm::VMM::get_mapper() };
+    let mapper = memory::vmm::VMM::get_mapper();
     let mapper = UsbMapper(mapper);
     let mut phys_base: u64;
     match pci::pci_find_xhci_controller() {
@@ -102,10 +102,9 @@ pub fn init_usb() {
     let evt_virt = (evt_phys.as_u64() | HHDM_OFFSET) as usize;
 
     let mut inner_mapper = mapper.0;
-    unsafe {
-        let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(cmd_virt as u64), memory::addr::PhysAddr::new(cmd_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
-        let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
-    }
+    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(cmd_virt as u64), memory::addr::PhysAddr::new(cmd_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
+    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
+    
 
     println!("Command ring phys=0x{:x} virt=0x{:x}", cmd_phys.as_u64(), cmd_virt);
     println!("Event ring phys=0x{:x} virt=0x{:x}", evt_phys.as_u64(), evt_virt);
@@ -123,9 +122,7 @@ pub fn init_usb() {
         }
     };
     let erst_virt = (erst_phys.as_u64() | HHDM_OFFSET) as usize;
-    unsafe {
-        let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(erst_virt as u64), memory::addr::PhysAddr::new(erst_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
-    }
+    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(erst_virt as u64), memory::addr::PhysAddr::new(erst_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
 
     unsafe {
         let p = erst_virt as *mut u8;

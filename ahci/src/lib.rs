@@ -8,7 +8,8 @@
 extern crate alloc;
 
 use framebuffer::println;
-use pci::{pci_config_read_dword, PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA};
+use memory::mmio::map_mmio;
+use pci::{PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, pci_config_read_dword, pci_enable_bus_master, pci_enable_memory_space, pci_find_ahci_controller};
 
 pub use types::*;
 mod types;
@@ -230,4 +231,36 @@ pub fn ahci_write(port: &HbaPort, lba: u64, count: u32, buffer: *const u8) -> bo
     }
     
     true
+}
+
+pub fn init_ahci() {
+        match pci_find_ahci_controller() {
+            Some(ahci_dev) => {
+                let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
+                println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
+
+                if abar_phys == 0 {
+                    println!("Invalid AHCI BAR address");
+                } else {
+                    pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                    pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+
+                    println!("Mapping AHCI MMIO region...");
+                    match map_mmio(abar_phys, 0x4000) {
+                        Ok(abar_virt) => {
+                            println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
+                            println!("AHCI ABAR mapped successfully");
+                            find_ahci_controller();
+                        }
+                        Err(e) => {
+                            println!("Failed to map AHCI MMIO: {}", e);
+                        }
+                    }
+                }
+            }
+            None => {
+                println!("No AHCI controller found");
+            }
+        }
 }

@@ -13,6 +13,7 @@ name = "ahci"
 version = "0.1.0"
 dependencies = [
  "framebuffer",
+ "memory",
  "pci",
 ]
 
@@ -25,6 +26,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "bare_x86_64"
 version = "0.1.0"
+dependencies = [
+ "framebuffer",
+]
 
 [[package]]
 name = "bit_field"
@@ -126,6 +130,7 @@ dependencies = [
 name = "memory"
 version = "0.1.0"
 dependencies = [
+ "framebuffer",
  "limine",
 ]
 
@@ -184,6 +189,10 @@ dependencies = [
 [[package]]
 name = "process"
 version = "0.1.0"
+dependencies = [
+ "framebuffer",
+ "memory",
+]
 
 [[package]]
 name = "quote"
@@ -212,6 +221,10 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "sched"
 version = "0.1.0"
+dependencies = [
+ "memory",
+ "process",
+]
 
 [[package]]
 name = "scopeguard"

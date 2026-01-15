@@ -4,25 +4,22 @@
 extern crate alloc;
 
 use core::arch::asm;
-
-// External crates
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
-
-// Eucalypt crates
-use framebuffer::{ScrollingTextRenderer, println, print, panic_print};
+use framebuffer::{ScrollingTextRenderer, println, panic_print};
 use ide::ide_init;
 use eucalypt_fs::{SuperBlock, write_eucalypt_fs};
 use eucalypt_fs::file_ops::{create_file, read_file, delete_file};
 use eucalypt_fs::directory::DirectoryManager;
 use eucalypt_fs::inodes::InodeManager;
-use ahci::find_ahci_controller;
-use pci::{check_all_buses, pci_find_ahci_controller, pci_enable_bus_master, pci_enable_memory_space};
-use eucalypt_os::{gdt, idt, init_allocator, VMM,};
-use memory::mmio::{mmio_map_range, map_mmio};
+use ahci::init_ahci;
+use pci::check_all_buses;
+use eucalypt_os::{gdt, idt, init_allocator, VMM};
+use memory::mmio::mmio_map_range;
+use process::create_process;
 use usb;
 
-static FONT: &[u8] = include_bytes!("../../framebuffer/font/altc-8x16.psf");
+static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -140,11 +137,6 @@ unsafe extern "C" fn kmain() -> ! {
                         match read_file(&inode_manager, inode_idx) {
                             Ok(file_data) => {
                                 println!("File read successfully: {} bytes", file_data.len());
-                                print!("File content: ");
-                                for &byte in file_data.iter() {
-                                    print!("{}", byte as char);
-                                }
-                                println!();
                             }
                             Err(e) => println!("Failed to read file: {:?}", e),
                         }
@@ -156,29 +148,7 @@ unsafe extern "C" fn kmain() -> ! {
 
                                 println!("\nTesting Directory Entry Addition...");
                                 match DirectoryManager::add_entry(&mut inode_manager, dir_inode, b"test_file.txt", inode_idx) {
-                                    Ok(()) => {
-                                        println!("Entry added to directory");
-
-                                        println!("\nTesting File Lookup...");
-                                        match DirectoryManager::find_entry(&inode_manager, dir_inode, b"test_file.txt") {
-                                            Ok(Some(found_inode)) => {
-                                                println!("Found file at inode {}", found_inode);
-                                            }
-                                            Ok(None) => println!("File not found in directory"),
-                                            Err(e) => println!("Error searching directory: {:?}", e),
-                                        }
-
-                                        println!("\nTesting Directory Listing...");
-                                        match DirectoryManager::list_directory(&inode_manager, dir_inode) {
-                                            Ok(entries) => {
-                                                println!("Directory contains {} entries:", entries.len());
-                                                for (inode, name) in entries {
-                                                    println!("  inode {}: {:?}", inode, core::str::from_utf8(&name).unwrap_or("invalid_utf8"));
-                                                }
-                                            }
-                                            Err(e) => println!("Error listing directory: {:?}", e),
-                                        }
-                                    }
+                                    Ok(()) => println!("Entry added to directory"),
                                     Err(e) => println!("Failed to add entry: {:?}", e),
                                 }
                             }
@@ -197,45 +167,29 @@ unsafe extern "C" fn kmain() -> ! {
             Err(e) => println!("Failed to initialize inode manager: {:?}", e),
         }
 
-        println!();
-        println!("Filesystem Tests Complete");
+        println!("\nFilesystem Tests Complete");
         
         println!("Initializing USB...");
         usb::init_usb();
-        println!("USB Initialized");
-
+        
         println!("Initializing AHCI");
-        match pci_find_ahci_controller() {
-            Some(ahci_dev) => {
-                let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
-                println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
-
-                if abar_phys == 0 {
-                    println!("Invalid AHCI BAR address");
-                } else {
-                    pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                    pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-
-                    println!("Mapping AHCI MMIO region...");
-                    match map_mmio(abar_phys, 0x4000) {
-                        Ok(abar_virt) => {
-                            println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
-                            println!("AHCI ABAR mapped successfully");
-                            find_ahci_controller();
-                        }
-                        Err(e) => {
-                            println!("Failed to map AHCI MMIO: {}", e);
-                        }
-                    }
-                }
-            }
-            None => {
-                println!("No AHCI controller found");
-            }
-        }
-        println!("Halting system...");
-
+        init_ahci();
+        
+        //println!("\nStarting multitasking...");
+        //
+        //let kernel_main_rsp: u64;
+        //asm!("mov {}, rsp", out(reg) kernel_main_rsp);
+        //
+        //process::init_kernel_process(kernel_main_rsp);
+        //
+        //create_process(test1 as *mut ()).expect("Failed to create process 1");
+        //create_process(test2 as *mut ()).expect("Failed to create process 2");
+        //
+        //sched::init_scheduler();
+        //sched::enable_scheduler();
+        //
+        //println!("Scheduler enabled - processes running\n");
+        
         hcf();
     }
 }
@@ -323,6 +277,24 @@ fn hcf() -> ! {
     loop {
         unsafe {
             asm!("hlt");
+        }
+    }
+}
+
+fn test1() {
+    loop {
+        println!("Process 1");
+        for _ in 0..5000000 {
+            unsafe { asm!("pause"); }
+        }
+    }
+}
+
+fn test2() {
+    loop {
+        println!("Process 2");
+        for _ in 0..5000000 {
+            unsafe { asm!("pause"); }
         }
     }
 }

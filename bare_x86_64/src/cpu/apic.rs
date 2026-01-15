@@ -3,12 +3,12 @@
 //! The APIC is the modern replacement for the obsolete PIT timer,
 //! with better multi-core support and additional features.
 
-use super::cpu_types::CPUFunctions;
+use super::cpu_types::CPUFeatures;
 use super::msr::{read_msr, write_msr};
 
 const APIC_BASE_MSR: u32 = 0x1B;
 const APIC_BASE_MSR_ENABLE: u64 = 0x800;
-const APIC_SPURIOUS_INTERRUPT_VECTOR: usize = 0xFF;
+const APIC_SPURIOUS_INTERRUPT_VECTOR: usize = 0xF0;
 const APIC_SOFTWARE_ENABLE: u32 = 0x100;
 
 fn set_apic_base(apic: usize) {
@@ -36,15 +36,15 @@ fn write_apic_register(offset: usize, value: u32) {
     unsafe { core::ptr::write_volatile(register, value) };
 }
 
-/// Enables the APIC if it is not enabled and if it is supported by the CPU.
 pub fn enable_apic() {
-    let cpu_functions = CPUFunctions::new();
-    if !cpu_functions.has_apic {
+    let cpu_features = CPUFeatures::detect();
+    
+    if !cpu_features.apic {
         panic!("APIC not supported on this CPU");
     }
-
+    
     set_apic_base(get_apic_base());
-
+    
     let svr = read_apic_register(APIC_SPURIOUS_INTERRUPT_VECTOR);
     write_apic_register(APIC_SPURIOUS_INTERRUPT_VECTOR, svr | APIC_SOFTWARE_ENABLE);
 }
