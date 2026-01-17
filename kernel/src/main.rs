@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use core::arch::asm;
+use eucalypt_os::idt::timer_wait_ms;
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
 use framebuffer::{ScrollingTextRenderer, println, panic_print};
@@ -26,8 +27,9 @@ static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 
 #[used]
+#[unsafe(no_mangle)]
 #[unsafe(link_section = ".requests")]
-static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+pub static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -95,79 +97,6 @@ unsafe extern "C" fn kmain() -> ! {
 
         println!("Writing filesystem...");
         write_eucalypt_fs(0);
-
-        println!("Reading superblock from disk...");
-        let super_block = match SuperBlock::read_super_block(0) {
-            Ok(sb) => {
-                println!("Superblock loaded: {}", sb);
-                sb
-            }
-            Err(e) => {
-                println!("Failed to read superblock: {}", e);
-                hcf();
-            }
-        };
-
-        println!("Loading bitmap from disk...");
-        let bitmap = match eucalypt_fs::BlockBitmap::from_disk(0, &super_block) {
-            Ok(bm) => {
-                println!("Bitmap loaded successfully");
-                println!("Free blocks: {}", bm.free_blocks());
-                println!("Used blocks: {}", bm.used_blocks());
-                bm
-            }
-            Err(e) => {
-                println!("Failed to load bitmap: {:?}", e);
-                hcf();
-            }
-        };
-
-        println!("\nInitializing Inode Manager...");
-        match InodeManager::new(0, super_block, bitmap) {
-            Ok(mut inode_manager) => {
-                println!("Inode Manager initialized");
-
-                println!("\nTesting File Creation...");
-                let test_data = b"Hello from eucalyptOS!";
-                match create_file(&mut inode_manager, test_data) {
-                    Ok(inode_idx) => {
-                        println!("File created at inode {}", inode_idx);
-
-                        println!("\nTesting File Reading...");
-                        match read_file(&inode_manager, inode_idx) {
-                            Ok(file_data) => {
-                                println!("File read successfully: {} bytes", file_data.len());
-                            }
-                            Err(e) => println!("Failed to read file: {:?}", e),
-                        }
-
-                        println!("\nTesting Directory Creation...");
-                        match DirectoryManager::create_directory(&mut inode_manager) {
-                            Ok(dir_inode) => {
-                                println!("Directory created at inode {}", dir_inode);
-
-                                println!("\nTesting Directory Entry Addition...");
-                                match DirectoryManager::add_entry(&mut inode_manager, dir_inode, b"test_file.txt", inode_idx) {
-                                    Ok(()) => println!("Entry added to directory"),
-                                    Err(e) => println!("Failed to add entry: {:?}", e),
-                                }
-                            }
-                            Err(e) => println!("Failed to create directory: {:?}", e),
-                        }
-
-                        println!("\nTesting File Deletion...");
-                        match delete_file(&mut inode_manager, inode_idx) {
-                            Ok(()) => println!("File deleted successfully"),
-                            Err(e) => println!("Failed to delete file: {:?}", e),
-                        }
-                    }
-                    Err(e) => println!("Failed to create file: {:?}", e),
-                }
-            }
-            Err(e) => println!("Failed to initialize inode manager: {:?}", e),
-        }
-
-        println!("\nFilesystem Tests Complete");
         
         println!("Initializing USB...");
         usb::init_usb();
@@ -190,7 +119,9 @@ unsafe extern "C" fn kmain() -> ! {
         
         println!("Scheduler enabled - preemptive multitasking active\n");
         
-        hcf();
+        loop {
+            hcf();
+        }
     }
 }
 
@@ -284,15 +215,13 @@ fn hcf() -> ! {
 fn test1() {
     loop {
         println!("Process 1 running");
-        break;
+        timer_wait_ms(1000);
     }
-    return;
 }
 
 fn test2() {
     loop {
         println!("Process 2 running");
-        break;
+        timer_wait_ms(1000);
     }
-    return;
 }

@@ -84,6 +84,7 @@ dependencies = [
  "process",
  "sched",
  "spin",
+ "syscall",
  "uart_16550",
  "usb",
  "x86_64",
@@ -257,6 +258,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syscall"
+version = "0.1.0"
+dependencies = [
+ "limine",
 ]
 
 [[package]]

@@ -2,24 +2,40 @@
 
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU64, Ordering};
-use framebuffer::print;
+use framebuffer::{print, println};
 use spin::Mutex;
 use pic8259::ChainedPics;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use syscall::syscall_handler::syscall_handler;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::registers::control::Cr2;
+use x86_64::instructions::port::Port;
 use ide::ide_irq_handler;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
+static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
+
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub static PICS: Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
-static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-const TIMER_FREQ_HZ: u64 = 1000;
+const PIT_FREQUENCY: u32 = 1193182;
+const TARGET_FREQUENCY: u32 = 10000;
+const PIT_CMD_PORT: u16 = 0x43;
+const PIT_DATA_PORT: u16 = 0x40;
 
 pub unsafe fn idt_init() {
     let idt = unsafe { &mut *addr_of_mut!(IDT) };
     
+    register_exception_handlers(idt);
+    configure_pics();
+    init_pit(TARGET_FREQUENCY);
+    register_interrupt_handlers(idt);
+    
+    idt.load();
+}
+
+fn register_exception_handlers(idt: &mut InterruptDescriptorTable) {
     idt.divide_error.set_handler_fn(divide_error_handler);
     idt.debug.set_handler_fn(debug_handler);
     idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
@@ -40,28 +56,40 @@ pub unsafe fn idt_init() {
     idt.simd_floating_point.set_handler_fn(simd_floating_point_handler);
     idt.virtualization.set_handler_fn(virtualization_handler);
     idt.security_exception.set_handler_fn(security_exception_handler);
+}
 
+fn configure_pics() {
     let mut pics = PICS.lock();
     unsafe { pics.initialize() };
 
     let mut masks = unsafe { pics.read_masks() };
     masks[0] &= !(1 << 0);
-    masks[1] &= !(1 << 6);
-    masks[1] &= !(1 << 7);
+    masks[1] &= !(1 << 6 | 1 << 7);
     unsafe { pics.write_masks(masks[0], masks[1]) };
-    drop(pics);
-
-    set_raw_idt_entry(idt, PIC_1_OFFSET, timer_handler as u64);
-    
-    idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
-    idt[PIC_2_OFFSET + 7].set_handler_fn(ide_secondary_handler);
-
-    idt.load();
 }
 
-unsafe fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
+fn register_interrupt_handlers(idt: &mut InterruptDescriptorTable) {
+    set_raw_idt_entry(idt, PIC_1_OFFSET, timer_handler as *const () as u64);
+    idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
+    idt[PIC_2_OFFSET + 7].set_handler_fn(ide_secondary_handler);
+    idt[128].set_handler_fn(isr128_handler);
+}
+
+fn init_pit(frequency: u32) {
+    let divisor = PIT_FREQUENCY / frequency;
+    let mut cmd_port: Port<u8> = Port::new(PIT_CMD_PORT);
+    let mut data_port: Port<u8> = Port::new(PIT_DATA_PORT);
+    
+    unsafe {
+        cmd_port.write(0x36);
+        data_port.write((divisor & 0xFF) as u8);
+        data_port.write((divisor >> 8) as u8);
+    }
+}
+
+fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
     let idt_ptr = idt as *mut InterruptDescriptorTable as *mut u64;
-    let entry_ptr = idt_ptr.add(index as usize * 2);
+    let entry_ptr = unsafe { idt_ptr.add(index as usize * 2) };
     
     let low = (handler_addr & 0xFFFF) 
         | (0x08 << 16)
@@ -69,8 +97,10 @@ unsafe fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handl
         | ((handler_addr & 0xFFFF_0000) << 32);
     let high = handler_addr >> 32;
     
-    *entry_ptr = low;
-    *entry_ptr.add(1) = high;
+    unsafe {
+        *entry_ptr = low;
+        *entry_ptr.add(1) = high;
+    }
 }
 
 #[unsafe(naked)]
@@ -91,9 +121,14 @@ unsafe extern "C" fn timer_handler() {
         "push r13",
         "push r14",
         "push r15",
+        
+        "mov al, 0x20",
+        "out 0x20, al",
+        
         "mov rdi, rsp",
         "call timer_interrupt_handler",
         "mov rsp, rax",
+        
         "pop r15",
         "pop r14",
         "pop r13",
@@ -119,15 +154,14 @@ unsafe extern "C" fn timer_interrupt_handler(rsp: u64) -> u64 {
     
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     
-    print!(".");
-    unsafe { PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET); }
+    let ticks = TIMER_TICKS.load(Ordering::Relaxed);
     
     handle_timer_interrupt(rsp)
 }
 
 pub fn timer_wait_ms(ms: u64) {
     let start = TIMER_TICKS.load(Ordering::Relaxed);
-    let target = start + ms;
+    let target = start + (ms * TARGET_FREQUENCY as u64) / 1000;
     
     while TIMER_TICKS.load(Ordering::Relaxed) < target {
         core::hint::spin_loop();
@@ -135,11 +169,15 @@ pub fn timer_wait_ms(ms: u64) {
 }
 
 pub fn timer_wait_us(us: u64) {
-    let ms = (us + 999) / 1000;
-    if ms > 0 {
-        timer_wait_ms(ms);
+    let start = TIMER_TICKS.load(Ordering::Relaxed);
+    let target = start + (us * TARGET_FREQUENCY as u64) / 1_000_000;
+    
+    if target > start {
+        while TIMER_TICKS.load(Ordering::Relaxed) < target {
+            core::hint::spin_loop();
+        }
     } else {
-        for _ in 0..(us * 100) {
+        for _ in 0..(us / 10) {
             unsafe { core::arch::asm!("pause"); }
         }
     }
@@ -149,111 +187,54 @@ pub fn get_timer_ticks() -> u64 {
     TIMER_TICKS.load(Ordering::Relaxed)
 }
 
-extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
+macro_rules! exception_handler {
+    ($name:ident, $msg:expr) => {
+        extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame) {
+            panic!("EXCEPTION: {}\n{:#?}", $msg, stack_frame);
+        }
+    };
+    ($name:ident, $msg:expr, error) => {
+        extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame, error_code: u64) {
+            panic!("EXCEPTION: {}\nError Code: {}\n{:#?}", $msg, error_code, stack_frame);
+        }
+    };
+    ($name:ident, $msg:expr, diverging) => {
+        extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame, error_code: u64) -> ! {
+            panic!("EXCEPTION: {}\nError Code: {}\n{:#?}", $msg, error_code, stack_frame);
+        }
+    };
 }
 
-extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: DEBUG\n{:#?}", stack_frame);
+exception_handler!(divide_error_handler, "DIVIDE ERROR");
+exception_handler!(debug_handler, "DEBUG");
+exception_handler!(nmi_handler, "NON-MASKABLE INTERRUPT");
+exception_handler!(breakpoint_handler, "BREAKPOINT");
+exception_handler!(overflow_handler, "OVERFLOW");
+exception_handler!(bound_range_handler, "BOUND RANGE EXCEEDED");
+exception_handler!(invalid_opcode_handler, "INVALID OPCODE");
+exception_handler!(device_not_available_handler, "DEVICE NOT AVAILABLE");
+exception_handler!(double_fault_handler, "DOUBLE FAULT", diverging);
+exception_handler!(invalid_tss_handler, "INVALID TSS", error);
+exception_handler!(segment_not_present_handler, "SEGMENT NOT PRESENT", error);
+exception_handler!(stack_segment_fault_handler, "STACK SEGMENT FAULT", error);
+exception_handler!(general_protection_fault_handler, "GENERAL PROTECTION FAULT", error);
+exception_handler!(x87_floating_point_handler, "x87 FLOATING POINT");
+exception_handler!(alignment_check_handler, "ALIGNMENT CHECK", error);
+exception_handler!(simd_floating_point_handler, "SIMD FLOATING POINT");
+exception_handler!(virtualization_handler, "VIRTUALIZATION");
+exception_handler!(security_exception_handler, "SECURITY EXCEPTION", error);
+
+extern "x86-interrupt" fn machine_check_handler(stack_frame: InterruptStackFrame) -> ! {
+    panic!("EXCEPTION: MACHINE CHECK\n{:#?}", stack_frame);
 }
 
-extern "x86-interrupt" fn nmi_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: NON-MASKABLE INTERRUPT\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn overflow_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: OVERFLOW\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn bound_range_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: BOUND RANGE EXCEEDED\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: INVALID OPCODE\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn device_not_available_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: DEVICE NOT AVAILABLE\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) -> ! {
-    panic!("EXCEPTION: DOUBLE FAULT\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn invalid_tss_handler(stack_frame: InterruptStackFrame, error_code: u64) {
-    panic!("EXCEPTION: INVALID TSS\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn segment_not_present_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    panic!("EXCEPTION: SEGMENT NOT PRESENT\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn stack_segment_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    panic!("EXCEPTION: STACK SEGMENT FAULT\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn general_protection_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    panic!("EXCEPTION: GENERAL PROTECTION FAULT\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: x86_64::structures::idt::PageFaultErrorCode,
-) {
-    use x86_64::registers::control::Cr2;
+extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
     panic!(
         "EXCEPTION: PAGE FAULT\nAccessed Address: {:?}\nError Code: {:?}\n{:#?}",
         Cr2::read(),
         error_code,
         stack_frame
     );
-}
-
-extern "x86-interrupt" fn x87_floating_point_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: x87 FLOATING POINT\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn alignment_check_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    panic!("EXCEPTION: ALIGNMENT CHECK\nError Code: {}\n{:#?}", error_code, stack_frame);
-}
-
-extern "x86-interrupt" fn machine_check_handler(stack_frame: InterruptStackFrame) -> ! {
-    panic!("EXCEPTION: MACHINE CHECK\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn simd_floating_point_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: SIMD FLOATING POINT\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn virtualization_handler(stack_frame: InterruptStackFrame) {
-    panic!("EXCEPTION: VIRTUALIZATION\n{:#?}", stack_frame);
-}
-
-extern "x86-interrupt" fn security_exception_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    panic!("EXCEPTION: SECURITY EXCEPTION\nError Code: {}\n{:#?}", error_code, stack_frame);
 }
 
 extern "x86-interrupt" fn ide_primary_handler(_stack_frame: InterruptStackFrame) {
@@ -264,4 +245,16 @@ extern "x86-interrupt" fn ide_primary_handler(_stack_frame: InterruptStackFrame)
 extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFrame) {
     ide_irq_handler();
     unsafe { PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 7); }
+}
+
+extern "x86-interrupt" fn isr128_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        core::arch::asm!(
+            "mov rcx, r10",
+            "call {handler}",
+            "iretq",
+            handler = sym syscall_handler,
+            options(noreturn)
+        );
+    }
 }

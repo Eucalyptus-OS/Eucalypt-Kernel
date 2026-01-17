@@ -178,15 +178,15 @@ impl Mapper {
             let frame = FrameAllocator::alloc_frame()?;
             let pml4 = (frame.as_u64() | HHDM_OFFSET) as *mut PageTable;
             (*pml4).zero();
-            
+
             let kernel_pml4_ptr = KERNEL_PAGE_TABLE.load(Ordering::Acquire);
             let kernel_pml4 = &*((kernel_pml4_ptr as u64 | HHDM_OFFSET) as *mut PageTable);
-            
+
             for i in 256..512 {
                 (*pml4).entries[i] = kernel_pml4.entries[i];
             }
-            
-            Some(pml4)
+
+            Some(frame.as_u64() as *mut PageTable)
         }
     }
 
@@ -201,14 +201,19 @@ impl Mapper {
     
     pub fn switch_page_table(&mut self, pml4: *mut PageTable) {
         unsafe {
-            let virt_addr = pml4 as u64;
-            let phys_addr = if virt_addr >= HHDM_OFFSET {
-                (virt_addr - HHDM_OFFSET) & 0x000F_FFFF_FFFF_F000
+            let phys_addr = if (pml4 as u64) >= HHDM_OFFSET {
+                (pml4 as u64) - HHDM_OFFSET
             } else {
-                virt_addr & 0x000F_FFFF_FFFF_F000
+                pml4 as u64
             };
-            self.page_table = (phys_addr & 0x000F_FFFF_FFFF_F000) as *mut PageTable;
-            core::arch::asm!("mov cr3, {}", in(reg) phys_addr, options(nostack, preserves_flags));
+        
+            self.page_table = pml4;
+            
+            core::arch::asm!(
+                "mov cr3, {}",
+                in(reg) phys_addr,
+                options(nostack, preserves_flags)
+            );
         }
     }
 

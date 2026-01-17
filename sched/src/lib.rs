@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use core::arch::asm;
 
 static SCHEDULER_ENABLED: AtomicBool = AtomicBool::new(false);
-static QUANTUM: AtomicU64 = AtomicU64::new(3);
+static QUANTUM: AtomicU64 = AtomicU64::new(10);
 static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn init_scheduler() {
@@ -70,24 +70,23 @@ fn schedule_from_interrupt(current_rsp: u64) -> u64 {
         }
         
         let mut next = (current + 1) % (PROCESS_COUNT as usize);
-        let mut attempts = 0;
+        let start = next;
         
-        while attempts < PROCESS_COUNT {
+        loop {
             if let Some(proc) = PROCESS_TABLE.processes[next].as_ref() {
                 if proc.state == ProcessState::Ready {
-                    if next != current {
-                        println!("IRQ: Switching from {} to {}", current, next);
-                        
-                        if let Some(to_proc) = PROCESS_TABLE.processes[next].as_mut() {
-                            to_proc.state = ProcessState::Running;
-                            PROCESS_TABLE.current = next;
-                            return to_proc.rsp;
-                        }
+                    if let Some(to_proc) = PROCESS_TABLE.processes[next].as_mut() {
+                        to_proc.state = ProcessState::Running;
+                        PROCESS_TABLE.current = next;
+                        return to_proc.rsp;
                     }
                 }
             }
+            
             next = (next + 1) % (PROCESS_COUNT as usize);
-            attempts += 1;
+            if next == start {
+                break;
+            }
         }
         
         if let Some(curr_proc) = PROCESS_TABLE.processes[current].as_mut() {
@@ -116,11 +115,11 @@ pub fn schedule() {
         }
         
         let mut next = (current + 1) % (PROCESS_COUNT as usize);
-        let mut attempts = 0;
+        let start = next;
         
-        while attempts < PROCESS_COUNT {
+        loop {
             if let Some(proc) = PROCESS_TABLE.processes[next].as_ref() {
-                if proc.state == ProcessState::Ready || proc.state == ProcessState::Running {
+                if proc.state == ProcessState::Ready {
                     if next != current {
                         println!("Yield: Switching from {} to {}", current, next);
                         do_switch(current, next);
@@ -128,8 +127,11 @@ pub fn schedule() {
                     }
                 }
             }
+            
             next = (next + 1) % (PROCESS_COUNT as usize);
-            attempts += 1;
+            if next == start {
+                break;
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
 #![no_std]
+#![allow(unused)]
+
 extern crate alloc;
 
 use ide::{ide_read_sectors, ide_write_sectors};

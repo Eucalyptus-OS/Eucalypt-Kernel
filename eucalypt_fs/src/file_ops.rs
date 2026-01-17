@@ -1,8 +1,7 @@
-use crate::block_io::{read_block, write_block};
-use crate::inodes::{InodeManager, InodeError};
-
 use alloc::{vec, vec::Vec};
 use framebuffer::println;
+use crate::inodes::{InodeError, InodeManager, InodeTable};
+use crate::block_io::{read_block, write_block};
 
 pub fn create_file(
     inode_manager: &mut InodeManager,

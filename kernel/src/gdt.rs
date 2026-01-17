@@ -1,4 +1,5 @@
 use core::ptr::{addr_of, addr_of_mut};
+use core::arch::asm;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -38,7 +39,7 @@ pub struct Tss {
     iopb_offset: u16,
 }
 
-const GDT_ENTRIES: usize = 7;
+const GDT_ENTRIES: usize = 8;
 
 static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry {
     limit_low: 0,
@@ -103,13 +104,17 @@ unsafe fn gdt_set_tss(
     granularity: u8,
 ) {
     let mut desc_low: u64 = 0;
+    
     desc_low |= (limit & 0xFFFF) as u64;
+    desc_low |= (((limit >> 16) & 0x0F) as u64) << 48;
+    
     desc_low |= ((base & 0xFFFF) as u64) << 16;
     desc_low |= (((base >> 16) & 0xFF) as u64) << 32;
-    desc_low |= (access as u64) << 40;
-    desc_low |= (((limit >> 16) & 0x0F) as u64) << 48;
-    desc_low |= ((granularity & 0xF0) as u64) << 48;
     desc_low |= (((base >> 24) & 0xFF) as u64) << 56;
+    
+    desc_low |= (access as u64) << 40;
+    
+    desc_low |= (((granularity >> 4) & 0x0F) as u64) << 52;
 
     let desc_high: u64 = (base >> 32) & 0xFFFFFFFF;
 
@@ -139,7 +144,6 @@ pub unsafe fn gdt_init() {
         gdt_set_entry(3, 0, 0xFFFFF, 0xFA, 0xAF);
         gdt_set_entry(4, 0, 0xFFFFF, 0xF2, 0xCF);
         
-        // Clear TSS
         let tss_ptr = addr_of_mut!(KERNEL_TSS) as *mut u8;
         for i in 0..core::mem::size_of::<Tss>() {
             *tss_ptr.add(i) = 0;
@@ -187,6 +191,5 @@ unsafe fn gdt_load() {
     }
 }
 
-pub fn load_usermode() {
-    
+pub fn jump_usermode() {
 }
