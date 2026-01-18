@@ -1,5 +1,4 @@
 use core::ptr::{addr_of, addr_of_mut};
-use core::arch::asm;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -133,7 +132,7 @@ unsafe fn gdt_set_tss(
     }
 }
 
-pub unsafe fn gdt_init() {
+pub fn gdt_init() {
     unsafe {
         GDT_POINTER.limit = (core::mem::size_of::<GdtEntry>() * GDT_ENTRIES - 1) as u16;
         GDT_POINTER.base = addr_of!(GDT) as u64;

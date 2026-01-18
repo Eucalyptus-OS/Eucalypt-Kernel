@@ -154,7 +154,7 @@ unsafe impl GlobalAlloc for LinkAllocator {
 #[global_allocator]
 static ALLOCATOR: LinkAllocator = LinkAllocator;
 
-pub unsafe fn init_allocator(memory_map: &MemoryMapResponse) {
+pub fn init_allocator(memory_map: &MemoryMapResponse) {
     unsafe {
         FREE_LIST = LinkedList::new();
         
