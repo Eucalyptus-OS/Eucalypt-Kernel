@@ -3,15 +3,17 @@
 
 extern crate alloc;
 
-use core::arch::asm;
 use ahci::init_ahci;
+use core::arch::asm;
 use eucalypt_fs::write_eucalypt_fs;
-use eucalypt_os::{gdt, idt, init_allocator, VMM};
 use eucalypt_os::idt::timer_wait_ms;
-use framebuffer::{panic_print, println, ScrollingTextRenderer};
+use eucalypt_os::{VMM, gdt, idt, init_allocator};
+use framebuffer::{ScrollingTextRenderer, panic_print, println};
 use ide::ide_init;
-use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
 use limine::BaseRevision;
+use limine::request::{
+    FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
+};
 use memory::mmio::mmio_map_range;
 use pci::check_all_buses;
 use process::create_process;
@@ -43,25 +45,13 @@ static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 extern "C" fn kmain() -> ! {
     assert!(BASE_REVISION.is_supported());
 
-    init_framebuffer();
-    init_memory();
-    init_interrupts();
-    init_hardware();
-    init_multitasking();
-
-    idle_loop()
-}
-
-fn init_framebuffer() {
     let framebuffer_response = FRAMEBUFFER_REQUEST
         .get_response()
         .expect("No framebuffer response");
-
     let framebuffer = framebuffer_response
         .framebuffers()
         .next()
         .expect("No framebuffer available");
-
     ScrollingTextRenderer::init(
         framebuffer.addr(),
         framebuffer.width() as usize,
@@ -70,52 +60,37 @@ fn init_framebuffer() {
         framebuffer.bpp() as usize,
         FONT,
     );
-
     println!("eucalyptOS Starting...");
-}
 
-fn init_memory() {
     let memmap_response = MEMMAP_REQUEST
         .get_response()
         .expect("No memory map available");
     VMM::init(memmap_response);
     init_allocator(memmap_response);
-}
 
-fn init_interrupts() {
     gdt::gdt_init();
     idt::idt_init();
-
     unsafe {
         asm!("sti");
     }
-}
 
-fn init_hardware() {
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
     write_eucalypt_fs(0);
     usb::init_usb();
     init_ahci();
-}
 
-fn init_multitasking() {
     let kernel_main_rsp: u64;
     unsafe {
         asm!("mov {}, rsp", out(reg) kernel_main_rsp);
     }
-
     process::init_kernel_process(kernel_main_rsp);
-
     create_process(test_process_1 as *mut ()).expect("Failed to create process 1");
     create_process(test_process_2 as *mut ()).expect("Failed to create process 2");
-
     sched::init_scheduler();
     sched::enable_scheduler();
-}
 
-fn idle_loop() -> ! {
     loop {
         unsafe {
             asm!("hlt");
@@ -126,33 +101,19 @@ fn idle_loop() -> ! {
 fn test_process_1() {
     loop {
         println!("Process 1 running");
-        timer_wait_ms(1000);
+        timer_wait_ms(100);
     }
 }
 
 fn test_process_2() {
     loop {
         println!("Process 2 running");
-        timer_wait_ms(1000);
+        timer_wait_ms(100);
     }
 }
 
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
-    let registers = capture_registers();
-    print_panic_info(info, &registers);
-    halt()
-}
-
-struct RegisterDump {
-    rax: u64, rbx: u64, rcx: u64, rdx: u64,
-    rsi: u64, rdi: u64, rbp: u64, rsp: u64,
-    r8: u64, r9: u64, r10: u64, r11: u64,
-    r12: u64, r13: u64, r14: u64, r15: u64,
-    rflags: u64, cs: u16, ss: u16,
-}
-
-fn capture_registers() -> RegisterDump {
     let (rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp): (u64, u64, u64, u64, u64, u64, u64, u64);
     let (r8, r9, r10, r11, r12, r13, r14, r15): (u64, u64, u64, u64, u64, u64, u64, u64);
     let (rflags, cs, ss): (u64, u16, u16);
@@ -179,14 +140,6 @@ fn capture_registers() -> RegisterDump {
         asm!("mov {:x}, ss", out(reg) ss);
     }
 
-    RegisterDump {
-        rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,
-        r8, r9, r10, r11, r12, r13, r14, r15,
-        rflags, cs, ss,
-    }
-}
-
-fn print_panic_info(info: &core::panic::PanicInfo, regs: &RegisterDump) {
     panic_print!(
         "KERNEL PANIC\n{}\n\n\
         Register Dump:\n\
@@ -197,19 +150,16 @@ fn print_panic_info(info: &core::panic::PanicInfo, regs: &RegisterDump) {
         RFLAGS: 0x{:016x}\n\
         CS:  0x{:04x}      SS:  0x{:04x}",
         info,
-        regs.rax, regs.rbx, regs.rcx, regs.rdx,
-        regs.rsi, regs.rdi, regs.rbp, regs.rsp,
-        regs.r8, regs.r9, regs.r10, regs.r11,
-        regs.r12, regs.r13, regs.r14, regs.r15,
-        regs.rflags,
-        regs.cs, regs.ss
+        rax, rbx, rcx, rdx,
+        rsi, rdi, rbp, rsp,
+        r8, r9, r10, r11,
+        r12, r13, r14, r15,
+        rflags, cs, ss
     );
-}
 
-fn halt() -> ! {
     loop {
         unsafe {
-            asm!("hlt");
+            asm!("cli", "hlt");
         }
     }
 }

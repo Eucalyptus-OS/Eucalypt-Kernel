@@ -3,6 +3,7 @@
 
 use core::fmt;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 #[repr(C, packed)]
 struct PSF1Header {
@@ -23,35 +24,67 @@ struct PSF2Header {
     width: u32,
 }
 
-struct RendererCell {
+struct SpinLock {
+    locked: AtomicBool,
+}
+
+impl SpinLock {
+    const fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+        }
+    }
+
+    fn lock(&self) {
+        while self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+}
+
+pub struct RendererCell {
     inner: UnsafeCell<Option<ScrollingTextRenderer>>,
+    lock: SpinLock,
 }
 
 unsafe impl Sync for RendererCell {}
 
 impl RendererCell {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             inner: UnsafeCell::new(None),
+            lock: SpinLock::new(),
         }
     }
 
-    fn set(&self, renderer: ScrollingTextRenderer) {
+    pub fn set(&self, renderer: ScrollingTextRenderer) {
+        self.lock.lock();
         unsafe {
             *self.inner.get() = Some(renderer);
         }
+        self.lock.unlock();
     }
 
-    fn get(&self) -> &mut ScrollingTextRenderer {
-        unsafe {
-            (*self.inner.get())
+    pub fn with<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut ScrollingTextRenderer) -> R,
+    {
+        self.lock.lock();
+        let result = unsafe {
+            f((*self.inner.get())
                 .as_mut()
-                .expect("Renderer not initialized")
-        }
+                .expect("Renderer not initialized"))
+        };
+        self.lock.unlock();
+        result
     }
 }
 
-static RENDERER: RendererCell = RendererCell::new();
+pub static RENDERER: RendererCell = RendererCell::new();
 
 pub struct ScrollingTextRenderer {
     framebuffer: *mut u32,
@@ -100,10 +133,6 @@ impl ScrollingTextRenderer {
         };
         
         RENDERER.set(renderer);
-    }
-
-    pub fn get() -> &'static mut Self {
-        RENDERER.get()
     }
 
     fn parse_psf(data: &[u8]) -> (usize, usize, usize) {
@@ -312,19 +341,23 @@ impl fmt::Write for ScrollingTextRenderer {
 macro_rules! print {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
-        let _ = write!($crate::ScrollingTextRenderer::get(), $($arg)*);
+        $crate::RENDERER.with(|r| {
+            let _ = write!(r, $($arg)*);
+        });
     }};
 }
 
 #[macro_export]
 macro_rules! println {
     () => {
-        $crate::ScrollingTextRenderer::get().write_char('\n')
+        $crate::RENDERER.with(|r| r.write_char('\n'))
     };
     ($($arg:tt)*) => {{
         use core::fmt::Write;
-        let _ = write!($crate::ScrollingTextRenderer::get(), $($arg)*);
-        $crate::ScrollingTextRenderer::get().write_char('\n');
+        $crate::RENDERER.with(|r| {
+            let _ = write!(r, $($arg)*);
+            r.write_char('\n');
+        });
     }};
 }
 
@@ -366,6 +399,6 @@ macro_rules! panic_print {
         
         let mut buffer = StackString::new();
         let _ = write!(&mut buffer, $($arg)*);
-        $crate::ScrollingTextRenderer::get().panic_write_str(buffer.as_str());
+        $crate::RENDERER.with(|r| r.panic_write_str(buffer.as_str()));
     }};
 }

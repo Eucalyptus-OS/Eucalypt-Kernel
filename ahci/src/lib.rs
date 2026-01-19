@@ -10,9 +10,22 @@ extern crate alloc;
 use framebuffer::println;
 use memory::mmio::map_mmio;
 use pci::{PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, pci_config_read_dword, pci_enable_bus_master, pci_enable_memory_space, pci_find_ahci_controller};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub use types::*;
 mod types;
+
+static AHCI_LOCK: AtomicBool = AtomicBool::new(false);
+
+fn ahci_lock() {
+    while AHCI_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+}
+
+fn ahci_unlock() {
+    AHCI_LOCK.store(false, Ordering::Release);
+}
 
 fn start_cmd(port: &mut HbaPort) {
     let cmd = port.read_cmd();
@@ -20,7 +33,6 @@ fn start_cmd(port: &mut HbaPort) {
         return;
     }
     while (cmd & (1 << 15)) != 0 {
-        // Wait until CR (bit15) is cleared
     }
     port.write_cmd(cmd | (1 << 4));
 }
@@ -29,32 +41,64 @@ fn stop_cmd(port: &mut HbaPort) {
     let cmd = port.read_cmd();
     port.write_cmd(cmd & !(1 << 4));
     while (cmd & (1 << 15)) != 0 {
-        // Wait until CR (bit15) is cleared
     }
     port.write_cmd(cmd & !(1 << 0));
     while (cmd & (1 << 14)) != 0 {
-        // Wait until FR (bit14) is cleared
     }
 }
 
-fn rebase_port(port: &mut HbaPort, portno: u32, base: u64) {
+fn rebase_port(port: &mut HbaPort, portno: u32) {
     stop_cmd(port);
     
-    port.clb = base + ((portno as u64) << 10);
-    unsafe { core::ptr::write_bytes(port.clb as *mut u8, 0, 1024); }
+    let clb_frame = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() };
+    let fb_frame = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() };
     
-    port.fb = base + (32 << 10) + ((portno as u64) << 8);
-    unsafe { core::ptr::write_bytes(port.fb as *mut u8, 0, 256); }
+    if clb_frame.is_none() || fb_frame.is_none() {
+        println!("Failed to allocate frames for port {}", portno);
+        return;
+    }
     
-
-    let cmdheader = port.clb as *mut HbaCmdHeader;
+    let clb_phys = clb_frame.unwrap().as_u64();
+    let fb_phys = fb_frame.unwrap().as_u64();
+    
+    let clb_virt = match map_mmio(clb_phys, 0x1000) {
+        Ok(v) => v,
+        Err(_) => {
+            println!("Failed to map CLB for port {}", portno);
+            return;
+        }
+    };
+    
+    let fb_virt = match map_mmio(fb_phys, 0x1000) {
+        Ok(v) => v,
+        Err(_) => {
+            println!("Failed to map FB for port {}", portno);
+            return;
+        }
+    };
+    
+    port.clb = clb_phys;
+    unsafe { core::ptr::write_bytes(clb_virt as *mut u8, 0, 1024); }
+    
+    port.fb = fb_phys;
+    unsafe { core::ptr::write_bytes(fb_virt as *mut u8, 0, 256); }
+    
+    let cmdheader = clb_virt as *mut HbaCmdHeader;
     for i in 0..32 {
-        unsafe {
-            (*cmdheader.add(i)).prdtl = 8;
+        let ctba_frame = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() };
+        if let Some(frame) = ctba_frame {
+            let ctba_phys = frame.as_u64();
             
-            (*cmdheader.add(i)).ctba = base + (40 << 10) + ((portno as u64) << 13) + ((i as u64) << 8);
+            let ctba_virt = match map_mmio(ctba_phys, 0x1000) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
             
-            core::ptr::write_bytes((*cmdheader.add(i)).ctba as *mut u8, 0, 256);
+            unsafe {
+                (*cmdheader.add(i)).prdtl = 8;
+                (*cmdheader.add(i)).ctba = ctba_phys;
+                core::ptr::write_bytes(ctba_virt as *mut u8, 0, 256);
+            }
         }
     }
     
@@ -62,6 +106,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32, base: u64) {
 }
 
 pub fn probe_ports(abar: &mut HbaMem) {
+    ahci_lock();
     let pi = abar.read_pi();
     
     for i in 0..32 {
@@ -70,11 +115,11 @@ pub fn probe_ports(abar: &mut HbaMem) {
             match dt {
                 AHCI_DEV_SATA => {
                     println!("SATA drive found at port {}", i);
-                    rebase_port(&mut abar.ports[i], i as u32, 0x400000);
+                    rebase_port(&mut abar.ports[i], i as u32);
                 }
                 AHCI_DEV_SATAPI => {
                     println!("SATAPI drive found at port {}", i);
-                    rebase_port(&mut abar.ports[i], i as u32, 0x400000);
+                    rebase_port(&mut abar.ports[i], i as u32);
                 }
                 AHCI_DEV_SEMB => {
                     println!("SEMB drive found at port {}", i);
@@ -83,11 +128,11 @@ pub fn probe_ports(abar: &mut HbaMem) {
                     println!("PM drive found at port {}", i);
                 }
                 _ => {
-                    println!("No drive found at port {}", i);
                 }
             }
         }
     }
+    ahci_unlock();
 }
 
 fn check_type(port: &HbaPort) -> u8 {
@@ -111,6 +156,7 @@ fn check_type(port: &HbaPort) -> u8 {
 }
 
 pub fn find_ahci_controller() -> Option<u64> {
+    ahci_lock();
     
     println!("Scanning PCI for AHCI controller...");
     
@@ -135,6 +181,7 @@ pub fn find_ahci_controller() -> Option<u64> {
                     let bar5 = pci_config_read_dword(bus as u8, device, function, 0x24);
                     let abar = (bar5 & !0xF) as u64;
                     println!("BAR5 = 0x{:X}", abar);
+                    ahci_unlock();
                     return Some(abar);
                 }
             }
@@ -142,125 +189,175 @@ pub fn find_ahci_controller() -> Option<u64> {
     }
     
     println!("No AHCI controller found");
+    ahci_unlock();
     None
 }
 
 pub fn ahci_read(port: &HbaPort, lba: u64, count: u32, buffer: *mut u8) -> bool {
-    let ci = port.read_ci();
-    if ci != 0 {
-        return false;
-    }
-
-    let cmdheader = port.clb as *mut HbaCmdHeader;
-    unsafe {
-        (*cmdheader).prdtl = 1;
-        
-        let cmdtbl = (*cmdheader).ctba as *mut HbaCmdTbl;
-        core::ptr::write_bytes(cmdtbl as *mut u8, 0, 256);
-        
-        let fis = &mut (*cmdtbl).cfis;
-        fis[0] = 0x27;
-        fis[1] = 0x80;
-        fis[2] = 0xC8;
-        fis[3] = 0x00;
-        fis[4] = (lba & 0xFF) as u8;
-        fis[5] = ((lba >> 8) & 0xFF) as u8;
-        fis[6] = ((lba >> 16) & 0xFF) as u8;
-        fis[7] = 0xE0 | ((lba >> 24) & 0x0F) as u8;
-        fis[8] = ((lba >> 32) & 0xFF) as u8;
-        fis[9] = ((lba >> 40) & 0xFF) as u8;
-        fis[10] = ((lba >> 48) & 0xFF) as u8;
-        fis[11] = 0x00;
-        fis[12] = (count & 0xFF) as u8;
-        fis[13] = ((count >> 8) & 0xFF) as u8;
-        
-        (*cmdtbl).prdt_entry[0].dba = buffer as u64;
-        (*cmdtbl).prdt_entry[0].dbc = (count as u32 * 512) - 1;
-        
-        let port_mut = port as *const HbaPort as *mut HbaPort;
-        (*port_mut).ci = 1;
-        
-        let mut timeout = 1000000;
-        while ((*port_mut).ci & 1) != 0 && timeout > 0 {
-            timeout -= 1;
+    ahci_lock();
+    let result = {
+        let ci = port.read_ci();
+        if ci != 0 {
+            ahci_unlock();
+            return false;
         }
-    }
-    
-    true
+
+        let cmdheader_virt = match map_mmio(port.clb, 0x1000) {
+            Ok(v) => v as *mut HbaCmdHeader,
+            Err(_) => {
+                ahci_unlock();
+                return false;
+            }
+        };
+        
+        unsafe {
+            (*cmdheader_virt).prdtl = 1;
+            
+            let ctba_phys = (*cmdheader_virt).ctba;
+            let cmdtbl_virt = match map_mmio(ctba_phys, 0x1000) {
+                Ok(v) => v as *mut HbaCmdTbl,
+                Err(_) => {
+                    ahci_unlock();
+                    return false;
+                }
+            };
+            
+            core::ptr::write_bytes(cmdtbl_virt as *mut u8, 0, 256);
+            
+            let fis = &mut (*cmdtbl_virt).cfis;
+            fis[0] = 0x27;
+            fis[1] = 0x80;
+            fis[2] = 0xC8;
+            fis[3] = 0x00;
+            fis[4] = (lba & 0xFF) as u8;
+            fis[5] = ((lba >> 8) & 0xFF) as u8;
+            fis[6] = ((lba >> 16) & 0xFF) as u8;
+            fis[7] = 0xE0 | ((lba >> 24) & 0x0F) as u8;
+            fis[8] = ((lba >> 32) & 0xFF) as u8;
+            fis[9] = ((lba >> 40) & 0xFF) as u8;
+            fis[10] = ((lba >> 48) & 0xFF) as u8;
+            fis[11] = 0x00;
+            fis[12] = (count & 0xFF) as u8;
+            fis[13] = ((count >> 8) & 0xFF) as u8;
+            
+            (*cmdtbl_virt).prdt_entry[0].dba = buffer as u64;
+            (*cmdtbl_virt).prdt_entry[0].dbc = (count as u32 * 512) - 1;
+            
+            let port_mut = port as *const HbaPort as *mut HbaPort;
+            (*port_mut).ci = 1;
+            
+            let mut timeout = 1000000;
+            while ((*port_mut).ci & 1) != 0 && timeout > 0 {
+                timeout -= 1;
+            }
+        }
+        
+        true
+    };
+    ahci_unlock();
+    result
 }
 
 pub fn ahci_write(port: &HbaPort, lba: u64, count: u32, buffer: *const u8) -> bool {
-    let ci = port.read_ci();
-    if ci != 0 {
-        return false;
-    }
-
-    let cmdheader = port.clb as *mut HbaCmdHeader;
-    unsafe {
-        (*cmdheader).prdtl = 1;
-        
-        let cmdtbl = (*cmdheader).ctba as *mut HbaCmdTbl;
-        core::ptr::write_bytes(cmdtbl as *mut u8, 0, 256);
-        
-        let fis = &mut (*cmdtbl).cfis;
-        fis[0] = 0x27;
-        fis[1] = 0x80;
-        fis[2] = 0xCA;
-        fis[3] = 0x00;
-        fis[4] = (lba & 0xFF) as u8;
-        fis[5] = ((lba >> 8) & 0xFF) as u8;
-        fis[6] = ((lba >> 16) & 0xFF) as u8;
-        fis[7] = 0xE0 | ((lba >> 24) & 0x0F) as u8;
-        fis[8] = ((lba >> 32) & 0xFF) as u8;
-        fis[9] = ((lba >> 40) & 0xFF) as u8;
-        fis[10] = ((lba >> 48) & 0xFF) as u8;
-        fis[11] = 0x00;
-        fis[12] = (count & 0xFF) as u8;
-        fis[13] = ((count >> 8) & 0xFF) as u8;
-        
-        (*cmdtbl).prdt_entry[0].dba = buffer as u64;
-        (*cmdtbl).prdt_entry[0].dbc = (count as u32 * 512) - 1;
-        
-        let port_mut = port as *const HbaPort as *mut HbaPort;
-        (*port_mut).ci = 1;
-        
-        let mut timeout = 1000000;
-        while ((*port_mut).ci & 1) != 0 && timeout > 0 {
-            timeout -= 1;
+    ahci_lock();
+    let result = {
+        let ci = port.read_ci();
+        if ci != 0 {
+            ahci_unlock();
+            return false;
         }
-    }
-    
-    true
+
+        let cmdheader_virt = match map_mmio(port.clb, 0x1000) {
+            Ok(v) => v as *mut HbaCmdHeader,
+            Err(_) => {
+                ahci_unlock();
+                return false;
+            }
+        };
+        
+        unsafe {
+            (*cmdheader_virt).prdtl = 1;
+            
+            let ctba_phys = (*cmdheader_virt).ctba;
+            let cmdtbl_virt = match map_mmio(ctba_phys, 0x1000) {
+                Ok(v) => v as *mut HbaCmdTbl,
+                Err(_) => {
+                    ahci_unlock();
+                    return false;
+                }
+            };
+            
+            core::ptr::write_bytes(cmdtbl_virt as *mut u8, 0, 256);
+            
+            let fis = &mut (*cmdtbl_virt).cfis;
+            fis[0] = 0x27;
+            fis[1] = 0x80;
+            fis[2] = 0xCA;
+            fis[3] = 0x00;
+            fis[4] = (lba & 0xFF) as u8;
+            fis[5] = ((lba >> 8) & 0xFF) as u8;
+            fis[6] = ((lba >> 16) & 0xFF) as u8;
+            fis[7] = 0xE0 | ((lba >> 24) & 0x0F) as u8;
+            fis[8] = ((lba >> 32) & 0xFF) as u8;
+            fis[9] = ((lba >> 40) & 0xFF) as u8;
+            fis[10] = ((lba >> 48) & 0xFF) as u8;
+            fis[11] = 0x00;
+            fis[12] = (count & 0xFF) as u8;
+            fis[13] = ((count >> 8) & 0xFF) as u8;
+            
+            (*cmdtbl_virt).prdt_entry[0].dba = buffer as u64;
+            (*cmdtbl_virt).prdt_entry[0].dbc = (count as u32 * 512) - 1;
+            
+            let port_mut = port as *const HbaPort as *mut HbaPort;
+            (*port_mut).ci = 1;
+            
+            let mut timeout = 1000000;
+            while ((*port_mut).ci & 1) != 0 && timeout > 0 {
+                timeout -= 1;
+            }
+        }
+        
+        true
+    };
+    ahci_unlock();
+    result
 }
 
 pub fn init_ahci() {
-        match pci_find_ahci_controller() {
-            Some(ahci_dev) => {
-                let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
-                println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
+    ahci_lock();
+    match pci_find_ahci_controller() {
+        Some(ahci_dev) => {
+            let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
+            println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+            println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
 
-                if abar_phys == 0 {
-                    println!("Invalid AHCI BAR address");
-                } else {
-                    pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-                    pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+            if abar_phys == 0 {
+                println!("Invalid AHCI BAR address");
+                ahci_unlock();
+            } else {
+                pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+                pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
 
-                    println!("Mapping AHCI MMIO region...");
-                    match map_mmio(abar_phys, 0x4000) {
-                        Ok(abar_virt) => {
-                            println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
-                            println!("AHCI ABAR mapped successfully");
-                            find_ahci_controller();
-                        }
-                        Err(e) => {
-                            println!("Failed to map AHCI MMIO: {}", e);
-                        }
+                println!("Mapping AHCI MMIO region...");
+                match map_mmio(abar_phys, 0x4000) {
+                    Ok(abar_virt) => {
+                        println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
+                        println!("AHCI ABAR mapped successfully");
+                        
+                        let abar = unsafe { &mut *(abar_virt as *mut HbaMem) };
+                        ahci_unlock();
+                        probe_ports(abar);
+                    }
+                    Err(e) => {
+                        println!("Failed to map AHCI MMIO: {}", e);
+                        ahci_unlock();
                     }
                 }
             }
-            None => {
-                println!("No AHCI controller found");
-            }
         }
+        None => {
+            println!("No AHCI controller found");
+            ahci_unlock();
+        }
+    }
 }

@@ -4,6 +4,19 @@ use framebuffer::println;
 use pci;
 use xhci;
 use memory;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static USB_LOCK: AtomicBool = AtomicBool::new(false);
+
+fn usb_lock() {
+    while USB_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+}
+
+fn usb_unlock() {
+    USB_LOCK.store(false, Ordering::Release);
+}
 
 #[derive(Clone, Copy)]
 pub struct UsbMapper(pub memory::vmm::Mapper);
@@ -28,6 +41,7 @@ impl xhci::accessor::Mapper for UsbMapper {
 }
 
 pub fn init_usb() {
+    usb_lock();
     let mapper = memory::vmm::VMM::get_mapper();
     let mapper = UsbMapper(mapper);
     let mut phys_base: u64;
@@ -39,6 +53,7 @@ pub fn init_usb() {
 
             let bar0 = pci::pci_read_bar(device.bus, device.device, device.function, 0);
             if bar0 & 0x1 != 0 {
+                usb_unlock();
                 return;
             } else {
                 let bar_type = (bar0 >> 1) & 0x3;
@@ -51,6 +66,7 @@ pub fn init_usb() {
         }
         None => {
             println!("No XHCI controller found");
+            usb_unlock();
             return;
         }
     }
@@ -85,6 +101,7 @@ pub fn init_usb() {
         Some(p) => p,
         None => {
             println!("Failed to allocate command ring frame");
+            usb_unlock();
             return;
         }
     };
@@ -93,6 +110,7 @@ pub fn init_usb() {
         Some(p) => p,
         None => {
             println!("Failed to allocate event ring frame");
+            usb_unlock();
             return;
         }
     };
@@ -118,6 +136,7 @@ pub fn init_usb() {
         Some(p) => p,
         None => {
             println!("Failed to allocate ERST frame");
+            usb_unlock();
             return;
         }
     };
@@ -159,4 +178,6 @@ pub fn init_usb() {
         c.set_command_ring_pointer(cmd_phys.as_u64());
         c.set_ring_cycle_state();
     });
+    
+    usb_unlock();
 }
