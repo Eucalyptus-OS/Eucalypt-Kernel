@@ -28,22 +28,38 @@ fn ahci_unlock() {
 }
 
 fn start_cmd(port: &mut HbaPort) {
-    let cmd = port.read_cmd();
-    if (cmd & (1 << 4)) != 0 {
-        return;
-    }
+    let mut cmd = port.read_cmd();
     while (cmd & (1 << 15)) != 0 {
+        core::hint::spin_loop();
+        cmd = port.read_cmd();
     }
-    port.write_cmd(cmd | (1 << 4));
+    
+    cmd = port.read_cmd();
+    if (cmd & (1 << 4)) == 0 {
+        port.write_cmd(cmd | (1 << 4));
+    }
+    
+    cmd = port.read_cmd();
+    port.write_cmd(cmd | (1 << 0));
 }
 
 fn stop_cmd(port: &mut HbaPort) {
-    let cmd = port.read_cmd();
-    port.write_cmd(cmd & !(1 << 4));
-    while (cmd & (1 << 15)) != 0 {
-    }
+    let mut cmd = port.read_cmd();
     port.write_cmd(cmd & !(1 << 0));
+    
+    cmd = port.read_cmd();
+    while (cmd & (1 << 15)) != 0 {
+        core::hint::spin_loop();
+        cmd = port.read_cmd();
+    }
+    
+    cmd = port.read_cmd();
+    port.write_cmd(cmd & !(1 << 4));
+    
+    cmd = port.read_cmd();
     while (cmd & (1 << 14)) != 0 {
+        core::hint::spin_loop();
+        cmd = port.read_cmd();
     }
 }
 
@@ -106,7 +122,6 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
 }
 
 pub fn probe_ports(abar: &mut HbaMem) {
-    ahci_lock();
     let pi = abar.read_pi();
     
     for i in 0..32 {
@@ -132,7 +147,6 @@ pub fn probe_ports(abar: &mut HbaMem) {
             }
         }
     }
-    ahci_unlock();
 }
 
 fn check_type(port: &HbaPort) -> u8 {
@@ -156,8 +170,6 @@ fn check_type(port: &HbaPort) -> u8 {
 }
 
 pub fn find_ahci_controller() -> Option<u64> {
-    ahci_lock();
-    
     println!("Scanning PCI for AHCI controller...");
     
     for bus in 0..=255u16 {
@@ -181,7 +193,6 @@ pub fn find_ahci_controller() -> Option<u64> {
                     let bar5 = pci_config_read_dword(bus as u8, device, function, 0x24);
                     let abar = (bar5 & !0xF) as u64;
                     println!("BAR5 = 0x{:X}", abar);
-                    ahci_unlock();
                     return Some(abar);
                 }
             }
@@ -189,7 +200,6 @@ pub fn find_ahci_controller() -> Option<u64> {
     }
     
     println!("No AHCI controller found");
-    ahci_unlock();
     None
 }
 
@@ -249,10 +259,11 @@ pub fn ahci_read(port: &HbaPort, lba: u64, count: u32, buffer: *mut u8) -> bool 
             let mut timeout = 1000000;
             while ((*port_mut).ci & 1) != 0 && timeout > 0 {
                 timeout -= 1;
+                core::hint::spin_loop();
             }
+            
+            timeout > 0
         }
-        
-        true
     };
     ahci_unlock();
     result
@@ -314,10 +325,11 @@ pub fn ahci_write(port: &HbaPort, lba: u64, count: u32, buffer: *const u8) -> bo
             let mut timeout = 1000000;
             while ((*port_mut).ci & 1) != 0 && timeout > 0 {
                 timeout -= 1;
+                core::hint::spin_loop();
             }
+            
+            timeout > 0
         }
-        
-        true
     };
     ahci_unlock();
     result
@@ -345,8 +357,11 @@ pub fn init_ahci() {
                         println!("AHCI ABAR mapped successfully");
                         
                         let abar = unsafe { &mut *(abar_virt as *mut HbaMem) };
+                        
                         ahci_unlock();
                         probe_ports(abar);
+                        println!("AHCI initialization complete");
+                        return;
                     }
                     Err(e) => {
                         println!("Failed to map AHCI MMIO: {}", e);

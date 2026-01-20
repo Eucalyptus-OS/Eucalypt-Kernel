@@ -82,10 +82,13 @@ extern "C" fn kmain() -> ! {
     init_ahci();
 
     let kernel_main_rsp: u64;
+    println!("Getting RSP");
     unsafe {
         asm!("mov {}, rsp", out(reg) kernel_main_rsp);
     }
+    println!("Kernel RSP: {}", kernel_main_rsp);
     process::init_kernel_process(kernel_main_rsp);
+    println!("Creating Processes");
     create_process(test_process_1 as *mut ()).expect("Failed to create process 1");
     create_process(test_process_2 as *mut ()).expect("Failed to create process 2");
     sched::init_scheduler();
@@ -101,14 +104,14 @@ extern "C" fn kmain() -> ! {
 fn test_process_1() {
     loop {
         println!("Process 1 running");
-        timer_wait_ms(100);
+        timer_wait_ms(1);
     }
 }
 
 fn test_process_2() {
     loop {
         println!("Process 2 running");
-        timer_wait_ms(100);
+        timer_wait_ms(1);
     }
 }
 

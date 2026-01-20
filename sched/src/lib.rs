@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use process::{ProcessState, PROCESS_COUNT, PROCESS_TABLE};
 
 static SCHEDULER_ENABLED: AtomicBool = AtomicBool::new(false);
-static QUANTUM: AtomicU64 = AtomicU64::new(10);
+static QUANTUM: AtomicU64 = AtomicU64::new(5);
 static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn init_scheduler() {

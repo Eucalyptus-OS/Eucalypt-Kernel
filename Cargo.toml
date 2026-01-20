@@ -2,6 +2,9 @@
 members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall"]
 resolver = "2"
 
+[profile.dev]
+opt-level = 1
+
 [workspace.dependencies]
 x86_64 = "0.15.2"
 limine = "0.5.0"

@@ -1,28 +1,12 @@
 #![no_std]
-#![allow(unused)]
 
-use core::fmt;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
 
-#[repr(C, packed)]
-struct PSF1Header {
-    magic: [u8; 2],
-    mode: u8,
-    charsize: u8,
-}
+const MAX_COLS: usize = 80;
+const MAX_LINES: usize = 30;
 
-#[repr(C, packed)]
-struct PSF2Header {
-    magic: [u8; 4],
-    version: u32,
-    headersize: u32,
-    flags: u32,
-    numglyph: u32,
-    bytesperglyph: u32,
-    height: u32,
-    width: u32,
-}
+static mut CONSOLE_LINES: [ConsoleLine; MAX_LINES] = [const { ConsoleLine::new(0x00000000) }; MAX_LINES];
 
 struct SpinLock {
     locked: AtomicBool,
@@ -35,12 +19,16 @@ impl SpinLock {
         }
     }
 
+    #[inline(always)]
     fn lock(&self) {
-        while self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
+        while self.locked.swap(true, Ordering::Acquire) {
+            while self.locked.load(Ordering::Relaxed) {
+                core::hint::spin_loop();
+            }
         }
     }
 
+    #[inline(always)]
     fn unlock(&self) {
         self.locked.store(false, Ordering::Release);
     }
@@ -61,6 +49,7 @@ impl RendererCell {
         }
     }
 
+    #[inline]
     pub fn set(&self, renderer: ScrollingTextRenderer) {
         self.lock.lock();
         unsafe {
@@ -69,6 +58,7 @@ impl RendererCell {
         self.lock.unlock();
     }
 
+    #[inline]
     pub fn with<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut ScrollingTextRenderer) -> R,
@@ -86,319 +76,504 @@ impl RendererCell {
 
 pub static RENDERER: RendererCell = RendererCell::new();
 
-pub struct ScrollingTextRenderer {
-    framebuffer: *mut u32,
-    width: usize,
-    height: usize,
-    pitch: usize,
-    bpp: usize,
-    x: usize,
-    y: usize,
-    fg_color: u32,
-    bg_color: u32,
-    font_data: &'static [u8],
-    char_width: usize,
-    char_height: usize,
-    bytes_per_glyph: usize,
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct ConsoleChar {
+    pub ch: u8,
+    pub fg_color: u32,
+    pub bg_color: u32,
 }
 
-unsafe impl Send for ScrollingTextRenderer {}
-unsafe impl Sync for ScrollingTextRenderer {}
+impl ConsoleChar {
+    #[inline(always)]
+    pub const fn new(ch: u8, fg_color: u32, bg_color: u32) -> Self {
+        Self { ch, fg_color, bg_color }
+    }
+
+    #[inline(always)]
+    pub const fn blank(bg_color: u32) -> Self {
+        Self {
+            ch: b' ',
+            fg_color: 0xFFFFFFFF,
+            bg_color,
+        }
+    }
+}
+
+pub struct ConsoleLine {
+    chars: [ConsoleChar; MAX_COLS],
+    width: usize,
+    dirty: AtomicBool,
+}
+
+impl ConsoleLine {
+    pub const fn new(bg_color: u32) -> Self {
+        Self {
+            chars: [ConsoleChar::blank(bg_color); MAX_COLS],
+            width: MAX_COLS,
+            dirty: AtomicBool::new(false),
+        }
+    }
+
+    #[inline]
+    pub fn set_width(&mut self, width: usize) {
+        self.width = if width < MAX_COLS { width } else { MAX_COLS };
+    }
+
+    #[inline]
+    pub fn clear(&mut self, bg_color: u32) {
+        let blank = ConsoleChar::blank(bg_color);
+        for i in 0..self.width {
+            unsafe {
+                *self.chars.get_unchecked_mut(i) = blank;
+            }
+        }
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    #[inline(always)]
+    pub fn set_char(&mut self, col: usize, ch: ConsoleChar) {
+        if col < self.width {
+            unsafe {
+                *self.chars.get_unchecked_mut(col) = ch;
+            }
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_char(&self, col: usize) -> Option<ConsoleChar> {
+        if col < self.width {
+            Some(unsafe { *self.chars.get_unchecked(col) })
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Acquire)
+    }
+
+    #[inline(always)]
+    pub fn mark_clean(&self) {
+        self.dirty.store(false, Ordering::Release);
+    }
+
+    #[inline(always)]
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+}
+
+#[repr(C, packed)]
+struct PSF2Header {
+    magic: [u8; 4],
+    version: u32,
+    headersize: u32,
+    flags: u32,
+    numglyph: u32,
+    bytesperglyph: u32,
+    height: u32,
+    width: u32,
+}
+
+#[repr(C, packed)]
+struct PSF1Header {
+    magic: [u8; 2],
+    mode: u8,
+    charsize: u8,
+}
+
+pub struct ScrollingTextRenderer {
+    lines: &'static mut [ConsoleLine; MAX_LINES],
+    line_count: AtomicUsize,
+    start_line: AtomicUsize,
+    visible_lines: usize,
+    cursor_col: usize,
+    cursor_line: usize,
+    cols: usize,
+    fb_addr: *mut u32,
+    pitch: usize,
+    fb_width: usize,
+    fb_height: usize,
+    line_height: usize,
+    char_width: usize,
+    fg_color: u32,
+    bg_color: u32,
+    left_margin: usize,
+    top_margin: usize,
+    line_spacing: usize,
+    font_data: &'static [u8],
+    bytes_per_glyph: usize,
+    header_size: usize,
+}
 
 impl ScrollingTextRenderer {
     pub fn init(
-        framebuffer: *mut u8,
-        width: usize,
-        height: usize,
+        fb_addr: *mut u8,
+        fb_width: usize,
+        fb_height: usize,
         pitch: usize,
-        bpp: usize,
-        font_data: &'static [u8],
+        _bpp: usize,
+        font: &'static [u8],
     ) {
-        let (char_width, char_height, bytes_per_glyph) = Self::parse_psf(font_data);
+        let (char_width, charsize, bytes_per_glyph, header_size) = Self::parse_psf(font);
         
+        let line_height = charsize;
+        let left_margin = 10;
+        let top_margin = 10;
+        let line_spacing = 2;
+        let line_stride = line_height + line_spacing;
+        let available_height = fb_height.saturating_sub(top_margin);
+        let rows = if line_stride > 0 { available_height / line_stride } else { 0 };
+        let available_width = fb_width.saturating_sub(left_margin);
+        let cols = if char_width > 0 { available_width / char_width } else { 80 };
+        let bg_color = 0x00000000;
+
+        let lines: &'static mut [ConsoleLine; MAX_LINES] = unsafe {
+            let cols_clamped = if cols < MAX_COLS { cols } else { MAX_COLS };
+            let ptr = core::ptr::addr_of_mut!(CONSOLE_LINES);
+            for i in 0..MAX_LINES {
+                (*ptr)[i] = ConsoleLine::new(bg_color);
+                (*ptr)[i].set_width(cols_clamped);
+            }
+            &mut *ptr
+        };
+
+        let initial_lines = if rows < MAX_LINES { rows } else { MAX_LINES };
+        let visible = if rows < MAX_LINES { rows } else { MAX_LINES };
+
         let renderer = Self {
-            framebuffer: framebuffer as *mut u32,
-            width,
-            height,
+            lines,
+            line_count: AtomicUsize::new(initial_lines),
+            start_line: AtomicUsize::new(0),
+            visible_lines: visible,
+            cursor_col: 0,
+            cursor_line: 0,
+            cols: if cols < MAX_COLS { cols } else { MAX_COLS },
+            fb_addr: fb_addr as *mut u32,
             pitch,
-            bpp,
-            x: 0,
-            y: 0,
-            fg_color: 0xFFFFFF,
-            bg_color: 0x000000,
-            font_data,
+            fb_width,
+            fb_height,
+            line_height,
             char_width,
-            char_height,
+            fg_color: 0xFFFFFFFF,
+            bg_color,
+            left_margin,
+            top_margin,
+            line_spacing,
+            font_data: font,
             bytes_per_glyph,
+            header_size,
         };
         
         RENDERER.set(renderer);
     }
 
-    fn parse_psf(data: &[u8]) -> (usize, usize, usize) {
+    #[inline]
+    fn parse_psf(data: &[u8]) -> (usize, usize, usize, usize) {
         if data.len() >= 32 && &data[0..4] == b"\x72\xb5\x4a\x86" {
             let header = unsafe { &*(data.as_ptr() as *const PSF2Header) };
             return (
                 header.width as usize,
                 header.height as usize,
                 header.bytesperglyph as usize,
+                header.headersize as usize,
             );
         }
         
         if data.len() >= 4 && &data[0..2] == b"\x36\x04" {
             let header = unsafe { &*(data.as_ptr() as *const PSF1Header) };
             let height = header.charsize as usize;
-            let width = 8;
-            let bytes_per_glyph = height;
-            return (width, height, bytes_per_glyph);
+            return (8, height, height, 4);
         }
         
-        (8, 16, 16)
+        (8, 16, 16, 4)
     }
 
-    fn get_glyph_offset(&self, ch: char) -> usize {
-        let idx = ch as usize;
-        let max_glyphs = (self.font_data.len() - self.header_size()) / self.bytes_per_glyph;
-        
-        let glyph_idx = if idx < max_glyphs { idx } else { 0 };
-        self.header_size() + glyph_idx * self.bytes_per_glyph
+    #[inline(always)]
+    fn physical_index(&self, logical_line: usize) -> usize {
+        let start = self.start_line.load(Ordering::Relaxed);
+        (start + logical_line) % MAX_LINES
     }
 
-    fn header_size(&self) -> usize {
-        if self.font_data.len() >= 32 && &self.font_data[0..4] == b"\x72\xb5\x4a\x86" {
-            let header = unsafe { &*(self.font_data.as_ptr() as *const PSF2Header) };
-            header.headersize as usize
+    #[inline(always)]
+    fn get_line(&self, logical_line: usize) -> Option<&ConsoleLine> {
+        let count = self.line_count.load(Ordering::Relaxed);
+        if logical_line < count {
+            Some(unsafe { self.lines.get_unchecked(self.physical_index(logical_line)) })
         } else {
-            4
+            None
         }
     }
 
+    #[inline(always)]
+    fn get_line_mut(&mut self, logical_line: usize) -> Option<&mut ConsoleLine> {
+        let count = self.line_count.load(Ordering::Relaxed);
+        if logical_line < count {
+            let idx = self.physical_index(logical_line);
+            Some(unsafe { self.lines.get_unchecked_mut(idx) })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn write_char(&mut self, ch: u8) {
+        match ch {
+            b'\n' => {
+                self.cursor_col = 0;
+                self.cursor_line += 1;
+                let count = self.line_count.load(Ordering::Relaxed);
+                if self.cursor_line >= count {
+                    self.scroll_up();
+                }
+            }
+            b'\r' => {
+                self.cursor_col = 0;
+            }
+            b'\t' => {
+                let spaces = 4 - (self.cursor_col & 3);
+                for _ in 0..spaces {
+                    self.write_char(b' ');
+                }
+            }
+            _ => {
+                let console_char = ConsoleChar::new(ch, self.fg_color, self.bg_color);
+                let col = self.cursor_col;
+                if let Some(line) = self.get_line_mut(self.cursor_line) {
+                    line.set_char(col, console_char);
+                }
+
+                self.cursor_col += 1;
+
+                if self.cursor_col >= self.cols {
+                    self.cursor_col = 0;
+                    self.cursor_line += 1;
+
+                    let count = self.line_count.load(Ordering::Relaxed);
+                    if self.cursor_line >= count {
+                        self.scroll_up();
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn write_text(&mut self, text: &[u8]) {
+        for &byte in text {
+            self.write_char(byte);
+        }
+        self.render_dirty();
+    }
+
+    pub fn scroll_up(&mut self) {
+        let count = self.line_count.load(Ordering::Relaxed);
+        if count < MAX_LINES {
+            let new_count = count + 1;
+            self.line_count.store(new_count, Ordering::Release);
+            let new_line_idx = self.physical_index(new_count - 1);
+            self.lines[new_line_idx].clear(self.bg_color);
+            self.cursor_line = new_count - 1;
+            
+            for i in 0..new_count {
+                if let Some(line) = self.get_line(i) {
+                    line.mark_dirty();
+                }
+            }
+        } else {
+            let old_start = self.start_line.load(Ordering::Relaxed);
+            self.lines[old_start].clear(self.bg_color);
+            self.start_line.store((old_start + 1) % MAX_LINES, Ordering::Release);
+            self.cursor_line = count - 1;
+            
+            for i in 0..count {
+                if let Some(line) = self.get_line(i) {
+                    line.mark_dirty();
+                }
+            }
+        }
+    }
+
+    pub fn render_dirty(&mut self) {
+        let count = self.line_count.load(Ordering::Relaxed);
+        let visible_count = if self.visible_lines < count { self.visible_lines } else { count };
+        let display_start = if count > visible_count {
+            count - visible_count
+        } else {
+            0
+        };
+
+        for logical_line in display_start..count {
+            let screen_row = logical_line - display_start;
+            
+            if let Some(line) = self.get_line(logical_line) {
+                if line.is_dirty() {
+                    let mut chars = [ConsoleChar::blank(0); MAX_COLS];
+                    let width = line.width;
+                    for i in 0..width {
+                        if let Some(ch) = line.get_char(i) {
+                            chars[i] = ch;
+                        }
+                    }
+                    self.render_line(screen_row, &chars, width);
+                    line.mark_clean();
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn render_line(&self, screen_row: usize, chars: &[ConsoleChar; MAX_COLS], width: usize) {
+        let y = self.top_margin + screen_row * (self.line_height + self.line_spacing);
+        if y >= self.fb_height { return; }
+        
+        unsafe {
+            let fb_base = self.fb_addr as usize;
+            let pixels_per_row = self.pitch >> 2;
+            let max_glyphs = (self.font_data.len() - self.header_size) / self.bytes_per_glyph;
+            let bytes_per_line = (self.char_width + 7) >> 3;
+            
+            for py in 0..self.line_height {
+                let row_y = y + py;
+                if row_y >= self.fb_height { break; }
+                
+                let row_ptr = (fb_base + row_y * pixels_per_row * 4 + self.left_margin * 4) as *mut u32;
+                
+                for col in 0..self.cols {
+                    let x_offset = col * self.char_width;
+                    
+                    if col < width {
+                        let console_char = *chars.get_unchecked(col);
+                        let ch = console_char.ch as usize;
+                        let glyph_idx = if ch < max_glyphs { ch } else { 0 };
+                        let glyph_offset = self.header_size + glyph_idx * self.bytes_per_glyph;
+                        let line_offset = py * bytes_per_line;
+                        
+                        for gx in 0..self.char_width {
+                            if x_offset + gx >= (self.fb_width - self.left_margin) { break; }
+                            
+                            let byte_idx = glyph_offset + line_offset + (gx >> 3);
+                            let bit_idx = 7 - (gx & 7);
+                            
+                            let color = if byte_idx < self.font_data.len() {
+                                let bit = (*self.font_data.get_unchecked(byte_idx) >> bit_idx) & 1;
+                                if bit == 1 { console_char.fg_color } else { console_char.bg_color }
+                            } else {
+                                console_char.bg_color
+                            };
+                            
+                            *row_ptr.add(x_offset + gx) = color;
+                        }
+                    } else {
+                        for gx in 0..self.char_width {
+                            if x_offset + gx >= (self.fb_width - self.left_margin) { break; }
+                            *row_ptr.add(x_offset + gx) = self.bg_color;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
     pub fn set_colors(&mut self, fg: u32, bg: u32) {
         self.fg_color = fg;
         self.bg_color = bg;
     }
+}
 
-    fn put_pixel(&self, x: usize, y: usize, color: u32) {
-        if x >= self.width || y >= self.height {
-            return;
-        }
+#[inline]
+pub fn write_global(text: &[u8]) {
+    RENDERER.with(|r| r.write_text(text));
+}
 
+static mut LINE_WRITER_BUFFER: [u8; 512] = [0; 512];
+static mut LINE_WRITER_POS: usize = 0;
+
+pub struct LineWriter;
+
+impl LineWriter {
+    #[inline]
+    pub fn new() -> Self {
         unsafe {
-            let offset = y * (self.pitch / 4) + x;
-            *self.framebuffer.add(offset) = color;
+            *core::ptr::addr_of_mut!(LINE_WRITER_POS) = 0;
         }
+        Self
     }
 
-    fn draw_char(&self, ch: char, x: usize, y: usize) {
-        let glyph_offset = self.get_glyph_offset(ch);
-        let glyph_data = &self.font_data[glyph_offset..glyph_offset + self.bytes_per_glyph];
-        
-        let bytes_per_line = (self.char_width + 7) / 8;
-        
-        for row in 0..self.char_height {
-            let line_offset = row * bytes_per_line;
-            let py = y + row;
-            if py >= self.height {
-                break;
-            }
-            
-            unsafe {
-                let row_ptr = self.framebuffer.add(py * (self.pitch / 4) + x);
-                
-                for col in 0..self.char_width {
-                    if x + col >= self.width {
-                        break;
-                    }
-                    
-                    let byte_idx = line_offset + (col / 8);
-                    let bit_idx = 7 - (col % 8);
-                    
-                    if byte_idx < glyph_data.len() {
-                        let bit = (glyph_data[byte_idx] >> bit_idx) & 1;
-                        let color = if bit == 1 { self.fg_color } else { self.bg_color };
-                        *row_ptr.add(col) = color;
-                    }
-                }
-            }
-        }
-    }
-
-    fn scroll(&mut self) {
-        let line_height = self.char_height;
-        let pixels_per_row = self.pitch / 4;
-        
+    #[inline]
+    pub fn finish(&self) -> &[u8] {
         unsafe {
-            let src = self.framebuffer.add(line_height * pixels_per_row);
-            let dst = self.framebuffer;
-            let count = (self.height - line_height) * pixels_per_row;
-            core::ptr::copy(src, dst, count);
-            
-            let start_y = self.height - line_height;
-            let clear_start = self.framebuffer.add(start_y * pixels_per_row);
-            let clear_count = line_height * pixels_per_row;
-            core::ptr::write_bytes(clear_start, 0, clear_count);
+            let pos = *core::ptr::addr_of!(LINE_WRITER_POS);
+            let buf_ptr = core::ptr::addr_of!(LINE_WRITER_BUFFER);
+            core::slice::from_raw_parts((*buf_ptr).as_ptr(), pos)
         }
-        
-        self.y -= line_height;
-    }
-
-    pub fn write_char(&mut self, ch: char) {
-        match ch {
-            '\n' => {
-                self.x = 0;
-                self.y += self.char_height;
-            }
-            '\r' => {
-                self.x = 0;
-            }
-            '\t' => {
-                let tab_width = self.char_width * 4;
-                self.x = ((self.x + tab_width) / tab_width) * tab_width;
-                if self.x >= self.width {
-                    self.x = 0;
-                    self.y += self.char_height;
-                }
-            }
-            _ => {
-                if self.x + self.char_width > self.width {
-                    self.x = 0;
-                    self.y += self.char_height;
-                }
-                
-                if self.y + self.char_height > self.height {
-                    self.scroll();
-                }
-                
-                self.draw_char(ch, self.x, self.y);
-                self.x += self.char_width;
-            }
-        }
-    }
-
-    pub fn write_str(&mut self, s: &str) {
-        for ch in s.chars() {
-            self.write_char(ch);
-        }
-    }
-
-    pub fn clear(&mut self) {
-        unsafe {
-            let total_pixels = self.height * (self.pitch / 4);
-            core::ptr::write_bytes(self.framebuffer, 0, total_pixels);
-        }
-        self.x = 0;
-        self.y = 0;
-    }
-
-    pub fn panic_print(&mut self, s: &str) {
-        self.clear();
-        let center_y = self.height / 2;
-        
-        let line_count = s.lines().count();
-        let total_text_height = line_count * self.char_height;
-        
-        let start_y = if center_y > total_text_height / 2 {
-            center_y - total_text_height / 2
-        } else {
-            0
-        };
-        
-        self.y = start_y;
-        
-        for line in s.lines() {
-            let line_width: usize = line.chars().count() * self.char_width;
-            let center_x = if self.width > line_width {
-                (self.width - line_width) / 2
-            } else {
-                0
-            };
-            
-            self.x = center_x;
-            
-            for ch in line.chars() {
-                self.draw_char(ch, self.x, self.y);
-                self.x += self.char_width;
-            }
-            
-            self.x = 0;
-            self.y += self.char_height;
-        }
-    }
-
-    pub fn panic_write_str(&mut self, s: &str) {
-        self.panic_print(s);
     }
 }
 
-impl fmt::Write for ScrollingTextRenderer {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_str(s);
-        Ok(())
+impl core::fmt::Write for LineWriter {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        unsafe {
+            let bytes = s.as_bytes();
+            let buf_ptr = core::ptr::addr_of_mut!(LINE_WRITER_BUFFER);
+            let pos_ptr = core::ptr::addr_of_mut!(LINE_WRITER_POS);
+            let pos = *pos_ptr;
+            let remaining = (*buf_ptr).len() - pos;
+            let to_copy = if bytes.len() < remaining { bytes.len() } else { remaining };
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (*buf_ptr).as_mut_ptr().add(pos),
+                to_copy
+            );
+            *pos_ptr += to_copy;
+            Ok(())
+        }
     }
-}
-
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        $crate::RENDERER.with(|r| {
-            let _ = write!(r, $($arg)*);
-        });
-    }};
-}
-
-#[macro_export]
-macro_rules! println {
-    () => {
-        $crate::RENDERER.with(|r| r.write_char('\n'))
-    };
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        $crate::RENDERER.with(|r| {
-            let _ = write!(r, $($arg)*);
-            r.write_char('\n');
-        });
-    }};
 }
 
 #[macro_export]
 macro_rules! panic_print {
     ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        
-        struct StackString {
-            buffer: [u8; 2048],
-            len: usize,
-        }
-        
-        impl StackString {
-            fn new() -> Self {
-                Self {
-                    buffer: [0u8; 2048],
-                    len: 0,
-                }
-            }
-            
-            fn as_str(&self) -> &str {
-                core::str::from_utf8(&self.buffer[..self.len]).unwrap_or("")
-            }
-        }
-        
-        impl core::fmt::Write for StackString {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let bytes = s.as_bytes();
-                let remaining = self.buffer.len() - self.len;
-                let to_write = core::cmp::min(bytes.len(), remaining);
-                
-                self.buffer[self.len..self.len + to_write].copy_from_slice(&bytes[..to_write]);
-                self.len += to_write;
-                
-                Ok(())
-            }
-        }
-        
-        let mut buffer = StackString::new();
-        let _ = write!(&mut buffer, $($arg)*);
-        $crate::RENDERER.with(|r| r.panic_write_str(buffer.as_str()));
+        let mut writer = $crate::LineWriter::new();
+        use ::core::fmt::Write;
+        let _ = ::core::write!(&mut writer, $($arg)*);
+        $crate::write_global(&writer.finish());
     }};
+}
+
+#[macro_export]
+macro_rules! kprintln {
+    ($($arg:tt)*) => {{
+        let mut writer = $crate::LineWriter::new();
+        use ::core::fmt::Write;
+        let _ = ::core::writeln!(&mut writer, $($arg)*);
+        $crate::write_global(&writer.finish());
+    }};
+}
+
+#[macro_export]
+macro_rules! kprint {
+    ($($arg:tt)*) => {{
+        let mut writer = $crate::LineWriter::new();
+        use ::core::fmt::Write;
+        let _ = ::core::write!(&mut writer, $($arg)*);
+        $crate::write_global(&writer.finish());
+    }};
+}
+
+#[macro_export]
+macro_rules! println {
+    ($($arg:tt)*) => {
+        $crate::kprintln!($($arg)*)
+    };
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::kprint!($($arg)*)
+    };
 }
