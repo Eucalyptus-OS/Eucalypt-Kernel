@@ -102,8 +102,7 @@ run_qemu() {
         echo "You may need to install ovmf package or copy firmware files"
         exit 1
     fi
-    
-    # Run QEMU with clean environment to avoid snap library conflicts
+    echo "Starting QEMU"
     env -i \
         PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
         HOME="$HOME" \
@@ -121,6 +120,32 @@ run_qemu() {
         -device ahci,id=ahci \
         -device ide-hd,drive=ahci0,bus=ahci.0 \
         ${QEMUFLAGS}
+}
+
+run_qemu_codespace() {
+    echo "Starting QEMU..."
+    
+    if [ ! -f "${IMAGE_NAME}.iso" ]; then
+        echo "ERROR: ${IMAGE_NAME}.iso not found!"
+        exit 1
+    fi
+    
+    if [ ! -f "${OVMF_DIR}/ovmf-code-${KARCH}.fd" ]; then
+        echo "ERROR: OVMF firmware not found at ${OVMF_DIR}/ovmf-code-${KARCH}.fd"
+        echo "You may need to install ovmf package or copy firmware files"
+        exit 1
+    fi
+    echo "Starting QEMU"
+    qemu-system-${KARCH} \
+    -M pc -display curses\
+    -drive if=pflash,unit=0,format=raw,file=${OVMF_DIR}/ovmf-code-${KARCH}.fd,readonly=on \
+    -drive if=pflash,unit=1,format=raw,file=${OVMF_DIR}/ovmf-vars-${KARCH}.fd \
+    -cdrom ${IMAGE_NAME}.iso \
+    -drive file=${DISK_DIR}/ide_disk.img,format=raw,if=ide,index=0,media=disk \
+    -drive file=${DISK_DIR}/ahci_disk.img,format=raw,if=none,id=ahci0 \
+    -device ahci,id=ahci \
+    -device ide-hd,drive=ahci0,bus=ahci.0 \
+    ${QEMUFLAGS}
 }
 
 clean() {
@@ -150,6 +175,12 @@ case "${1:-}" in
         create_disks
         run_qemu
         ;;
+    run-codespace)
+        build_kernel
+        build_iso
+        create_disks
+        run_qemu_codespace
+        ;;
     clean)
         clean
         ;;
@@ -166,6 +197,7 @@ case "${1:-}" in
         echo "Usage: $0 {build|run|clean|distclean|kernel|iso}"
         echo "  build     - Build kernel and ISO"
         echo "  run       - Build and run in QEMU (default)"
+        echo "  codespace - Build and run in QEMU with codespaces"
         echo "  kernel    - Build kernel only"
         echo "  iso       - Build ISO only (requires kernel)"
         echo "  clean     - Clean build artifacts"

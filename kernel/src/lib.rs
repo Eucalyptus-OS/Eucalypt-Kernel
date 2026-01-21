@@ -9,6 +9,7 @@ pub mod gdt;
 pub mod idt;
 pub mod elf;
 pub mod smp;
+pub mod acpi;
 
 // Re-exports
 pub use memory::allocator::init_allocator;

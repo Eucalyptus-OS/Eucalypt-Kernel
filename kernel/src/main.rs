@@ -12,7 +12,8 @@ use framebuffer::{ScrollingTextRenderer, panic_print, println};
 use ide::ide_init;
 use limine::BaseRevision;
 use limine::request::{
-    FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
+    FramebufferRequest, MemoryMapRequest, RsdpRequest,
+    RequestsEndMarker, RequestsStartMarker,
 };
 use memory::mmio::{map_mmio, mmio_map_range};
 use pci::check_all_buses;
@@ -33,6 +34,11 @@ pub static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
 static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
+
+#[used]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".requests")]
+pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
