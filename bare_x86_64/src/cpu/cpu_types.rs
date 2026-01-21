@@ -13,7 +13,9 @@ macro_rules! define_cpu_features {
 
         impl CPUFeatures {
             pub fn detect() -> Self {
-                let result = __cpuid(1);
+                let result = unsafe {
+                    __cpuid(1)
+                };
                 
                 Self {
                     $($edx_name: (result.edx & (1 << $edx_bit)) != 0,)*
