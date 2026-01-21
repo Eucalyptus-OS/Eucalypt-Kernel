@@ -14,9 +14,10 @@ use limine::BaseRevision;
 use limine::request::{
     FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
 };
-use memory::mmio::mmio_map_range;
+use memory::mmio::{map_mmio, mmio_map_range};
 use pci::check_all_buses;
 use process::create_process;
+use bare_x86_64::cpu::apic::{enable_apic, get_apic_base, set_apic_virt_base, init_apic_timer};
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
@@ -75,6 +76,11 @@ extern "C" fn kmain() -> ! {
     }
 
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
+    let apic_virt = map_mmio(get_apic_base() as u64, 0x1000)
+        .expect("Failed to map APIC MMIO region");
+    set_apic_virt_base(apic_virt as usize);
+    enable_apic();
+    init_apic_timer(32, 10000);
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
     write_eucalypt_fs(0);

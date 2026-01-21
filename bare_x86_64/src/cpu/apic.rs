@@ -2,14 +2,22 @@
 //! 
 //! The APIC is the modern replacement for the obsolete PIT timer,
 //! with better multi-core support and additional features.
-
+//! 
 use super::cpu_types::CPUFeatures;
 use super::msr::{read_msr, write_msr};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const APIC_BASE_MSR: u32 = 0x1B;
 const APIC_BASE_MSR_ENABLE: u64 = 0x800;
 const APIC_SPURIOUS_INTERRUPT_VECTOR: usize = 0xF0;
 const APIC_SOFTWARE_ENABLE: u32 = 0x100;
+const APIC_TIMER_LVT: usize = 0x320;
+const APIC_TIMER_INITIAL_COUNT: usize = 0x380;
+const APIC_TIMER_CURRENT_COUNT: usize = 0x390;
+const APIC_TIMER_DIVIDE_CONFIG: usize = 0x3E0;
+const APIC_EOI: usize = 0xB0;
+
+static APIC_VIRT_BASE: AtomicUsize = AtomicUsize::new(0);
 
 fn set_apic_base(apic: usize) {
     let eax: u32 = ((apic & 0xfffff000) | APIC_BASE_MSR_ENABLE as usize) as u32;
@@ -17,34 +25,50 @@ fn set_apic_base(apic: usize) {
     write_msr(APIC_BASE_MSR, ((edx as u64) << 32) | (eax as u64));
 }
 
-fn get_apic_base() -> usize {
+/// Get the physical address of the APIC base
+pub fn get_apic_base() -> usize {
     let msr_value: u64 = read_msr(APIC_BASE_MSR);
     (msr_value as usize) & 0xfffff000
 }
 
+/// Set the virtual address where the APIC is mapped
+pub fn set_apic_virt_base(virt_addr: usize) {
+    APIC_VIRT_BASE.store(virt_addr, Ordering::SeqCst);
+}
+
 /// Read from an APIC register at the given offset
 fn read_apic_register(offset: usize) -> u32 {
-    let apic_base = get_apic_base();
+    let apic_base = APIC_VIRT_BASE.load(Ordering::SeqCst);
     let register = (apic_base + offset) as *const u32;
     unsafe { core::ptr::read_volatile(register) }
 }
 
 /// Write to an APIC register at the given offset
 fn write_apic_register(offset: usize, value: u32) {
-    let apic_base = get_apic_base();
+    let apic_base = APIC_VIRT_BASE.load(Ordering::SeqCst);
     let register = (apic_base + offset) as *mut u32;
     unsafe { core::ptr::write_volatile(register, value) };
 }
 
+/// Enable the Local APIC
 pub fn enable_apic() {
     let cpu_features = CPUFeatures::detect();
-    
     if !cpu_features.apic {
         panic!("APIC not supported on this CPU");
     }
-    
     set_apic_base(get_apic_base());
-    
     let svr = read_apic_register(APIC_SPURIOUS_INTERRUPT_VECTOR);
     write_apic_register(APIC_SPURIOUS_INTERRUPT_VECTOR, svr | APIC_SOFTWARE_ENABLE);
+}
+
+/// Initialize the APIC timer
+pub fn init_apic_timer(interrupt_vector: u8, initial_count: u32) {
+    write_apic_register(APIC_TIMER_DIVIDE_CONFIG, 0x3);
+    write_apic_register(APIC_TIMER_LVT, (interrupt_vector as u32) | (1 << 17));
+    write_apic_register(APIC_TIMER_INITIAL_COUNT, initial_count);
+}
+
+/// Send End-Of-Interrupt signal to the APIC
+pub fn apic_eoi() {
+    write_apic_register(APIC_EOI, 0);
 }

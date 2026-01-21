@@ -5,16 +5,13 @@ use ide::ide_irq_handler;
 use pic8259::ChainedPics;
 use spin::Mutex;
 use syscall::syscall_handler::syscall_handler;
-use x86_64::instructions::port::Port;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use bare_x86_64::cpu::apic;
 
 const PIC_1_OFFSET: u8 = 32;
 const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
-const PIT_FREQUENCY: u32 = 1193182;
-const TARGET_FREQUENCY: u32 = 10000;
-const PIT_CMD_PORT: u16 = 0x43;
-const PIT_DATA_PORT: u16 = 0x40;
+const APIC_TIMER_VECTOR: u8 = 32;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -25,7 +22,6 @@ pub fn idt_init() {
 
     register_exception_handlers(idt);
     configure_pics();
-    init_pit(TARGET_FREQUENCY);
     register_interrupt_handlers(idt);
 
     idt.load();
@@ -59,28 +55,15 @@ fn configure_pics() {
     unsafe { pics.initialize() };
 
     let mut masks = unsafe { pics.read_masks() };
-    masks[0] &= !(1 << 0);
     masks[1] &= !(1 << 6 | 1 << 7);
     unsafe { pics.write_masks(masks[0], masks[1]) };
 }
 
 fn register_interrupt_handlers(idt: &mut InterruptDescriptorTable) {
-    set_raw_idt_entry(idt, PIC_1_OFFSET, timer_handler as *const () as u64);
+    set_raw_idt_entry(idt, APIC_TIMER_VECTOR, apic_timer_handler as *const () as u64);
     idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
     idt[PIC_2_OFFSET + 7].set_handler_fn(ide_secondary_handler);
     idt[128].set_handler_fn(isr128_handler);
-}
-
-fn init_pit(frequency: u32) {
-    let divisor = PIT_FREQUENCY / frequency;
-    let mut cmd_port = Port::<u8>::new(PIT_CMD_PORT);
-    let mut data_port = Port::<u8>::new(PIT_DATA_PORT);
-
-    unsafe {
-        cmd_port.write(0x36);
-        data_port.write((divisor & 0xFF) as u8);
-        data_port.write((divisor >> 8) as u8);
-    }
 }
 
 fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
@@ -100,7 +83,7 @@ fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr
 }
 
 #[unsafe(naked)]
-extern "C" fn timer_handler() {
+extern "C" fn apic_timer_handler() {
     core::arch::naked_asm!(
         "push rax",
         "push rbx",
@@ -117,8 +100,6 @@ extern "C" fn timer_handler() {
         "push r13",
         "push r14",
         "push r15",
-        "mov al, 0x20",
-        "out 0x20, al",
         "mov rdi, rsp",
         "call {handler}",
         "mov rsp, rax",
@@ -138,19 +119,20 @@ extern "C" fn timer_handler() {
         "pop rbx",
         "pop rax",
         "iretq",
-        handler = sym timer_interrupt_handler,
+        handler = sym apic_timer_interrupt_handler,
     );
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn timer_interrupt_handler(rsp: u64) -> u64 {
+extern "C" fn apic_timer_interrupt_handler(rsp: u64) -> u64 {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    apic::apic_eoi();
     sched::handle_timer_interrupt(rsp)
 }
 
 pub fn timer_wait_ms(ms: u64) {
     let start = TIMER_TICKS.load(Ordering::Relaxed);
-    let target = start + (ms * TARGET_FREQUENCY as u64) / 1000;
+    let target = start + (ms * 10000) / 1000;
 
     while TIMER_TICKS.load(Ordering::Relaxed) < target {
         core::hint::spin_loop();
@@ -159,7 +141,7 @@ pub fn timer_wait_ms(ms: u64) {
 
 pub fn timer_wait_us(us: u64) {
     let start = TIMER_TICKS.load(Ordering::Relaxed);
-    let target = start + (us * TARGET_FREQUENCY as u64) / 1_000_000;
+    let target = start + (us * 10000) / 1_000_000;
 
     if target > start {
         while TIMER_TICKS.load(Ordering::Relaxed) < target {

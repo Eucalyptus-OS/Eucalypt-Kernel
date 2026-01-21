@@ -103,13 +103,14 @@ run_qemu() {
         exit 1
     fi
     
+    # Run QEMU with clean environment to avoid snap library conflicts
     env -i \
-        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu \
+        PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
         HOME="$HOME" \
         DISPLAY="$DISPLAY" \
         XAUTHORITY="$XAUTHORITY" \
         TERM="$TERM" \
+        USER="$USER" \
         qemu-system-${KARCH} \
         -M pc \
         -drive if=pflash,unit=0,format=raw,file=${OVMF_DIR}/ovmf-code-${KARCH}.fd,readonly=on \
@@ -138,7 +139,7 @@ distclean() {
     echo "✓ Distclean complete"
 }
 
-case "${1:-run}" in
+case "${1:-}" in
     build)
         build_kernel
         build_iso
@@ -153,7 +154,7 @@ case "${1:-run}" in
         clean
         ;;
     distclean)
-        distclean
+        clean
         ;;
     kernel)
         build_kernel

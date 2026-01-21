@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod gdt;
 pub mod idt;
 pub mod elf;
+pub mod smp;
 
 // Re-exports
 pub use memory::allocator::init_allocator;
