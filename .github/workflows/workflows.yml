@@ -16,4 +16,4 @@ jobs:
         sudo apt-get install -y xorriso ovmf nasm mtools
     
     - name: Build
-      run: cargo build --release
+      run: ./build.sh build
