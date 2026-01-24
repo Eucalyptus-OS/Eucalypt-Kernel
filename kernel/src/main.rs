@@ -7,12 +7,12 @@ use ahci::init_ahci;
 use core::arch::asm;
 use eucalypt_fs::write_eucalypt_fs;
 use eucalypt_os::idt::timer_wait_ms;
-use eucalypt_os::{VMM, gdt, idt, init_allocator};
+use eucalypt_os::{VMM, gdt, idt, init_allocator, mp};
 use framebuffer::{ScrollingTextRenderer, panic_print, println};
 use ide::ide_init;
 use limine::BaseRevision;
 use limine::request::{
-    FramebufferRequest, MemoryMapRequest, RsdpRequest,
+    FramebufferRequest, MemoryMapRequest, RsdpRequest, MpRequest,
     RequestsEndMarker, RequestsStartMarker,
 };
 use memory::mmio::{map_mmio, mmio_map_range};
@@ -39,6 +39,11 @@ static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".requests")]
 pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
+
+#[used]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".requests")]
+pub static MP_REQUEST: MpRequest = MpRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
@@ -80,7 +85,6 @@ extern "C" fn kmain() -> ! {
     unsafe {
         asm!("sti");
     }
-
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
     let apic_virt = map_mmio(get_apic_base() as u64, 0x1000)
         .expect("Failed to map APIC MMIO region");
@@ -92,6 +96,7 @@ extern "C" fn kmain() -> ! {
     write_eucalypt_fs(0);
     usb::init_usb();
     init_ahci();
+    mp::init_mp();
 
     let kernel_main_rsp: u64;
     println!("Getting RSP");

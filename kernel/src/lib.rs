@@ -8,7 +8,7 @@ extern crate alloc;
 pub mod gdt;
 pub mod idt;
 pub mod elf;
-pub mod smp;
+pub mod mp;
 pub mod acpi;
 
 // Re-exports

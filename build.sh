@@ -119,6 +119,7 @@ run_qemu() {
         -drive file=${DISK_DIR}/ahci_disk.img,format=raw,if=none,id=ahci0 \
         -device ahci,id=ahci \
         -device ide-hd,drive=ahci0,bus=ahci.0 \
+        -smp 4 \
         ${QEMUFLAGS}
 }
 

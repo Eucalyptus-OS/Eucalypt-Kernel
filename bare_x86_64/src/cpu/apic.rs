@@ -2,7 +2,7 @@
 //! 
 //! The APIC is the modern replacement for the obsolete PIT timer,
 //! with better multi-core support and additional features.
-//! 
+//!
 use super::cpu_types::CPUFeatures;
 use super::msr::{read_msr, write_msr};
 use core::sync::atomic::{AtomicUsize, Ordering};
