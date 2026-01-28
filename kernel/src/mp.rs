@@ -20,7 +20,9 @@ pub fn init_mp() {
 
         println!("CPU ID: 0x{:X}, Type: {}", cpu.id, type_str);
     }
-    unsafe {asm!(
+
+    unsafe {
+        asm!(
         "2:",
         "hlt",
         "jmp 2b"
