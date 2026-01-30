@@ -19,6 +19,9 @@ setup_limine() {
         echo "Cloning Limine bootloader..."
         git clone https://github.com/limine-bootloader/limine.git --branch=v8.x-binary --depth=1
     fi
+    
+    echo "Checking Limine files..."
+    ls -la "${LIMINE_DIR}/" || true
 }
 
 build_iso() {
@@ -33,17 +36,45 @@ build_iso() {
         echo "ERROR: Kernel binary not found at kernel/kernel"
         exit 1
     fi
-    cp kernel/kernel "${ISO_ROOT}/"
+    cp -v kernel/kernel "${ISO_ROOT}/"
     
     mkdir -p "${ISO_ROOT}/boot"
-    cp "${LIMINE_DIR}/limine-bios.sys" "${ISO_ROOT}/boot/" 2>/dev/null || true
-    cp "${LIMINE_DIR}/limine-bios-cd.bin" "${ISO_ROOT}/boot/" 2>/dev/null || true
-    cp "${LIMINE_DIR}/limine-uefi-cd.bin" "${ISO_ROOT}/boot/" 2>/dev/null || true
+    
+    echo "Copying Limine boot files..."
+    if [ -f "${LIMINE_DIR}/limine-bios.sys" ]; then
+        cp -v "${LIMINE_DIR}/limine-bios.sys" "${ISO_ROOT}/boot/"
+    else
+        echo "WARNING: limine-bios.sys not found"
+    fi
+    
+    if [ -f "${LIMINE_DIR}/limine-bios-cd.bin" ]; then
+        cp -v "${LIMINE_DIR}/limine-bios-cd.bin" "${ISO_ROOT}/boot/"
+    else
+        echo "ERROR: limine-bios-cd.bin not found - this is required!"
+        ls -la "${LIMINE_DIR}/" | grep -i limine
+        exit 1
+    fi
+    
+    if [ -f "${LIMINE_DIR}/limine-uefi-cd.bin" ]; then
+        cp -v "${LIMINE_DIR}/limine-uefi-cd.bin" "${ISO_ROOT}/boot/"
+    else
+        echo "WARNING: limine-uefi-cd.bin not found"
+    fi
     
     mkdir -p "${ISO_ROOT}/EFI/BOOT"
-    cp "${LIMINE_DIR}/BOOTX64.EFI" "${ISO_ROOT}/EFI/BOOT/" 2>/dev/null || true
-    cp "${LIMINE_DIR}/BOOTIA32.EFI" "${ISO_ROOT}/EFI/BOOT/" 2>/dev/null || true
+    if [ -f "${LIMINE_DIR}/BOOTX64.EFI" ]; then
+        cp -v "${LIMINE_DIR}/BOOTX64.EFI" "${ISO_ROOT}/EFI/BOOT/"
+    else
+        echo "WARNING: BOOTX64.EFI not found"
+    fi
     
+    if [ -f "${LIMINE_DIR}/BOOTIA32.EFI" ]; then
+        cp -v "${LIMINE_DIR}/BOOTIA32.EFI" "${ISO_ROOT}/EFI/BOOT/"
+    else
+        echo "WARNING: BOOTIA32.EFI not found"
+    fi
+    
+    echo "Creating limine.conf..."
     cat > "${ISO_ROOT}/boot/limine.conf" << 'EOF'
 timeout: 0
 
@@ -52,16 +83,31 @@ timeout: 0
     kernel_path: boot():/kernel
 EOF
     
+    echo "ISO root contents:"
+    find "${ISO_ROOT}" -type f
+    
     echo "Creating ISO with xorriso..."
+    if ! command -v xorriso &> /dev/null; then
+        echo "ERROR: xorriso not found! Install with: sudo apt install xorriso"
+        exit 1
+    fi
+    
     xorriso -as mkisofs \
         -b boot/limine-bios-cd.bin \
         -no-emul-boot -boot-load-size 4 -boot-info-table \
         --efi-boot boot/limine-uefi-cd.bin \
         -efi-boot-part --efi-boot-image --protective-msdos-label \
-        "${ISO_ROOT}" -o "${IMAGE_NAME}.iso" 2>/dev/null
+        "${ISO_ROOT}" -o "${IMAGE_NAME}.iso"
     
-    if [ -f "${LIMINE_DIR}/limine" ]; then
-        "${LIMINE_DIR}/limine" bios-install "${IMAGE_NAME}.iso" 2>/dev/null || true
+    if [ -f "${LIMINE_DIR}/limine" ] || [ -f "${LIMINE_DIR}/limine-deploy" ]; then
+        echo "Installing Limine bootloader to ISO..."
+        if [ -f "${LIMINE_DIR}/limine" ]; then
+            "${LIMINE_DIR}/limine" bios-install "${IMAGE_NAME}.iso" || echo "Warning: limine bios-install failed"
+        elif [ -f "${LIMINE_DIR}/limine-deploy" ]; then
+            "${LIMINE_DIR}/limine-deploy" "${IMAGE_NAME}.iso" || echo "Warning: limine-deploy failed"
+        fi
+    else
+        echo "WARNING: Limine installer not found"
     fi
     
     if [ ! -f "${IMAGE_NAME}.iso" ]; then
@@ -186,7 +232,7 @@ case "${1:-}" in
         clean
         ;;
     distclean)
-        clean
+        distclean
         ;;
     kernel)
         build_kernel
@@ -196,13 +242,13 @@ case "${1:-}" in
         ;;
     *)
         echo "Usage: $0 {build|run|clean|distclean|kernel|iso}"
-        echo "  build     - Build kernel and ISO"
-        echo "  run       - Build and run in QEMU (default)"
-        echo "  codespace - Build and run in QEMU with codespaces"
-        echo "  kernel    - Build kernel only"
-        echo "  iso       - Build ISO only (requires kernel)"
-        echo "  clean     - Clean build artifacts"
-        echo "  distclean - Deep clean everything"
+        echo "  build        - Build kernel and ISO"
+        echo "  run          - Build and run in QEMU (default)"
+        echo "  run-codespace- Build and run in QEMU with codespaces"
+        echo "  kernel       - Build kernel only"
+        echo "  iso          - Build ISO only (requires kernel)"
+        echo "  clean        - Clean build artifacts"
+        echo "  distclean    - Deep clean everything"
         exit 1
         ;;
 esac

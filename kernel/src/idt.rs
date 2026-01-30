@@ -1,8 +1,10 @@
 use core::arch::asm;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU64, Ordering};
+use framebuffer::{println, print};
 use ide::ide_irq_handler;
 use pic8259::ChainedPics;
+use sched::yield_process;
 use spin::Mutex;
 use syscall::syscall_handler::syscall_handler;
 use x86_64::registers::control::Cr2;
@@ -12,6 +14,7 @@ use bare_x86_64::cpu::apic;
 const PIC_1_OFFSET: u8 = 32;
 const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 const APIC_TIMER_VECTOR: u8 = 32;
+const APIC_TIMER_HZ: u64 = 1000;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -19,11 +22,9 @@ static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { ChainedPics::new(PIC_1_OFF
 
 pub fn idt_init() {
     let idt = unsafe { &mut *addr_of_mut!(IDT) };
-
     register_exception_handlers(idt);
     configure_pics();
     register_interrupt_handlers(idt);
-
     idt.load();
 }
 
@@ -53,7 +54,6 @@ fn register_exception_handlers(idt: &mut InterruptDescriptorTable) {
 fn configure_pics() {
     let mut pics = PICS.lock();
     unsafe { pics.initialize() };
-
     let mut masks = unsafe { pics.read_masks() };
     masks[1] &= !(1 << 6 | 1 << 7);
     unsafe { pics.write_masks(masks[0], masks[1]) };
@@ -69,13 +69,8 @@ fn register_interrupt_handlers(idt: &mut InterruptDescriptorTable) {
 fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
     let idt_ptr = idt as *mut InterruptDescriptorTable as *mut u64;
     let entry_ptr = unsafe { idt_ptr.add(index as usize * 2) };
-
-    let low = (handler_addr & 0xFFFF)
-        | (0x08 << 16)
-        | (0x8E00 << 32)
-        | ((handler_addr & 0xFFFF_0000) << 32);
+    let low = (handler_addr & 0xFFFF) | (0x08 << 16) | (0x8E00 << 32) | ((handler_addr & 0xFFFF_0000) << 32);
     let high = handler_addr >> 32;
-
     unsafe {
         *entry_ptr = low;
         *entry_ptr.add(1) = high;
@@ -132,20 +127,20 @@ extern "C" fn apic_timer_interrupt_handler(rsp: u64) -> u64 {
 
 pub fn timer_wait_ms(ms: u64) {
     let start = TIMER_TICKS.load(Ordering::Relaxed);
-    let target = start + (ms * 10000) / 1000;
-
+    let target = start + ms * APIC_TIMER_HZ / 1000;
     while TIMER_TICKS.load(Ordering::Relaxed) < target {
-        core::hint::spin_loop();
+        yield_process();
     }
 }
 
 pub fn timer_wait_us(us: u64) {
     let start = TIMER_TICKS.load(Ordering::Relaxed);
-    let target = start + (us * 10000) / 1_000_000;
-
-    if target > start {
+    let ticks_needed = us * APIC_TIMER_HZ / 1_000_000;
+    
+    if ticks_needed > 0 {
+        let target = start + ticks_needed;
         while TIMER_TICKS.load(Ordering::Relaxed) < target {
-            core::hint::spin_loop();
+            yield_process();
         }
     } else {
         for _ in 0..(us / 10) {

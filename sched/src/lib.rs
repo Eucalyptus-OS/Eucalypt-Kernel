@@ -1,10 +1,11 @@
 #![no_std]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use process::{ProcessState, PROCESS_COUNT, PROCESS_TABLE};
+use core::{sync::atomic::{AtomicBool, AtomicU64, Ordering}};
+use framebuffer::println;
+use process::{PROCESS_COUNT, PROCESS_TABLE, ProcessState};
 
 static SCHEDULER_ENABLED: AtomicBool = AtomicBool::new(false);
-static QUANTUM: AtomicU64 = AtomicU64::new(5);
+static QUANTUM: AtomicU64 = AtomicU64::new(1);
 static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn init_scheduler() {
@@ -37,7 +38,7 @@ pub fn handle_timer_interrupt(current_rsp: u64) -> u64 {
 
     let ticks = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     
-    if ticks & (QUANTUM.load(Ordering::Relaxed) - 1) == 0 {
+    if ticks % QUANTUM.load(Ordering::Relaxed) == 0 {
         schedule_preemptive(current_rsp)
     } else {
         current_rsp
@@ -127,8 +128,6 @@ fn perform_context_switch(from: usize, to: usize) {
         let to_rsp = PROCESS_TABLE.processes[to].as_ref().unwrap().rsp;
 
         context_switch(from_rsp_ptr, to_rsp);
-
-        PROCESS_TABLE.current = from;
     }
 }
 
@@ -156,6 +155,7 @@ unsafe extern "C" fn context_switch(_curr_rsp_ptr: *mut u64, _next_rsp: u64) {
 #[inline(always)]
 pub fn yield_process() {
     if SCHEDULER_ENABLED.load(Ordering::Acquire) {
+        println!(".");
         schedule();
     }
 }

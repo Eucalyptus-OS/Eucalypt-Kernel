@@ -20,6 +20,7 @@ pub static mut PROCESS_TABLE: ProcessTable = ProcessTable {
 pub enum ProcessState {
     Ready,
     Running,
+    Waiting,
     Blocked,
     Terminated,
 }

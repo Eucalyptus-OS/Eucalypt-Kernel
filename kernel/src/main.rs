@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use ahci::init_ahci;
+use sched::yield_process;
 use core::arch::asm;
 use eucalypt_fs::write_eucalypt_fs;
 use eucalypt_os::idt::timer_wait_ms;
@@ -90,10 +91,10 @@ extern "C" fn kmain() -> ! {
         .expect("Failed to map APIC MMIO region");
     set_apic_virt_base(apic_virt as usize);
     enable_apic();
-    init_apic_timer(32, 10000);
+    init_apic_timer(32, 1000);
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
-    write_eucalypt_fs(0);
+    //write_eucalypt_fs(0);
     usb::init_usb();
     init_ahci();
     mp::init_mp();
@@ -121,14 +122,14 @@ extern "C" fn kmain() -> ! {
 fn test_process_1() {
     loop {
         println!("Process 1 running");
-        timer_wait_ms(1);
+        timer_wait_ms(1000);
     }
 }
 
 fn test_process_2() {
     loop {
         println!("Process 2 running");
-        timer_wait_ms(1);
+        timer_wait_ms(1000);
     }
 }
 
