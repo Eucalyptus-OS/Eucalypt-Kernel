@@ -3,23 +3,60 @@
 
 extern crate alloc;
 
-use ahci::init_ahci;
-use sched::yield_process;
 use core::arch::asm;
-use eucalypt_fs::write_eucalypt_fs;
-use eucalypt_os::idt::timer_wait_ms;
-use eucalypt_os::{VMM, gdt, idt, init_allocator, mp};
-use framebuffer::{ScrollingTextRenderer, panic_print, println};
-use ide::ide_init;
+
+use eucalypt_os::gdt::gdt_init;
+use eucalypt_os::idt::idt_init;
+use eucalypt_os::mp::init_mp;
+
 use limine::BaseRevision;
 use limine::request::{
-    FramebufferRequest, MemoryMapRequest, RsdpRequest, MpRequest,
-    RequestsEndMarker, RequestsStartMarker,
+    FramebufferRequest,
+    MemoryMapRequest,
+    RsdpRequest,
+    MpRequest,
+    RequestsStartMarker,
+    RequestsEndMarker,
 };
-use memory::mmio::{map_mmio, mmio_map_range};
+
+use bare_x86_64::cpu::apic::{
+    enable_apic,
+    get_apic_base,
+    set_apic_virt_base,
+    init_apic_timer,
+    calibrate_apic_timer,
+};
+
+use eucalypt_os::{
+    VMM,
+    init_allocator,
+};
+
+use memory::mmio::{
+    map_mmio,
+    mmio_map_range,
+};
+
 use pci::check_all_buses;
-use process::create_process;
-use bare_x86_64::cpu::apic::{enable_apic, get_apic_base, set_apic_virt_base, init_apic_timer};
+use ide::ide_init;
+use ahci::init_ahci;
+
+use sched::{
+    init_scheduler,
+    enable_scheduler,
+    sleep_proc_ms,
+};
+use process::{
+    init_kernel_process,
+    create_process,
+};
+
+use framebuffer::{
+    ScrollingTextRenderer,
+    panic_print,
+    println,
+};
+use usb::init_usb;
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
@@ -81,8 +118,8 @@ extern "C" fn kmain() -> ! {
     VMM::init(memmap_response);
     init_allocator(memmap_response);
 
-    gdt::gdt_init();
-    idt::idt_init();
+    gdt_init();
+    idt_init();
     unsafe {
         asm!("sti");
     }
@@ -91,13 +128,14 @@ extern "C" fn kmain() -> ! {
         .expect("Failed to map APIC MMIO region");
     set_apic_virt_base(apic_virt as usize);
     enable_apic();
-    init_apic_timer(32, 1000);
+    let initial_count = calibrate_apic_timer(1000);
+    init_apic_timer(32, initial_count);
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
-    //write_eucalypt_fs(0);
-    usb::init_usb();
+    init_usb();
     init_ahci();
-    mp::init_mp();
+    let mp_response = MP_REQUEST.get_response().expect("No MP response from Limine");
+    init_mp(mp_response);
 
     let kernel_main_rsp: u64;
     println!("Getting RSP");
@@ -105,12 +143,12 @@ extern "C" fn kmain() -> ! {
         asm!("mov {}, rsp", out(reg) kernel_main_rsp);
     }
     println!("Kernel RSP: {}", kernel_main_rsp);
-    process::init_kernel_process(kernel_main_rsp);
+    init_kernel_process(kernel_main_rsp);
     println!("Creating Processes");
     create_process(test_process_1 as *mut ()).expect("Failed to create process 1");
     create_process(test_process_2 as *mut ()).expect("Failed to create process 2");
-    sched::init_scheduler();
-    sched::enable_scheduler();
+    init_scheduler();
+    enable_scheduler();
 
     loop {
         unsafe {
@@ -122,14 +160,14 @@ extern "C" fn kmain() -> ! {
 fn test_process_1() {
     loop {
         println!("Process 1 running");
-        timer_wait_ms(1000);
+        sleep_proc_ms(1000);
     }
 }
 
 fn test_process_2() {
     loop {
         println!("Process 2 running");
-        timer_wait_ms(1000);
+        sleep_proc_ms(1000);
     }
 }
 

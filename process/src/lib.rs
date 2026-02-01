@@ -3,7 +3,6 @@
 extern crate alloc;
 
 use core::alloc::Layout;
-use core::arch::asm;
 use framebuffer::println;
 use memory::vmm::{PageTable, VMM};
 
@@ -20,8 +19,8 @@ pub static mut PROCESS_TABLE: ProcessTable = ProcessTable {
 pub enum ProcessState {
     Ready,
     Running,
-    Waiting,
     Blocked,
+    Sleeping,
     Terminated,
 }
 
@@ -32,6 +31,8 @@ pub struct Process {
     pub entry: *mut (),
     pub pml4: *mut PageTable,
     pub state: ProcessState,
+    pub ticks_ready: u64,
+    pub wake_at_tick: u64,
 }
 
 pub struct ProcessTable {
@@ -49,6 +50,8 @@ pub fn init_kernel_process(rsp: u64) {
         entry: core::ptr::null_mut(),
         pml4: kernel_pml4,
         state: ProcessState::Running,
+        ticks_ready: 0,
+        wake_at_tick: 0,
     };
 
     unsafe {
@@ -80,6 +83,8 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
             entry,
             pml4: kernel_pml4,
             state: ProcessState::Ready,
+            ticks_ready: 0,
+            wake_at_tick: 0,
         };
 
         PROCESS_TABLE.processes[pid as usize] = Some(process);
@@ -125,16 +130,12 @@ pub fn cleanup_terminated_processes() {
     }
 }
 
-pub fn exit_current_process() -> ! {
+pub fn exit_current_process() {
     unsafe {
         let current = PROCESS_TABLE.current;
         if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
             println!("Process {} exiting", proc.pid);
             proc.state = ProcessState::Terminated;
-        }
-
-        loop {
-            asm!("hlt");
         }
     }
 }
@@ -227,16 +228,12 @@ extern "C" fn process_entry_wrapper() {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn process_exit(_return_value: u64) -> ! {
+fn process_exit(return_value: u64) {
     unsafe {
         let current = PROCESS_TABLE.current;
         if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
-            println!("Process {} exited", proc.pid);
+            println!("Process {} exited\nReturn val: {}", proc.pid, return_value);
             proc.state = ProcessState::Terminated;
-        }
-
-        loop {
-            asm!("hlt");
         }
     }
 }
