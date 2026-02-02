@@ -1,17 +1,21 @@
-use core::arch::asm;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU64, Ordering};
+use bare_x86_64::cpu::apic;
 use ide::ide_irq_handler;
 use pic8259::ChainedPics;
 use spin::Mutex;
 use syscall::syscall_handler::syscall_handler;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use bare_x86_64::cpu::apic;
+use x86_64::registers::model_specific::Msr;
 
 const PIC_1_OFFSET: u8 = 32;
 const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 const APIC_TIMER_VECTOR: u8 = 32;
+
+const IA32_STAR: u32 = 0xC000_0081;
+const IA32_LSTAR: u32 = 0xC000_0082;
+const IA32_FMASK: u32 = 0xC000_0084;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -85,9 +89,11 @@ pub fn idt_init() {
     }
 
     set_raw_idt_entry(idt, APIC_TIMER_VECTOR, apic_timer_handler as *const () as u64);
+
     idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
     idt[PIC_2_OFFSET + 7].set_handler_fn(ide_secondary_handler);
-    idt[128].set_handler_fn(isr128_handler);
+
+    init_syscall();
 
     idt.load();
 }
@@ -95,13 +101,33 @@ pub fn idt_init() {
 fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
     let idt_ptr = idt as *mut InterruptDescriptorTable as *mut u64;
     let entry_ptr = unsafe { idt_ptr.add(index as usize * 2) };
-    let low = (handler_addr & 0xFFFF) | (0x08 << 16) | (0x8E00 << 32) | ((handler_addr & 0xFFFF_0000) << 32);
+    let low = (handler_addr & 0xFFFF)
+        | (0x08 << 16)
+        | (0x8E00 << 32)
+        | ((handler_addr & 0xFFFF_0000) << 32);
     let high = handler_addr >> 32;
     unsafe {
         *entry_ptr = low;
         *entry_ptr.add(1) = high;
     }
 }
+
+fn init_syscall() {
+    unsafe {
+        let mut star = Msr::new(IA32_STAR);
+        let mut lstar = Msr::new(IA32_LSTAR);
+        let mut fmask = Msr::new(IA32_FMASK);
+
+        let kernel_cs: u64 = 0x08;
+        let user_cs: u64 = 0x1b;
+
+        let star_val = (kernel_cs << 32) | (user_cs << 48);
+        star.write(star_val);
+        lstar.write(syscall_entry as *const () as u64);
+        fmask.write(1 << 9);
+    }
+}
+
 
 #[unsafe(naked)]
 extern "C" fn apic_timer_handler() {
@@ -181,14 +207,33 @@ extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFram
     }
 }
 
-extern "x86-interrupt" fn isr128_handler(_stack_frame: InterruptStackFrame) {
-    unsafe {
-        asm!(
-            "mov rcx, r10",
-            "call {handler}",
-            "iretq",
-            handler = sym syscall_handler,
-            options(noreturn)
-        );
-    }
+#[unsafe(naked)]
+extern "C" fn syscall_entry() {
+    core::arch::naked_asm!(
+        "swapgs",
+        "push r11",
+        "push rcx",
+        "push rbx",
+        "push rbp",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "mov rdi, rax",
+        "mov rsi, rdi",
+        "mov rdx, rsi",
+        "mov rcx, rdx",
+        "call {handler}",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbp",
+        "pop rbx",
+        "pop rcx",
+        "pop r11",
+        "swapgs",
+        "sysretq",
+        handler = sym syscall_handler
+    );
 }

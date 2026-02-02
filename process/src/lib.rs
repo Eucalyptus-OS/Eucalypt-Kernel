@@ -15,6 +15,14 @@ pub static mut PROCESS_TABLE: ProcessTable = ProcessTable {
     current: usize::MAX,
 };
 
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+pub enum Priority {
+    Idle = 0,
+    Normal = 1,
+    High = 2,
+    Realtime = 3,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum ProcessState {
     Ready,
@@ -31,6 +39,7 @@ pub struct Process {
     pub entry: *mut (),
     pub pml4: *mut PageTable,
     pub state: ProcessState,
+    pub priority: Priority,
     pub ticks_ready: u64,
     pub wake_at_tick: u64,
 }
@@ -50,6 +59,7 @@ pub fn init_kernel_process(rsp: u64) {
         entry: core::ptr::null_mut(),
         pml4: kernel_pml4,
         state: ProcessState::Running,
+        priority: Priority::Idle,
         ticks_ready: 0,
         wake_at_tick: 0,
     };
@@ -83,6 +93,7 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
             entry,
             pml4: kernel_pml4,
             state: ProcessState::Ready,
+            priority: Priority::Normal,
             ticks_ready: 0,
             wake_at_tick: 0,
         };
@@ -234,6 +245,9 @@ fn process_exit(return_value: u64) {
         if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
             println!("Process {} exited\nReturn val: {}", proc.pid, return_value);
             proc.state = ProcessState::Terminated;
+        }
+        loop {
+            core::arch::asm!("cli", "sti", "hlt");
         }
     }
 }

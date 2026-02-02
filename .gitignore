@@ -1,6 +1,7 @@
 /limine
 /ovmf
 /target
+/iso_root
 /kernel/target
 *.lock
 *.iso

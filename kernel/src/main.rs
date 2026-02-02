@@ -3,12 +3,15 @@
 
 extern crate alloc;
 
+// Core
 use core::arch::asm;
 
+// Eucalypt
 use eucalypt_os::gdt::gdt_init;
 use eucalypt_os::idt::idt_init;
 use eucalypt_os::mp::init_mp;
 
+// Limine
 use limine::BaseRevision;
 use limine::request::{
     FramebufferRequest,
@@ -19,6 +22,7 @@ use limine::request::{
     RequestsEndMarker,
 };
 
+// Hardware
 use bare_x86_64::cpu::apic::{
     enable_apic,
     get_apic_base,
@@ -27,20 +31,21 @@ use bare_x86_64::cpu::apic::{
     calibrate_apic_timer,
 };
 
-use eucalypt_os::{
-    VMM,
-    init_allocator,
-};
-
-use memory::mmio::{
-    map_mmio,
-    mmio_map_range,
+use memory::{
+    mmio::{
+        map_mmio,
+        mmio_map_range,
+    },
+    vmm::VMM,
+    allocator::init_allocator,
 };
 
 use pci::check_all_buses;
 use ide::ide_init;
 use ahci::init_ahci;
+use usb::init_usb;
 
+// Scheduler and Process
 use sched::{
     init_scheduler,
     enable_scheduler,
@@ -51,12 +56,15 @@ use process::{
     create_process,
 };
 
+// Display
 use framebuffer::{
     ScrollingTextRenderer,
     panic_print,
     println,
 };
-use usb::init_usb;
+
+// FS
+use eucalypt_fs::write_eucalypt_fs;
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
@@ -136,7 +144,7 @@ extern "C" fn kmain() -> ! {
     init_ahci();
     let mp_response = MP_REQUEST.get_response().expect("No MP response from Limine");
     init_mp(mp_response);
-
+    write_eucalypt_fs(0);
     let kernel_main_rsp: u64;
     println!("Getting RSP");
     unsafe {
