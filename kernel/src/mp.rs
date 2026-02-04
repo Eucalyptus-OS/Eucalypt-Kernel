@@ -1,5 +1,5 @@
 use framebuffer::println;
-use limine::response::MpResponse; // adjust path if needed
+use limine::response::MpResponse;
 
 #[derive(Debug, Clone, Copy)]
 enum CoreType {
@@ -35,12 +35,10 @@ pub fn init_mp(res: &'static MpResponse) {
     let hybrid_supported = check_hybrid_support();
 
     if hybrid_supported {
-        println!("Intel Hybrid Architecture detected (P-cores + E-cores)");
+        println!("Intel Hybrid Architecture detected (P-cores + E-cores)\n");
     } else {
-        println!("Standard SMP architecture");
+        println!("Standard SMP architecture\n");
     }
-
-    println!();
 
     let mut p_core_count = 0;
     let mut e_core_count = 0;
