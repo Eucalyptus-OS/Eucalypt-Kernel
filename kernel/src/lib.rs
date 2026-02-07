@@ -10,11 +10,6 @@ pub mod idt;
 pub mod elf;
 pub mod mp;
 
-// Re-exports
-pub use memory::allocator::init_allocator;
-pub use memory::addr::{PhysAddr, VirtAddr};
-pub use memory::vmm::{VMM, PageTableEntry};
-
 // C functions go here
 unsafe extern "C" {
 }

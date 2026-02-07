@@ -54,7 +54,7 @@ macro_rules! register_exceptions {
 }
 
 pub fn idt_init() {
-    let idt = unsafe { &mut *addr_of_mut!(IDT) };
+    let idt: &mut InterruptDescriptorTable = unsafe { &mut *addr_of_mut!(IDT) };
 
     register_exceptions!(idt,
         divide_error             : divide_error_handler,            "DIVIDE ERROR";
