@@ -1,4 +1,4 @@
-use framebuffer::println;
+use serial::serial_println;
 use limine::response::MpResponse;
 
 #[derive(Debug, Clone, Copy)]
@@ -30,14 +30,14 @@ impl CoreType {
 }
 
 pub fn init_mp(res: &'static MpResponse) {
-    println!("Total CPU cores detected: {}", res.cpus().len());
+    serial_println!("Total CPU cores detected: {}", res.cpus().len());
 
     let hybrid_supported = check_hybrid_support();
 
     if hybrid_supported {
-        println!("Intel Hybrid Architecture detected (P-cores + E-cores)\n");
+        serial_println!("Intel Hybrid Architecture detected (P-cores + E-cores)\n");
     } else {
-        println!("Standard SMP architecture\n");
+        serial_println!("Standard SMP architecture\n");
     }
 
     let mut p_core_count = 0;
@@ -62,13 +62,13 @@ pub fn init_mp(res: &'static MpResponse) {
 
         match core_type {
             CoreType::Unknown(val) => {
-                println!(
+                serial_println!(
                     "  Core {}: LAPIC ID 0x{:X}, Type: Unknown (0x{:X})",
                     index, cpu.id, val
                 );
             }
             _ => {
-                println!(
+                serial_println!(
                     "  Core {}: LAPIC ID 0x{:X}, Type: {}",
                     index, cpu.id, core_type.as_str()
                 );
@@ -76,19 +76,19 @@ pub fn init_mp(res: &'static MpResponse) {
         }
     }
 
-    println!();
-    println!("Core Type Summary");
+    serial_println!();
+    serial_println!("Core Type Summary");
     if p_core_count > 0 {
-        println!("  P-cores (Performance): {}", p_core_count);
+        serial_println!("  P-cores (Performance): {}", p_core_count);
     }
     if e_core_count > 0 {
-        println!("  E-cores (Efficiency): {}", e_core_count);
+        serial_println!("  E-cores (Efficiency): {}", e_core_count);
     }
     if standard_count > 0 {
-        println!("  Standard SMP cores: {}", standard_count);
+        serial_println!("  Standard SMP cores: {}", standard_count);
     }
     if unknown_count > 0 {
-        println!("  Unknown core types: {}", unknown_count);
+        serial_println!("  Unknown core types: {}", unknown_count);
     }
 }
 

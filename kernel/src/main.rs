@@ -23,6 +23,8 @@ use limine::request::{
 };
 
 // Hardware
+use serial::serial_println;
+
 use bare_x86_64::cpu::apic::{
     enable_apic,
     get_apic_base,
@@ -118,7 +120,7 @@ extern "C" fn kmain() -> ! {
         framebuffer.bpp() as usize,
         FONT,
     );
-    println!("eucalyptOS Starting...");
+    serial_println!("eucalyptOS Starting...");
 
     let memmap_response = MEMMAP_REQUEST
         .get_response()
@@ -146,13 +148,13 @@ extern "C" fn kmain() -> ! {
     init_mp(mp_response);
     write_eucalypt_fs(0);
     let kernel_main_rsp: u64;
-    println!("Getting RSP");
+    serial_println!("Getting RSP");
     unsafe {
         asm!("mov {}, rsp", out(reg) kernel_main_rsp);
     }
-    println!("Kernel RSP: {}", kernel_main_rsp);
+    serial_println!("Kernel RSP: {}", kernel_main_rsp);
     init_kernel_process(kernel_main_rsp);
-    println!("Creating Processes");
+    serial_println!("Creating Processes");
     create_process(test_process_1 as *mut ()).expect("Failed to create process 1");
     create_process(test_process_2 as *mut ()).expect("Failed to create process 2");
     init_scheduler();
@@ -167,14 +169,14 @@ extern "C" fn kmain() -> ! {
 
 fn test_process_1() {
     loop {
-        println!("Process 1 running");
+        serial_println!("Process 1 running");
         sleep_proc_ms(1000);
     }
 }
 
 fn test_process_2() {
     loop {
-        println!("Process 2 running");
+        serial_println!("Process 2 running");
         sleep_proc_ms(1000);
     }
 }

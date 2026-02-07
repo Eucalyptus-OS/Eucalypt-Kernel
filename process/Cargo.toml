@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 memory ={ workspace = true }
-framebuffer = { workspace = true }
+serial = { workspace = true }

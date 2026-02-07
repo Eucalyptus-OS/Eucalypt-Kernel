@@ -1,0 +1,9 @@
+[package]
+name = "serial"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+spin = { workspace = true }
+uart_16550 = "0.4.0"
+lazy_static = { workspace = true }

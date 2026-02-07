@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use bare_x86_64::{outl, inl};
-use framebuffer::println;
+use serial::serial_println;
 
 // PCI Configuration Space I/O Ports
 const PCI_CONFIG_ADDRESS: u16 = 0xCF8;
@@ -252,7 +252,7 @@ pub fn check_function(bus: u8, device: u8, function: u8) {
     }
 
     let device_id = get_device_id(bus, device, function);
-    println!("Found PCI device: Bus {:02x}, Device {:02x}, Func {:02x} => Vendor: {:04x}, Device: {:04x}",
+    serial_println!("Found PCI device: Bus {:02x}, Device {:02x}, Func {:02x} => Vendor: {:04x}, Device: {:04x}",
              bus, device, function, vendor, device_id);
 
     pci_add_device(bus, device, function);

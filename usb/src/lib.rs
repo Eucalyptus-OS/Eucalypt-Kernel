@@ -1,6 +1,6 @@
 #![no_std]
 
-use framebuffer::println;
+use serial::serial_println;
 use pci;
 use xhci;
 use memory;
@@ -47,7 +47,7 @@ pub fn init_usb() {
     let mut phys_base: u64;
     match pci::pci_find_xhci_controller() {
         Some(device) => {
-            println!("Found XHCI controller at bus {}, device {}, function {}", device.bus, device.device, device.function);
+            serial_println!("Found XHCI controller at bus {}, device {}, function {}", device.bus, device.device, device.function);
             pci::pci_enable_memory_space(device.bus, device.device, device.function);
             pci::pci_enable_bus_master(device.bus, device.device, device.function);
 
@@ -65,7 +65,7 @@ pub fn init_usb() {
             }
         }
         None => {
-            println!("No XHCI controller found");
+            serial_println!("No XHCI controller found");
             usb_unlock();
             return;
         }
@@ -100,7 +100,7 @@ pub fn init_usb() {
     let cmd_phys = match cmd_phys {
         Some(p) => p,
         None => {
-            println!("Failed to allocate command ring frame");
+            serial_println!("Failed to allocate command ring frame");
             usb_unlock();
             return;
         }
@@ -109,7 +109,7 @@ pub fn init_usb() {
     let evt_phys = match evt_phys {
         Some(p) => p,
         None => {
-            println!("Failed to allocate event ring frame");
+            serial_println!("Failed to allocate event ring frame");
             usb_unlock();
             return;
         }
@@ -124,8 +124,8 @@ pub fn init_usb() {
     let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
     
 
-    println!("Command ring phys=0x{:x} virt=0x{:x}", cmd_phys.as_u64(), cmd_virt);
-    println!("Event ring phys=0x{:x} virt=0x{:x}", evt_phys.as_u64(), evt_virt);
+    serial_println!("Command ring phys=0x{:x} virt=0x{:x}", cmd_phys.as_u64(), cmd_virt);
+    serial_println!("Event ring phys=0x{:x} virt=0x{:x}", evt_phys.as_u64(), evt_virt);
 
     xhci_operational_regs.usbcmd.update_volatile(|u| {
         u.set_run_stop();
@@ -135,7 +135,7 @@ pub fn init_usb() {
     let erst_phys = match unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() } {
         Some(p) => p,
         None => {
-            println!("Failed to allocate ERST frame");
+            serial_println!("Failed to allocate ERST frame");
             usb_unlock();
             return;
         }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall"]
+members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall", "serial"]
 resolver = "2"
 
 [profile.dev]
@@ -11,6 +11,7 @@ x86_64 = "0.15.4"
 limine = "0.5.0"
 uart_16550 = "0.4.0"
 spin = "0.10.0"
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
 # Eucalypt crates
 ahci =        { path = "./ahci" }
@@ -23,4 +24,5 @@ sched =       { path = "./sched" }
 process =     { path = "./process" }
 memory =      { path = "./memory" }
 usb =         { path = "./usb" }
-syscall =     { path = "./syscall"}
+syscall =     { path = "./syscall" }
+serial =      { path = "./serial" }

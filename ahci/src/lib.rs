@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-use framebuffer::println;
+use serial::serial_println;
 use memory::mmio::map_mmio;
 use pci::{PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, pci_config_read_dword, pci_enable_bus_master, pci_enable_memory_space, pci_find_ahci_controller};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -70,7 +70,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
     let fb_frame = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() };
     
     if clb_frame.is_none() || fb_frame.is_none() {
-        println!("Failed to allocate frames for port {}", portno);
+        serial_println!("Failed to allocate frames for port {}", portno);
         return;
     }
     
@@ -80,7 +80,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
     let clb_virt = match map_mmio(clb_phys, 0x1000) {
         Ok(v) => v,
         Err(_) => {
-            println!("Failed to map CLB for port {}", portno);
+            serial_println!("Failed to map CLB for port {}", portno);
             return;
         }
     };
@@ -88,7 +88,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
     let fb_virt = match map_mmio(fb_phys, 0x1000) {
         Ok(v) => v,
         Err(_) => {
-            println!("Failed to map FB for port {}", portno);
+            serial_println!("Failed to map FB for port {}", portno);
             return;
         }
     };
@@ -129,18 +129,18 @@ pub fn probe_ports(abar: &mut HbaMem) {
             let dt = check_type(&abar.ports[i]);
             match dt {
                 AHCI_DEV_SATA => {
-                    println!("SATA drive found at port {}", i);
+                    serial_println!("SATA drive found at port {}", i);
                     rebase_port(&mut abar.ports[i], i as u32);
                 }
                 AHCI_DEV_SATAPI => {
-                    println!("SATAPI drive found at port {}", i);
+                    serial_println!("SATAPI drive found at port {}", i);
                     rebase_port(&mut abar.ports[i], i as u32);
                 }
                 AHCI_DEV_SEMB => {
-                    println!("SEMB drive found at port {}", i);
+                    serial_println!("SEMB drive found at port {}", i);
                 }
                 AHCI_DEV_PM => {
-                    println!("PM drive found at port {}", i);
+                    serial_println!("PM drive found at port {}", i);
                 }
                 _ => {
                 }
@@ -170,7 +170,7 @@ fn check_type(port: &HbaPort) -> u8 {
 }
 
 pub fn find_ahci_controller() -> Option<u64> {
-    println!("Scanning PCI for AHCI controller...");
+    serial_println!("Scanning PCI for AHCI controller...");
     
     for bus in 0..=255u16 {
         for device in 0..32u8 {
@@ -189,17 +189,17 @@ pub fn find_ahci_controller() -> Option<u64> {
                 if class_code == PCI_CLASS_MASS_STORAGE as u32 && 
                    subclass == PCI_SUBCLASS_SATA as u32 && 
                    prog_if == 0x01 {
-                    println!("Found AHCI controller at {}:{}:{}", bus, device, function);
+                    serial_println!("Found AHCI controller at {}:{}:{}", bus, device, function);
                     let bar5 = pci_config_read_dword(bus as u8, device, function, 0x24);
                     let abar = (bar5 & !0xF) as u64;
-                    println!("BAR5 = 0x{:X}", abar);
+                    serial_println!("BAR5 = 0x{:X}", abar);
                     return Some(abar);
                 }
             }
         }
     }
     
-    println!("No AHCI controller found");
+    serial_println!("No AHCI controller found");
     None
 }
 
@@ -340,38 +340,38 @@ pub fn init_ahci() {
     match pci_find_ahci_controller() {
         Some(ahci_dev) => {
             let abar_phys = ahci_dev.bar[5] as u64 & !0xF;
-            println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
-            println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
+            serial_println!("AHCI controller found at {}:{}:{}", ahci_dev.bus, ahci_dev.device, ahci_dev.function);
+            serial_println!("AHCI BAR5 (physical): 0x{:X}", abar_phys);
 
             if abar_phys == 0 {
-                println!("Invalid AHCI BAR address");
+                serial_println!("Invalid AHCI BAR address");
                 ahci_unlock();
             } else {
                 pci_enable_bus_master(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
                 pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
 
-                println!("Mapping AHCI MMIO region...");
+                serial_println!("Mapping AHCI MMIO region...");
                 match map_mmio(abar_phys, 0x4000) {
                     Ok(abar_virt) => {
-                        println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
-                        println!("AHCI ABAR mapped successfully");
+                        serial_println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
+                        serial_println!("AHCI ABAR mapped successfully");
                         
                         let abar = unsafe { &mut *(abar_virt as *mut HbaMem) };
                         
                         ahci_unlock();
                         probe_ports(abar);
-                        println!("AHCI initialization complete");
+                        serial_println!("AHCI initialization complete");
                         return;
                     }
                     Err(e) => {
-                        println!("Failed to map AHCI MMIO: {}", e);
+                        serial_println!("Failed to map AHCI MMIO: {}", e);
                         ahci_unlock();
                     }
                 }
             }
         }
         None => {
-            println!("No AHCI controller found");
+            serial_println!("No AHCI controller found");
             ahci_unlock();
         }
     }

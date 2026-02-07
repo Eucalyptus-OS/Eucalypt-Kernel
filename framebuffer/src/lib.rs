@@ -567,7 +567,7 @@ macro_rules! kprint {
 #[macro_export]
 macro_rules! println {
     ($($arg:tt)*) => {
-        $crate::kprintln!($($arg)*)
+        $crate::kserial_println!($($arg)*)
     };
 }
 

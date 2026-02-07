@@ -3,7 +3,7 @@
 extern crate alloc;
 
 use core::alloc::Layout;
-use framebuffer::println;
+use serial::serial_println;
 use memory::vmm::{PageTable, VMM};
 
 const KERNEL_STACK_SIZE: usize = 64 * 1024;
@@ -70,7 +70,7 @@ pub fn init_kernel_process(rsp: u64) {
         PROCESS_COUNT = 1;
     }
 
-    println!("Kernel process initialized at RSP: 0x{:x}", rsp);
+    serial_println!("Kernel process initialized at RSP: 0x{:x}", rsp);
 }
 
 pub fn create_process(entry: *mut ()) -> Option<u64> {
@@ -81,7 +81,7 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         }
 
         let stack_base = allocate_kernel_stack()?;
-        println!("Allocated stack for process {} at 0x{:x}", pid, stack_base as u64);
+        serial_println!("Allocated stack for process {} at 0x{:x}", pid, stack_base as u64);
 
         let rsp = setup_initial_stack(stack_base, entry);
         let kernel_pml4 = VMM::get_page_table();
@@ -101,7 +101,7 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         PROCESS_TABLE.processes[pid as usize] = Some(process);
         PROCESS_COUNT += 1;
 
-        println!("Created process {} with entry 0x{:x}, RSP: 0x{:x}", pid, entry as u64, rsp);
+        serial_println!("Created process {} with entry 0x{:x}, RSP: 0x{:x}", pid, entry as u64, rsp);
         Some(pid)
     }
 }
@@ -133,7 +133,7 @@ pub fn cleanup_terminated_processes() {
         for i in 0..PROCESS_COUNT as usize {
             if let Some(proc) = PROCESS_TABLE.processes[i].as_ref() {
                 if proc.state == ProcessState::Terminated {
-                    println!("Cleaning up terminated process {}", proc.pid);
+                    serial_println!("Cleaning up terminated process {}", proc.pid);
                     destroy_process(proc.pid);
                 }
             }
@@ -145,7 +145,7 @@ pub fn exit_current_process() {
     unsafe {
         let current = PROCESS_TABLE.current;
         if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
-            println!("Process {} exiting", proc.pid);
+            serial_println!("Process {} exiting", proc.pid);
             proc.state = ProcessState::Terminated;
         }
     }
@@ -243,7 +243,7 @@ fn process_exit(return_value: u64) {
     unsafe {
         let current = PROCESS_TABLE.current;
         if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
-            println!("Process {} exited\nReturn val: {}", proc.pid, return_value);
+            serial_println!("Process {} exited\nReturn val: {}", proc.pid, return_value);
             proc.state = ProcessState::Terminated;
         }
         loop {
