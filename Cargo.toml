@@ -1,5 +1,5 @@
 [workspace]
-members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall", "serial"]
+members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall", "serial", "fat12"]
 resolver = "2"
 
 [profile.dev]
@@ -26,3 +26,4 @@ memory =      { path = "./memory" }
 usb =         { path = "./usb" }
 syscall =     { path = "./syscall" }
 serial =      { path = "./serial" }
+fat12 =       { path = "./fat12" }

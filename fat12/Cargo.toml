@@ -1,0 +1,8 @@
+[package]
+name = "fat12"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ide = { workspace = true }
+serial = { workspace = true }

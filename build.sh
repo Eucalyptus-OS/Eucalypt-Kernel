@@ -118,18 +118,40 @@ EOF
     echo "✓ ISO created successfully: ${IMAGE_NAME}.iso ($(du -h ${IMAGE_NAME}.iso | cut -f1))"
 }
 
+format_fat12() {
+    local disk_file="$1"
+    local size_mb="$2"
+    
+    echo "  Formatting ${disk_file} as FAT12..."
+    
+    if ! command -v mkfs.fat &> /dev/null; then
+        echo "ERROR: mkfs.fat not found! Install with: sudo apt install dosfstools"
+        exit 1
+    fi
+    
+    dd if=/dev/zero of="${disk_file}" bs=1M count=${size_mb} status=none
+    
+    mkfs.fat -F 12 -n "EUCALYPT" "${disk_file}" > /dev/null 2>&1
+    
+    echo "  ✓ FAT12 filesystem created on ${disk_file}"
+}
+
 create_disks() {
     echo "Creating disk images..."
     mkdir -p "${DISK_DIR}"
     
     if [ ! -f "${DISK_DIR}/ide_disk.img" ]; then
-        echo "  Creating IDE disk (64MB)..."
-        dd if=/dev/zero of="${DISK_DIR}/ide_disk.img" bs=1M count=64 status=none
+        echo "  Creating IDE disk (64MB) with FAT12..."
+        format_fat12 "${DISK_DIR}/ide_disk.img" 64
+    else
+        echo "  IDE disk already exists: ${DISK_DIR}/ide_disk.img"
     fi
     
     if [ ! -f "${DISK_DIR}/ahci_disk.img" ]; then
         echo "  Creating AHCI disk (64MB)..."
         dd if=/dev/zero of="${DISK_DIR}/ahci_disk.img" bs=1M count=64 status=none
+    else
+        echo "  AHCI disk already exists: ${DISK_DIR}/ahci_disk.img"
     fi
     
     echo "✓ Disk images ready"
@@ -240,13 +262,17 @@ case "${1:-}" in
     iso)
         build_iso
         ;;
+    disks)
+        create_disks
+        ;;
     *)
-        echo "Usage: $0 {build|run|clean|distclean|kernel|iso}"
+        echo "Usage: $0 {build|run|clean|distclean|kernel|iso|disks}"
         echo "  build        - Build kernel and ISO"
         echo "  run          - Build and run in QEMU (default)"
         echo "  run-codespace- Build and run in QEMU with codespaces"
         echo "  kernel       - Build kernel only"
         echo "  iso          - Build ISO only (requires kernel)"
+        echo "  disks        - Create disk images only"
         echo "  clean        - Clean build artifacts"
         echo "  distclean    - Deep clean everything"
         exit 1

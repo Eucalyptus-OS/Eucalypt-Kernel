@@ -509,7 +509,7 @@ pub fn ide_read_sectors(drive: usize, lba: u64, buffer: &mut [u8]) -> u8 {
             );
 
             for s in 0..sectors_to_read {
-                let err = ide_wait_irq(channel);
+                let err = ide_polling(channel, true);
                 if err != 0 {
                     let error = ide_print_error(drive, err);
                     ide_unlock();

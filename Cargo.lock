@@ -81,6 +81,7 @@ dependencies = [
  "bare_x86_64",
  "cc",
  "eucalypt_fs",
+ "fat12",
  "framebuffer",
  "ide",
  "limine",
@@ -95,6 +96,14 @@ dependencies = [
  "uart_16550",
  "usb",
  "x86_64",
+]
+
+[[package]]
+name = "fat12"
+version = "0.1.0"
+dependencies = [
+ "ide",
+ "serial",
 ]
 
 [[package]]

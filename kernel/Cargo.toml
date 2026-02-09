@@ -19,6 +19,7 @@ memory = { workspace = true }
 usb = { workspace = true }
 syscall = { workspace = true }
 framebuffer = { workspace = true }
+fat12 = { workspace = true }
 
 pic8259 = "0.11.0"
 spin = { workspace = true }
