@@ -325,28 +325,6 @@ fn ide_polling(channel: u8, advanced_check: bool) -> u8 {
     0
 }
 
-fn ide_wait_irq(channel: u8) -> u8 {
-    unsafe {
-        let mut timeout: usize = 1_000_000;
-        while IDE_IRQ_INVOKED == 0 && timeout > 0 {
-            timeout -= 1;
-        }
-        IDE_IRQ_INVOKED = 0;
-
-        let status = ide_read(channel, ATA_REG_STATUS);
-        if (status & ATA_SR_ERR) != 0 {
-            return 2;
-        }
-        if (status & ATA_SR_DF) != 0 {
-            return 1;
-        }
-        if (status & ATA_SR_DRQ) == 0 {
-            return 3;
-        }
-        0
-    }
-}
-
 pub fn ide_irq_handler() {
     ide_lock();
     unsafe {

@@ -60,11 +60,10 @@ use process::{
 use framebuffer::{
     ScrollingTextRenderer,
     panic_print,
-    println,
 };
 
 // FS
-use fat12::Fat12FileSystem;
+use fat12::{fat12_create_file, fat12_init, fat12_read_file};
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
@@ -146,30 +145,19 @@ extern "C" fn kmain() -> ! {
     init_mp(mp_response);
 
     serial_println!("Initializing FAT12 filesystem...");
-    match Fat12FileSystem::new(0) {
-        Ok(mut fs) => {
+    match fat12_init(0) {
+        Ok(_) => {
             serial_println!("FAT12 initialized successfully");
             let data = b"Hello, World";
-            match fs.create_file("hello.txt", data) {
+            match fat12_create_file("hello.txt", data) {
                 Ok(_) => {
                     serial_println!("Created hello.txt");
-                    match fs.read_root_directory() {
-                        Ok(entries) => {
-                            for entry in entries {
-                                if let Ok(name) = entry.get_name() {
-                                    if name == "HELLO.TXT" {
-                                        match fs.read_file(&entry) {
-                                            Ok(content) => {
-                                                let content_str = core::str::from_utf8(&content).unwrap_or("Invalid UTF-8");
-                                                serial_println!("File content: {}", content_str);
-                                            }
-                                            Err(e) => serial_println!("Failed to read file: {}", e),
-                                        }
-                                    }
-                                }
-                            }
+                    match fat12_read_file("hello.txt") {
+                        Ok(content) => {
+                            let content_str = core::str::from_utf8(&content).unwrap_or("Invalid UTF-8");
+                            serial_println!("File content: {}", content_str);
                         }
-                        Err(e) => serial_println!("Failed to read directory: {}", e),
+                        Err(e) => serial_println!("Failed to read file: {}", e),
                     }
                 }
                 Err(e) => serial_println!("Failed to create file: {}", e),

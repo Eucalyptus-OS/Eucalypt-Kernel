@@ -1,44 +1,61 @@
 use limine::request::FramebufferRequest;
-use memory::{
-    addr::{PhysAddr, VirtAddr}, vmm::{PageTableEntry, VMM}
-};
+use framebuffer::println;
 
 unsafe extern "C" {
     static FRAMEBUFFER_REQUEST: FramebufferRequest;
 }
 
-pub const SYSCALL_FRAMEBUFFER_POINTER: u64 = 0;
-pub const USER_FB_VADDR: u64 = 0x0000_4000_0000_0000;
+const PLOT_POINT: u64 = 0;
+const FRAMEBUFFER_INFO: u64 = 1;
+const PRINT: u64 = 2;
 
-pub fn syscall_handler(syscall_number: u64, _arg1: u64, _arg2: u64, _arg3: u64) -> u64 {
+pub fn syscall_handler(syscall_number: u64, _arg1: i64, _arg2: i64, _arg3: i64) -> i64 {
     match syscall_number {
-        SYSCALL_FRAMEBUFFER_POINTER => unsafe {
-            let response = FRAMEBUFFER_REQUEST.get_response().unwrap_or_else(|| {
-                panic!("Oh? You thought you were getting a framebuffer pointer? How adorable.
-You weren't. You get nothing. In fact, I think I would like to panic now.
-Your kernel is forfeit. Panicking in 3... 2... 1...");
-            });
+        PLOT_POINT => {
+            if let Some(framebuffer_response) = unsafe { FRAMEBUFFER_REQUEST.get_response() } {
+                if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
+                    let x = _arg1;
+                    let y = _arg2;
+                    let color = _arg3 as u32;
 
-            let fb = response.framebuffers().next().unwrap_or_else(|| {
-                panic!("A response exists, yet it is empty. You've been played. The framebuffer was a lie.");
-            });
+                    let pitch = framebuffer.pitch() as u64;
+                    let offset = (y * pitch as i64 + x * 4) as usize;
 
-            let fb_phys = PhysAddr::new(fb.addr() as u64);
-            let fb_size = (fb.width() * fb.height() * (fb.bpp() as u64 / 8)) as usize;
-
-            let mut mapper = VMM::get_mapper();
-            mapper.map_range(
-                VirtAddr::new(USER_FB_VADDR),
-                fb_phys,
-                fb_size,
-                PageTableEntry::PRESENT
-                    | PageTableEntry::WRITABLE
-                    | PageTableEntry::USER
-            );
-
-            USER_FB_VADDR
+                    unsafe {
+                        framebuffer.addr().add(offset).cast::<u32>().write(color);
+                    }
+                }
+            }
+            0
+        },
+        FRAMEBUFFER_INFO => {
+            if let Some(framebuffer_response) = unsafe { FRAMEBUFFER_REQUEST.get_response() } {
+                if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
+                    match _arg1 {
+                        0 => framebuffer.width() as i64,
+                        1 => framebuffer.height() as i64,
+                        2 => framebuffer.pitch() as i64,
+                        3 => framebuffer.bpp() as i64,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
         }
-
-        _ => 0xFFFFFFFFFFFFFFFF,
+    PRINT => {
+        let ptr = _arg1 as *const u8;
+        let len = _arg2 as usize;
+        if !ptr.is_null() && len > 0 {
+            let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+            if let Ok(s) = core::str::from_utf8(slice) {
+                println!("{}", s);
+            }
+        }
+        0
+    }
+        _ => 0xFFFFFFFFFFFFFFFFu64 as i64,
     }
 }

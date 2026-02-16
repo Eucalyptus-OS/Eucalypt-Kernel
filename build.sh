@@ -140,26 +140,16 @@ create_disks() {
     echo "Creating disk images..."
     mkdir -p "${DISK_DIR}"
     
-    if [ ! -f "${DISK_DIR}/ide_disk.img" ]; then
-        echo "  Creating IDE disk (64MB) with FAT12..."
-        format_fat12 "${DISK_DIR}/ide_disk.img" 64
-    else
-        echo "  IDE disk already exists: ${DISK_DIR}/ide_disk.img"
-    fi
+    echo "  Creating IDE disk (64MB) with FAT12..."
+    format_fat12 "${DISK_DIR}/ide_disk.img" 64
     
-    if [ ! -f "${DISK_DIR}/ahci_disk.img" ]; then
-        echo "  Creating AHCI disk (64MB)..."
-        dd if=/dev/zero of="${DISK_DIR}/ahci_disk.img" bs=1M count=64 status=none
-    else
-        echo "  AHCI disk already exists: ${DISK_DIR}/ahci_disk.img"
-    fi
+    echo "  Creating AHCI disk (64MB)..."
+    dd if=/dev/zero of="${DISK_DIR}/ahci_disk.img" bs=1M count=64 status=none
     
     echo "✓ Disk images ready"
 }
 
-run_qemu() {
-    echo "Starting QEMU..."
-    
+run_qemu() {    
     if [ ! -f "${IMAGE_NAME}.iso" ]; then
         echo "ERROR: ${IMAGE_NAME}.iso not found!"
         exit 1

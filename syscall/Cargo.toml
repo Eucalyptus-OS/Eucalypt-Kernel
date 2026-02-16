@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 limine = { workspace = true }
 memory = { workspace = true }
+framebuffer = { workspace = true }
