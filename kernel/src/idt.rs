@@ -9,18 +9,29 @@ use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::registers::model_specific::Msr;
 
+// PIC vector offsets - IRQs 0-7 map to 32-39, IRQs 8-15 map to 40-47
 const PIC_1_OFFSET: u8 = 32;
 const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
-const APIC_TIMER_VECTOR: u8 = 32;
 
+// APIC timer gets its own vector well above the PIC range to avoid conflicts
+const APIC_TIMER_VECTOR: u8 = 0xEF;
+
+// MSR addresses for the syscall/sysret mechanism
 const IA32_STAR: u32 = 0xC000_0081;
 const IA32_LSTAR: u32 = 0xC000_0082;
 const IA32_FMASK: u32 = 0xC000_0084;
 
+// IST index for the double fault handler so it has a guaranteed valid stack
+const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
+    ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET)
+});
 
+/// Registers CPU exception handlers in the IDT via a declarative macro.
+/// Supported kinds: (default) no error code, `error`, `diverging`, `diverging_no_error`.
 macro_rules! register_exceptions {
     ($idt:expr, $(
         $field:ident : $name:ident, $msg:literal $(, $kind:ident)?;
@@ -53,6 +64,8 @@ macro_rules! register_exceptions {
     };
 }
 
+/// Initializes the IDT with all CPU exception handlers, the APIC timer,
+/// IDE IRQ handlers, and syscall support, then loads it into the CPU.
 pub fn idt_init() {
     let idt: &mut InterruptDescriptorTable = unsafe { &mut *addr_of_mut!(IDT) };
 
@@ -65,7 +78,6 @@ pub fn idt_init() {
         bound_range_exceeded     : bound_range_handler,             "BOUND RANGE EXCEEDED";
         invalid_opcode           : invalid_opcode_handler,          "INVALID OPCODE";
         device_not_available     : device_not_available_handler,    "DEVICE NOT AVAILABLE";
-        double_fault             : double_fault_handler,            "DOUBLE FAULT",             diverging;
         invalid_tss              : invalid_tss_handler,             "INVALID TSS",              error;
         segment_not_present      : segment_not_present_handler,     "SEGMENT NOT PRESENT",      error;
         stack_segment_fault      : stack_segment_fault_handler,     "STACK SEGMENT FAULT",      error;
@@ -80,14 +92,22 @@ pub fn idt_init() {
 
     idt.page_fault.set_handler_fn(page_fault_handler);
 
-    {
-        let mut pics = PICS.lock();
-        unsafe { pics.initialize() };
-        let mut masks = unsafe { pics.read_masks() };
-        masks[1] &= !(1 << 6 | 1 << 7);
-        unsafe { pics.write_masks(masks[0], masks[1]) };
+    // Double fault needs its own IST stack in case the kernel stack is corrupted,
+    // otherwise a stack overflow will triple fault instead of being caught
+    unsafe {
+        idt.double_fault
+            .set_handler_fn(double_fault_handler)
+            .set_stack_index(DOUBLE_FAULT_IST_INDEX);
     }
 
+    // Initialize the PIC and unmask IRQ14/IRQ15 for the IDE channels
+    let mut pics = PICS.lock();
+    unsafe { pics.initialize() };
+    let mut masks = unsafe { pics.read_masks() };
+    masks[1] &= !(1 << 6 | 1 << 7);
+    unsafe { pics.write_masks(masks[0], masks[1]) };
+
+    // APIC timer uses a naked handler so must be registered via raw entry
     set_raw_idt_entry(idt, APIC_TIMER_VECTOR, apic_timer_handler as *const () as u64);
 
     idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
@@ -98,9 +118,12 @@ pub fn idt_init() {
     idt.load();
 }
 
+/// Manually writes a raw 128-bit IDT gate entry.
+/// Only used for naked handlers that can't use the x86-interrupt ABI.
 fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr: u64) {
     let idt_ptr = idt as *mut InterruptDescriptorTable as *mut u64;
     let entry_ptr = unsafe { idt_ptr.add(index as usize * 2) };
+    // Pack handler address, CS selector (0x08), and gate flags (0x8E = present, ring 0, interrupt gate)
     let low = (handler_addr & 0xFFFF)
         | (0x08 << 16)
         | (0x8E00 << 32)
@@ -112,6 +135,8 @@ fn set_raw_idt_entry(idt: &mut InterruptDescriptorTable, index: u8, handler_addr
     }
 }
 
+/// Configures STAR, LSTAR, and FMASK MSRs to enable the syscall/sysret mechanism.
+/// IF is masked on entry so interrupts are disabled during syscall handling.
 fn init_syscall() {
     unsafe {
         let mut star = Msr::new(IA32_STAR);
@@ -121,14 +146,14 @@ fn init_syscall() {
         let kernel_cs: u64 = 0x08;
         let user_cs: u64 = 0x1b;
 
-        let star_val = (kernel_cs << 32) | (user_cs << 48);
-        star.write(star_val);
+        star.write((kernel_cs << 32) | (user_cs << 48));
         lstar.write(syscall_entry as *const () as u64);
-        fmask.write(1 << 9);
+        fmask.write(1 << 9); // Mask IF (interrupt flag)
     }
 }
 
-
+/// Naked APIC timer ISR. Saves all GPRs, passes RSP to the Rust handler,
+/// then restores state from the returned RSP to allow context switching.
 #[unsafe(naked)]
 extern "C" fn apic_timer_handler() {
     core::arch::naked_asm!(
@@ -149,7 +174,7 @@ extern "C" fn apic_timer_handler() {
         "push r15",
         "mov rdi, rsp",
         "call {handler}",
-        "mov rsp, rax",
+        "mov rsp, rax",   // Switch to returned RSP (may be a new task's stack)
         "pop r15",
         "pop r14",
         "pop r13",
@@ -170,6 +195,8 @@ extern "C" fn apic_timer_handler() {
     );
 }
 
+/// Increments the tick counter, sends EOI, and invokes the scheduler.
+/// Returns the RSP of the next task to run.
 #[unsafe(no_mangle)]
 extern "C" fn apic_timer_interrupt_handler(rsp: u64) -> u64 {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
@@ -177,6 +204,7 @@ extern "C" fn apic_timer_interrupt_handler(rsp: u64) -> u64 {
     sched::handle_timer_interrupt(rsp)
 }
 
+/// Returns the number of APIC timer ticks since boot.
 pub fn get_timer_ticks() -> u64 {
     TIMER_TICKS.load(Ordering::Relaxed)
 }
@@ -193,36 +221,47 @@ extern "x86-interrupt" fn page_fault_handler(
     );
 }
 
+extern "x86-interrupt" fn double_fault_handler(
+    stack_frame: InterruptStackFrame,
+    _error_code: u64,
+) -> ! {
+    panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+}
+
+/// IRQ14 - IDE primary channel
 extern "x86-interrupt" fn ide_primary_handler(_stack_frame: InterruptStackFrame) {
     ide_irq_handler();
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 6);
-    }
+    unsafe { PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 6) };
 }
 
+/// IRQ15 - IDE secondary channel
 extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFrame) {
     ide_irq_handler();
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 7);
-    }
+    unsafe { PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 7) };
 }
 
+/// Naked syscall entry. Swaps GS, saves callee-saved registers,
+/// passes syscall args (rax=number, rdi=arg1, rsi=arg2, rdx=arg3) to the handler,
+/// then restores and returns via sysretq.
 #[unsafe(naked)]
 extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
         "swapgs",
-        "push r11",
-        "push rcx",
+        // Save callee-saved registers and the registers syscall clobbers
+        "push r11",  // Saved RFLAGS
+        "push rcx",  // Saved RIP
         "push rbx",
         "push rbp",
         "push r12",
         "push r13",
         "push r14",
         "push r15",
-        "mov rdi, rax",
-        "mov rsi, rdi",
-        "mov rdx, rsi",
+        // Arguments are already in the correct registers:
+        // rax = syscall number -> rdi, rdi = arg1 -> rsi, rsi = arg2 -> rdx, rdx = arg3 -> rcx
         "mov rcx, rdx",
+        "mov rdx, rsi",
+        "mov rsi, rdi",
+        "mov rdi, rax",
         "call {handler}",
         "pop r15",
         "pop r14",

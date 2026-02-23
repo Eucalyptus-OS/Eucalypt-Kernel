@@ -57,13 +57,17 @@ use process::{
     create_process,
 };
 
+#[allow(unused)]
 use framebuffer::{
     ScrollingTextRenderer,
     panic_print,
 };
 
 // FS
-use fat12::{fat12_create_file, fat12_init, fat12_read_file};
+use fat12::{fat12_init, fat12_read_file, fat12_list_files};
+
+// ELF
+use eucalypt_os::elf::parse_elf;
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
@@ -136,7 +140,7 @@ extern "C" fn kmain() -> ! {
     set_apic_virt_base(apic_virt as usize);
     enable_apic();
     let initial_count = calibrate_apic_timer(1000);
-    init_apic_timer(32, initial_count);
+    init_apic_timer(0xEF, initial_count);
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
     init_usb();
@@ -148,19 +152,12 @@ extern "C" fn kmain() -> ! {
     match fat12_init(0) {
         Ok(_) => {
             serial_println!("FAT12 initialized successfully");
-            let data = b"Hello, World";
-            match fat12_create_file("hello.txt", data) {
-                Ok(_) => {
-                    serial_println!("Created hello.txt");
-                    match fat12_read_file("hello.txt") {
-                        Ok(content) => {
-                            let content_str = core::str::from_utf8(&content).unwrap_or("Invalid UTF-8");
-                            serial_println!("File content: {}", content_str);
-                        }
-                        Err(e) => serial_println!("Failed to read file: {}", e),
-                    }
+            match fat12_read_file("hello.txt") {
+                Ok(content) => {
+                    let content_str = core::str::from_utf8(&content).unwrap_or("Invalid UTF-8");
+                    serial_println!("File content: {}", content_str);
                 }
-                Err(e) => serial_println!("Failed to create file: {}", e),
+                Err(e) => serial_println!("Failed to read file: {}", e),
             }
         }
         Err(e) => {
@@ -168,6 +165,18 @@ extern "C" fn kmain() -> ! {
             serial_println!("This is expected if the disk is not formatted as FAT12");
         }
     }
+    
+    match fat12_list_files() {
+        Ok(files) => {
+            serial_println!("Files in root directory:");
+            for file in files {
+                serial_println!("  {}", file);
+            }
+        }
+        Err(e) => serial_println!("Failed to list files: {}", e),
+    }
+    
+    parse_elf("euca");
 
     let kernel_main_rsp: u64;
     serial_println!("Getting RSP");
@@ -179,6 +188,7 @@ extern "C" fn kmain() -> ! {
     serial_println!("Creating Processes");
     create_process(test_process_1 as *mut ()).expect("Failed to create process 1");
     create_process(test_process_2 as *mut ()).expect("Failed to create process 2");
+    create_process(fib_process as *mut ()).expect("Failed to create fib process");
     init_scheduler();
     enable_scheduler();
 
@@ -203,6 +213,22 @@ fn test_process_2() {
     }
 }
 
+fn fibonacci(n: u64) -> u64 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn fib_process() {
+    let x: u64 = 100;
+    for i in 0..x {
+        serial_println!("Fibonacci number at index {} is {}", i, fibonacci(i));
+    }
+}
+
+#[cfg(not(test))]
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
     let (rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp): (u64, u64, u64, u64, u64, u64, u64, u64);

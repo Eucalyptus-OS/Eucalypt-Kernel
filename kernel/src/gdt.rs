@@ -1,3 +1,4 @@
+/// This should be the most self explantory so I won't document this file despite documenting the IDT
 use core::ptr::{addr_of, addr_of_mut};
 
 #[repr(C, packed)]

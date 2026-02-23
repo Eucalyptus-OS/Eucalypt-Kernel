@@ -6,8 +6,9 @@ use core::alloc::Layout;
 use serial::serial_println;
 use memory::vmm::{PageTable, VMM};
 
+// Defines the constants for the kernel and process count
 const KERNEL_STACK_SIZE: usize = 64 * 1024;
-const MAX_PROCESSES: usize = 64;
+const MAX_PROCESSES: usize = 255;
 
 pub static mut PROCESS_COUNT: u64 = 0;
 pub static mut PROCESS_TABLE: ProcessTable = ProcessTable {
@@ -49,6 +50,7 @@ pub struct ProcessTable {
     pub current: usize,
 }
 
+/// Initialize create a process for the kernel
 pub fn init_kernel_process(rsp: u64) {
     let kernel_pml4 = VMM::get_page_table();
 
@@ -73,6 +75,7 @@ pub fn init_kernel_process(rsp: u64) {
     serial_println!("Kernel process initialized at RSP: 0x{:x}", rsp);
 }
 
+/// Creates a process
 pub fn create_process(entry: *mut ()) -> Option<u64> {
     unsafe {
         let pid = PROCESS_COUNT;
@@ -106,6 +109,7 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
     }
 }
 
+/// Destroys a process 
 pub fn destroy_process(pid: u64) -> bool {
     unsafe {
         if pid >= MAX_PROCESSES as u64 {

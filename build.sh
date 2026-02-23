@@ -8,6 +8,7 @@ IMAGE_NAME="eucalypt-${KARCH}"
 QEMUFLAGS="-m 2G"
 ISO_ROOT="iso_root"
 LIMINE_DIR="limine"
+FILES_TO_COPY="z_files_to_copy"
 
 build_kernel() {
     echo "Building eucalyptOS kernel..."
@@ -121,19 +122,35 @@ EOF
 format_fat12() {
     local disk_file="$1"
     local size_mb="$2"
-    
+
     echo "  Formatting ${disk_file} as FAT12..."
-    
+
     if ! command -v mkfs.fat &> /dev/null; then
         echo "ERROR: mkfs.fat not found! Install with: sudo apt install dosfstools"
         exit 1
     fi
-    
+
+    if ! command -v mcopy &> /dev/null; then
+        echo "ERROR: mcopy not found! Install with: sudo apt install mtools"
+        exit 1
+    fi
+
     dd if=/dev/zero of="${disk_file}" bs=1M count=${size_mb} status=none
-    
     mkfs.fat -F 12 -n "EUCALYPT" "${disk_file}" > /dev/null 2>&1
-    
     echo "  ✓ FAT12 filesystem created on ${disk_file}"
+
+    if [ -d "${FILES_TO_COPY}" ] && [ -n "$(ls -A ${FILES_TO_COPY} 2>/dev/null)" ]; then
+        echo "  Copying files from ${FILES_TO_COPY}/ into ${disk_file}..."
+        for file in "${FILES_TO_COPY}"/*; do
+            if [ -f "${file}" ]; then
+                echo "    Copying $(basename ${file})..."
+                mcopy -i "${disk_file}" "${file}" "::/$(basename ${file})"
+            fi
+        done
+        echo "  ✓ Files copied successfully"
+    else
+        echo "  No files to copy (${FILES_TO_COPY}/ is empty or missing)"
+    fi
 }
 
 create_disks() {
