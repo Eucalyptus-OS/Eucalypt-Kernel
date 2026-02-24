@@ -1,12 +1,13 @@
 #![no_std]
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const MAX_COLS: usize = 80;
 const MAX_LINES: usize = 30;
 
-static mut CONSOLE_LINES: [ConsoleLine; MAX_LINES] = [const { ConsoleLine::new(0x00000000) }; MAX_LINES];
+static mut CONSOLE_LINES: [ConsoleLine; MAX_LINES] =
+    [const { ConsoleLine::new(0x00000000) }; MAX_LINES];
 
 struct SpinLock {
     locked: AtomicBool,
@@ -87,7 +88,11 @@ pub struct ConsoleChar {
 impl ConsoleChar {
     #[inline(always)]
     pub const fn new(ch: u8, fg_color: u32, bg_color: u32) -> Self {
-        Self { ch, fg_color, bg_color }
+        Self {
+            ch,
+            fg_color,
+            bg_color,
+        }
     }
 
     #[inline(always)]
@@ -219,16 +224,24 @@ impl ScrollingTextRenderer {
         font: &'static [u8],
     ) {
         let (char_width, charsize, bytes_per_glyph, header_size) = Self::parse_psf(font);
-        
+
         let line_height = charsize;
         let left_margin = 10;
         let top_margin = 10;
         let line_spacing = 2;
         let line_stride = line_height + line_spacing;
         let available_height = fb_height.saturating_sub(top_margin);
-        let rows = if line_stride > 0 { available_height / line_stride } else { 0 };
+        let rows = if line_stride > 0 {
+            available_height / line_stride
+        } else {
+            0
+        };
         let available_width = fb_width.saturating_sub(left_margin);
-        let cols = if char_width > 0 { available_width / char_width } else { 80 };
+        let cols = if char_width > 0 {
+            available_width / char_width
+        } else {
+            80
+        };
         let bg_color = 0x00000000;
 
         let lines: &'static mut [ConsoleLine; MAX_LINES] = unsafe {
@@ -267,7 +280,7 @@ impl ScrollingTextRenderer {
             bytes_per_glyph,
             header_size,
         };
-        
+
         RENDERER.set(renderer);
     }
 
@@ -282,13 +295,13 @@ impl ScrollingTextRenderer {
                 header.headersize as usize,
             );
         }
-        
+
         if data.len() >= 4 && &data[0..2] == b"\x36\x04" {
             let header = unsafe { &*(data.as_ptr() as *const PSF1Header) };
             let height = header.charsize as usize;
             return (8, height, height, 4);
         }
-        
+
         (8, 16, 16, 4)
     }
 
@@ -376,7 +389,7 @@ impl ScrollingTextRenderer {
             let new_line_idx = self.physical_index(new_count - 1);
             self.lines[new_line_idx].clear(self.bg_color);
             self.cursor_line = new_count - 1;
-            
+
             for i in 0..new_count {
                 if let Some(line) = self.get_line(i) {
                     line.mark_dirty();
@@ -385,9 +398,10 @@ impl ScrollingTextRenderer {
         } else {
             let old_start = self.start_line.load(Ordering::Relaxed);
             self.lines[old_start].clear(self.bg_color);
-            self.start_line.store((old_start + 1) % MAX_LINES, Ordering::Release);
+            self.start_line
+                .store((old_start + 1) % MAX_LINES, Ordering::Release);
             self.cursor_line = count - 1;
-            
+
             for i in 0..count {
                 if let Some(line) = self.get_line(i) {
                     line.mark_dirty();
@@ -398,7 +412,11 @@ impl ScrollingTextRenderer {
 
     pub fn render_dirty(&mut self) {
         let count = self.line_count.load(Ordering::Relaxed);
-        let visible_count = if self.visible_lines < count { self.visible_lines } else { count };
+        let visible_count = if self.visible_lines < count {
+            self.visible_lines
+        } else {
+            count
+        };
         let display_start = if count > visible_count {
             count - visible_count
         } else {
@@ -407,7 +425,7 @@ impl ScrollingTextRenderer {
 
         for logical_line in display_start..count {
             let screen_row = logical_line - display_start;
-            
+
             if let Some(line) = self.get_line(logical_line) {
                 if line.is_dirty() {
                     let mut chars = [ConsoleChar::blank(0); MAX_COLS];
@@ -427,48 +445,61 @@ impl ScrollingTextRenderer {
     #[inline(always)]
     fn render_line(&self, screen_row: usize, chars: &[ConsoleChar; MAX_COLS], width: usize) {
         let y = self.top_margin + screen_row * (self.line_height + self.line_spacing);
-        if y >= self.fb_height { return; }
-        
+        if y >= self.fb_height {
+            return;
+        }
+
         unsafe {
             let fb_base = self.fb_addr as usize;
             let pixels_per_row = self.pitch >> 2;
             let max_glyphs = (self.font_data.len() - self.header_size) / self.bytes_per_glyph;
             let bytes_per_line = (self.char_width + 7) >> 3;
-            
+
             for py in 0..self.line_height {
                 let row_y = y + py;
-                if row_y >= self.fb_height { break; }
-                
-                let row_ptr = (fb_base + row_y * pixels_per_row * 4 + self.left_margin * 4) as *mut u32;
-                
+                if row_y >= self.fb_height {
+                    break;
+                }
+
+                let row_ptr =
+                    (fb_base + row_y * pixels_per_row * 4 + self.left_margin * 4) as *mut u32;
+
                 for col in 0..self.cols {
                     let x_offset = col * self.char_width;
-                    
+
                     if col < width {
                         let console_char = *chars.get_unchecked(col);
                         let ch = console_char.ch as usize;
                         let glyph_idx = if ch < max_glyphs { ch } else { 0 };
                         let glyph_offset = self.header_size + glyph_idx * self.bytes_per_glyph;
                         let line_offset = py * bytes_per_line;
-                        
+
                         for gx in 0..self.char_width {
-                            if x_offset + gx >= (self.fb_width - self.left_margin) { break; }
-                            
+                            if x_offset + gx >= (self.fb_width - self.left_margin) {
+                                break;
+                            }
+
                             let byte_idx = glyph_offset + line_offset + (gx >> 3);
                             let bit_idx = 7 - (gx & 7);
-                            
+
                             let color = if byte_idx < self.font_data.len() {
                                 let bit = (*self.font_data.get_unchecked(byte_idx) >> bit_idx) & 1;
-                                if bit == 1 { console_char.fg_color } else { console_char.bg_color }
+                                if bit == 1 {
+                                    console_char.fg_color
+                                } else {
+                                    console_char.bg_color
+                                }
                             } else {
                                 console_char.bg_color
                             };
-                            
+
                             *row_ptr.add(x_offset + gx) = color;
                         }
                     } else {
                         for gx in 0..self.char_width {
-                            if x_offset + gx >= (self.fb_width - self.left_margin) { break; }
+                            if x_offset + gx >= (self.fb_width - self.left_margin) {
+                                break;
+                            }
                             *row_ptr.add(x_offset + gx) = self.bg_color;
                         }
                     }
@@ -522,11 +553,15 @@ impl core::fmt::Write for LineWriter {
             let pos_ptr = core::ptr::addr_of_mut!(LINE_WRITER_POS);
             let pos = *pos_ptr;
             let remaining = (*buf_ptr).len() - pos;
-            let to_copy = if bytes.len() < remaining { bytes.len() } else { remaining };
+            let to_copy = if bytes.len() < remaining {
+                bytes.len()
+            } else {
+                remaining
+            };
             core::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
                 (*buf_ptr).as_mut_ptr().add(pos),
-                to_copy
+                to_copy,
             );
             *pos_ptr += to_copy;
             Ok(())

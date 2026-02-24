@@ -1,10 +1,10 @@
 #![allow(unused)]
 
+use super::addr::{PhysAddr, VirtAddr};
+use super::frame_allocator::FrameAllocator;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use limine::response::MemoryMapResponse;
-use super::addr::{PhysAddr, VirtAddr};
-use super::frame_allocator::FrameAllocator;
 
 const ENTRIES_PER_TABLE: usize = 512;
 const HHDM_OFFSET: u64 = 0xFFFF800000000000;
@@ -24,23 +24,23 @@ impl PageTableEntry {
     pub const HUGE: u64 = 1 << 7;
     pub const GLOBAL: u64 = 1 << 8;
     pub const NO_EXECUTE: u64 = 1 << 63;
-    
+
     pub fn new() -> Self {
         PageTableEntry(0)
     }
-    
+
     pub fn is_present(&self) -> bool {
         (self.0 & Self::PRESENT) != 0
     }
-    
+
     pub fn set_addr(&mut self, addr: PhysAddr, flags: u64) {
         self.0 = (addr.as_u64() & 0x000F_FFFF_FFFF_F000) | flags;
     }
-    
+
     pub fn get_addr(&self) -> PhysAddr {
         PhysAddr::new(self.0 & 0x000F_FFFF_FFFF_F000)
     }
-    
+
     pub fn clear(&mut self) {
         self.0 = 0;
     }
@@ -57,7 +57,7 @@ impl PageTable {
             entries: [PageTableEntry::new(); ENTRIES_PER_TABLE],
         }
     }
-    
+
     pub fn zero(&mut self) {
         for entry in self.entries.iter_mut() {
             entry.clear();
@@ -82,19 +82,22 @@ impl Mapper {
             unsafe {
                 let table = &mut *((frame.as_u64() | HHDM_OFFSET) as *mut PageTable);
                 table.zero();
-                entry.set_addr(frame, PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::USER);
+                entry.set_addr(
+                    frame,
+                    PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::USER,
+                );
                 Some(table as *mut PageTable)
             }
         }
     }
-    
+
     #[inline]
     fn flush_tlb(virt: VirtAddr) {
         unsafe {
             core::arch::asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
         }
     }
-    
+
     pub fn map_page(&mut self, virt: VirtAddr, phys: PhysAddr, flags: u64) -> Option<()> {
         unsafe {
             let p4 = &mut *((self.page_table as u64 | HHDM_OFFSET) as *mut PageTable);
@@ -115,58 +118,71 @@ impl Mapper {
             Some(())
         }
     }
-    
+
     pub fn unmap_page(&mut self, virt: VirtAddr) -> Option<PhysAddr> {
         unsafe {
             let p4 = &mut *((self.page_table as u64 | HHDM_OFFSET) as *mut PageTable);
-            
+
             if !p4.entries[virt.p4_index()].is_present() {
                 return None;
             }
-            
-            let p3 = (p4.entries[virt.p4_index()].get_addr().as_u64() | HHDM_OFFSET) as *mut PageTable;
+
+            let p3 =
+                (p4.entries[virt.p4_index()].get_addr().as_u64() | HHDM_OFFSET) as *mut PageTable;
             if !(*p3).entries[virt.p3_index()].is_present() {
                 return None;
             }
-            
-            let p2 = ((*p3).entries[virt.p3_index()].get_addr().as_u64() | HHDM_OFFSET) as *mut PageTable;
+
+            let p2 = ((*p3).entries[virt.p3_index()].get_addr().as_u64() | HHDM_OFFSET)
+                as *mut PageTable;
             if !(*p2).entries[virt.p2_index()].is_present() {
                 return None;
             }
-            
-            let p1 = ((*p2).entries[virt.p2_index()].get_addr().as_u64() | HHDM_OFFSET) as *mut PageTable;
+
+            let p1 = ((*p2).entries[virt.p2_index()].get_addr().as_u64() | HHDM_OFFSET)
+                as *mut PageTable;
             let entry = &mut (*p1).entries[virt.p1_index()];
-            
+
             if !entry.is_present() {
                 return None;
             }
-            
+
             let phys = entry.get_addr();
             entry.clear();
             Self::flush_tlb(virt);
-            
+
             Some(phys)
         }
     }
 
-    pub fn map_range(&mut self, virt_start: VirtAddr, phys_start: PhysAddr, size: usize, flags: u64) -> Option<()> {
+    pub fn map_range(
+        &mut self,
+        virt_start: VirtAddr,
+        phys_start: PhysAddr,
+        size: usize,
+        flags: u64,
+    ) -> Option<()> {
         let pages = (size + 0xFFF) / 0x1000;
         let mut current_virt = virt_start.as_u64();
         let mut current_phys = phys_start.as_u64();
-        
+
         for _ in 0..pages {
-            self.map_page(VirtAddr::new(current_virt), PhysAddr::new(current_phys), flags)?;
+            self.map_page(
+                VirtAddr::new(current_virt),
+                PhysAddr::new(current_phys),
+                flags,
+            )?;
             current_virt += 0x1000;
             current_phys += 0x1000;
         }
-        
+
         Some(())
     }
-    
+
     pub fn unmap_range(&mut self, virt_start: VirtAddr, size: usize) {
         let pages = (size + 0xFFF) / 0x1000;
         let mut current_virt = virt_start.as_u64();
-        
+
         for _ in 0..pages {
             self.unmap_page(VirtAddr::new(current_virt));
             current_virt += 0x1000;
@@ -198,7 +214,7 @@ impl Mapper {
             Some(table)
         }
     }
-    
+
     pub fn switch_page_table(&mut self, pml4: *mut PageTable) {
         unsafe {
             let phys_addr = if (pml4 as u64) >= HHDM_OFFSET {
@@ -206,9 +222,9 @@ impl Mapper {
             } else {
                 pml4 as u64
             };
-        
+
             self.page_table = pml4;
-            
+
             core::arch::asm!(
                 "mov cr3, {}",
                 in(reg) phys_addr,
@@ -224,7 +240,7 @@ impl Mapper {
             (cr3 & 0x000F_FFFF_FFFF_F000) as *mut PageTable
         }
     }
-    
+
     pub fn get_kernel_mapper() -> Mapper {
         Mapper {
             page_table: KERNEL_PAGE_TABLE.load(Ordering::Acquire),
@@ -238,29 +254,29 @@ impl VMM {
     pub fn init(memory_map: &MemoryMapResponse) -> Mapper {
         unsafe {
             FrameAllocator::init(memory_map);
-            
+
             let mut cr3: u64;
             core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
             let kernel_pt = (cr3 & 0x000F_FFFF_FFFF_F000) as *mut PageTable;
-            
+
             KERNEL_PAGE_TABLE.store(kernel_pt, Ordering::Release);
-            
+
             Mapper {
                 page_table: kernel_pt,
             }
         }
     }
-    
+
     pub fn get_mapper() -> Mapper {
         Mapper {
             page_table: Mapper::get_current_page_table(),
         }
     }
-    
+
     pub fn get_kernel_mapper() -> Mapper {
         Mapper::get_kernel_mapper()
     }
-    
+
     pub fn get_page_table() -> *mut PageTable {
         KERNEL_PAGE_TABLE.load(Ordering::Acquire)
     }

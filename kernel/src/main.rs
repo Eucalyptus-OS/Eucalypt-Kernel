@@ -11,60 +11,40 @@ use eucalypt_os::gdt::gdt_init;
 use eucalypt_os::idt::idt_init;
 use eucalypt_os::mp::init_mp;
 
+use framebuffer::println;
 // Limine
 use limine::BaseRevision;
 use limine::request::{
-    FramebufferRequest,
-    MemoryMapRequest,
+    FramebufferRequest, MemoryMapRequest, MpRequest, RequestsEndMarker, RequestsStartMarker,
     RsdpRequest,
-    MpRequest,
-    RequestsStartMarker,
-    RequestsEndMarker,
 };
 
 // Hardware
 use serial::serial_println;
 
 use bare_x86_64::cpu::apic::{
-    enable_apic,
-    get_apic_base,
-    set_apic_virt_base,
-    init_apic_timer,
-    calibrate_apic_timer,
+    calibrate_apic_timer, enable_apic, get_apic_base, init_apic_timer, set_apic_virt_base,
 };
 
 use memory::{
-    mmio::{
-        map_mmio,
-        mmio_map_range,
-    },
-    vmm::VMM,
     allocator::init_allocator,
+    mmio::{map_mmio, mmio_map_range},
+    vmm::VMM,
 };
 
-use pci::check_all_buses;
-use ide::ide_init;
 use ahci::init_ahci;
+use ide::ide_init;
+use pci::check_all_buses;
 use usb::init_usb;
 
-use sched::{
-    init_scheduler,
-    enable_scheduler,
-    sleep_proc_ms,
-};
-use process::{
-    init_kernel_process,
-    create_process,
-};
+use process::{create_process, init_kernel_process};
+use sched::{enable_scheduler, init_scheduler, sleep_proc_ms};
 
 #[allow(unused)]
-use framebuffer::{
-    ScrollingTextRenderer,
-    panic_print,
-};
+use framebuffer::{ScrollingTextRenderer, panic_print};
 
 // FS
-use fat12::{fat12_init, fat12_read_file, fat12_list_files};
+use fat12::{fat12_init, fat12_list_files, fat12_read_file};
 
 // ELF
 use eucalypt_os::elf::parse_elf;
@@ -135,8 +115,8 @@ extern "C" fn kmain() -> ! {
         asm!("sti");
     }
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
-    let apic_virt = map_mmio(get_apic_base() as u64, 0x1000)
-        .expect("Failed to map APIC MMIO region");
+    let apic_virt =
+        map_mmio(get_apic_base() as u64, 0x1000).expect("Failed to map APIC MMIO region");
     set_apic_virt_base(apic_virt as usize);
     enable_apic();
     let initial_count = calibrate_apic_timer(1000);
@@ -145,7 +125,9 @@ extern "C" fn kmain() -> ! {
     check_all_buses();
     init_usb();
     init_ahci();
-    let mp_response = MP_REQUEST.get_response().expect("No MP response from Limine");
+    let mp_response = MP_REQUEST
+        .get_response()
+        .expect("No MP response from Limine");
     init_mp(mp_response);
 
     serial_println!("Initializing FAT12 filesystem...");
@@ -155,27 +137,27 @@ extern "C" fn kmain() -> ! {
             match fat12_read_file("hello.txt") {
                 Ok(content) => {
                     let content_str = core::str::from_utf8(&content).unwrap_or("Invalid UTF-8");
-                    serial_println!("File content: {}", content_str);
+                    println!("File content: {}", content_str);
                 }
-                Err(e) => serial_println!("Failed to read file: {}", e),
+                Err(e) => println!("Failed to read file: {}", e),
             }
         }
         Err(e) => {
-            serial_println!("FAT12 initialization failed: {}", e);
-            serial_println!("This is expected if the disk is not formatted as FAT12");
+            println!("FAT12 initialization failed: {}", e);
+            println!("This is expected if the disk is not formatted as FAT12");
         }
     }
-    
+
     match fat12_list_files() {
         Ok(files) => {
-            serial_println!("Files in root directory:");
+            println!("Files in root directory:");
             for file in files {
-                serial_println!("  {}", file);
+                println!("  {}", file);
             }
         }
-        Err(e) => serial_println!("Failed to list files: {}", e),
+        Err(e) => println!("Failed to list files: {}", e),
     }
-    
+
     parse_elf("euca");
 
     let kernel_main_rsp: u64;
@@ -201,14 +183,14 @@ extern "C" fn kmain() -> ! {
 
 fn test_process_1() {
     loop {
-        serial_println!("Process 1 running");
+        println!("Process 1 running");
         sleep_proc_ms(1000);
     }
 }
 
 fn test_process_2() {
     loop {
-        serial_println!("Process 2 running");
+        println!("Process 2 running");
         sleep_proc_ms(1000);
     }
 }
@@ -224,7 +206,7 @@ fn fibonacci(n: u64) -> u64 {
 fn fib_process() {
     let x: u64 = 100;
     for i in 0..x {
-        serial_println!("Fibonacci number at index {} is {}", i, fibonacci(i));
+        println!("Fibonacci number at index {} is {}", i, fibonacci(i));
     }
 }
 
@@ -267,11 +249,25 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
         RFLAGS: 0x{:016x}\n\
         CS:  0x{:04x}      SS:  0x{:04x}",
         info,
-        rax, rbx, rcx, rdx,
-        rsi, rdi, rbp, rsp,
-        r8, r9, r10, r11,
-        r12, r13, r14, r15,
-        rflags, cs, ss
+        rax,
+        rbx,
+        rcx,
+        rdx,
+        rsi,
+        rdi,
+        rbp,
+        rsp,
+        r8,
+        r9,
+        r10,
+        r11,
+        r12,
+        r13,
+        r14,
+        r15,
+        rflags,
+        cs,
+        ss
     );
 
     loop {

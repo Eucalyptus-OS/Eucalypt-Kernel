@@ -1,15 +1,18 @@
 #![no_std]
 
-use serial::serial_println;
-use pci;
-use xhci;
-use memory;
 use core::sync::atomic::{AtomicBool, Ordering};
+use memory;
+use pci;
+use serial::serial_println;
+use xhci;
 
 static USB_LOCK: AtomicBool = AtomicBool::new(false);
 
 fn usb_lock() {
-    while USB_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    while USB_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         core::hint::spin_loop();
     }
 }
@@ -30,7 +33,9 @@ impl xhci::accessor::Mapper for UsbMapper {
         let phys = memory::addr::PhysAddr::new(phys_u64);
         let flags = memory::vmm::PageTableEntry::WRITABLE;
 
-        self.0.map_range(virt, phys, bytes, flags).expect("UsbMapper: map_range failed");
+        self.0
+            .map_range(virt, phys, bytes, flags)
+            .expect("UsbMapper: map_range failed");
         unsafe { core::num::NonZeroUsize::new_unchecked(virt_u64 as usize) }
     }
 
@@ -47,7 +52,12 @@ pub fn init_usb() {
     let mut phys_base: u64;
     match pci::pci_find_xhci_controller() {
         Some(device) => {
-            serial_println!("Found XHCI controller at bus {}, device {}, function {}", device.bus, device.device, device.function);
+            serial_println!(
+                "Found XHCI controller at bus {}, device {}, function {}",
+                device.bus,
+                device.device,
+                device.function
+            );
             pci::pci_enable_memory_space(device.bus, device.device, device.function);
             pci::pci_enable_bus_master(device.bus, device.device, device.function);
 
@@ -81,7 +91,11 @@ pub fn init_usb() {
     xhci_operational_regs.usbcmd.update_volatile(|u| {
         u.set_host_controller_reset();
     });
-    while xhci_operational_regs.usbcmd.read_volatile().host_controller_reset() {}
+    while xhci_operational_regs
+        .usbcmd
+        .read_volatile()
+        .host_controller_reset()
+    {}
     while !xhci_operational_regs.usbsts.read_volatile().hc_halted() {}
     const RING_PAGES: usize = 1;
     const PAGE_SIZE: usize = 0x1000;
@@ -120,12 +134,29 @@ pub fn init_usb() {
     let evt_virt = (evt_phys.as_u64() | HHDM_OFFSET) as usize;
 
     let mut inner_mapper = mapper.0;
-    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(cmd_virt as u64), memory::addr::PhysAddr::new(cmd_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
-    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
-    
+    let _ = inner_mapper.map_range(
+        memory::addr::VirtAddr::new(cmd_virt as u64),
+        memory::addr::PhysAddr::new(cmd_phys.as_u64()),
+        PAGE_SIZE,
+        memory::vmm::PageTableEntry::WRITABLE,
+    );
+    let _ = inner_mapper.map_range(
+        memory::addr::VirtAddr::new(evt_virt as u64),
+        memory::addr::PhysAddr::new(evt_phys.as_u64()),
+        PAGE_SIZE,
+        memory::vmm::PageTableEntry::WRITABLE,
+    );
 
-    serial_println!("Command ring phys=0x{:x} virt=0x{:x}", cmd_phys.as_u64(), cmd_virt);
-    serial_println!("Event ring phys=0x{:x} virt=0x{:x}", evt_phys.as_u64(), evt_virt);
+    serial_println!(
+        "Command ring phys=0x{:x} virt=0x{:x}",
+        cmd_phys.as_u64(),
+        cmd_virt
+    );
+    serial_println!(
+        "Event ring phys=0x{:x} virt=0x{:x}",
+        evt_phys.as_u64(),
+        evt_virt
+    );
 
     xhci_operational_regs.usbcmd.update_volatile(|u| {
         u.set_run_stop();
@@ -141,7 +172,12 @@ pub fn init_usb() {
         }
     };
     let erst_virt = (erst_phys.as_u64() | HHDM_OFFSET) as usize;
-    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(erst_virt as u64), memory::addr::PhysAddr::new(erst_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
+    let _ = inner_mapper.map_range(
+        memory::addr::VirtAddr::new(erst_virt as u64),
+        memory::addr::PhysAddr::new(erst_phys.as_u64()),
+        PAGE_SIZE,
+        memory::vmm::PageTableEntry::WRITABLE,
+    );
 
     unsafe {
         let p = erst_virt as *mut u8;
@@ -153,9 +189,16 @@ pub fn init_usb() {
 
     let mut interrupter = xhci_regs.interrupter_register_set.interrupter_mut(0);
     interrupter.erstsz.update_volatile(|s| s.set(1));
-    interrupter.erstba.update_volatile(|b| b.set(erst_phys.as_u64()));
-    interrupter.erdp.update_volatile(|d| d.set_event_ring_dequeue_pointer(evt_phys.as_u64()));
-    interrupter.iman.update_volatile(|i| { i.clear_interrupt_pending(); i.set_interrupt_enable(); });
+    interrupter
+        .erstba
+        .update_volatile(|b| b.set(erst_phys.as_u64()));
+    interrupter
+        .erdp
+        .update_volatile(|d| d.set_event_ring_dequeue_pointer(evt_phys.as_u64()));
+    interrupter.iman.update_volatile(|i| {
+        i.clear_interrupt_pending();
+        i.set_interrupt_enable();
+    });
 
     xhci_operational_regs.crcr.update_volatile(|c| {
         c.set_command_ring_pointer(cmd_phys.as_u64());
@@ -178,6 +221,6 @@ pub fn init_usb() {
         c.set_command_ring_pointer(cmd_phys.as_u64());
         c.set_ring_cycle_state();
     });
-    
+
     usb_unlock();
 }

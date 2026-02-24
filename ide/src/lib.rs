@@ -207,7 +207,10 @@ fn ide_write(channel: u8, reg: u8, data: u8) {
         }
 
         if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
+            outb!(
+                CHANNELS[channel as usize].ctrl,
+                CHANNELS[channel as usize].nien
+            );
         }
     }
 }
@@ -230,7 +233,10 @@ fn ide_read(channel: u8, reg: u8) -> u8 {
         };
 
         if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
+            outb!(
+                CHANNELS[channel as usize].ctrl,
+                CHANNELS[channel as usize].nien
+            );
         }
 
         result
@@ -259,7 +265,10 @@ fn ide_read_buffer(channel: u8, reg: u8, buffer: *mut u32, quads: u32) {
         }
 
         if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
+            outb!(
+                CHANNELS[channel as usize].ctrl,
+                CHANNELS[channel as usize].nien
+            );
         }
     }
 }
@@ -286,7 +295,10 @@ fn ide_write_buffer(channel: u8, reg: u8, buffer: *const u32, quads: u32) {
         }
 
         if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
+            outb!(
+                CHANNELS[channel as usize].ctrl,
+                CHANNELS[channel as usize].nien
+            );
         }
     }
 }
@@ -341,7 +353,7 @@ fn ide_print_error(drive: usize, mut err: u8) -> u8 {
     }
 
     serial_println!("IDE:");
-    
+
     if err == 1 {
         serial_println!("- Device Fault");
         err = 19;
@@ -407,11 +419,7 @@ fn ide_configure_transfer(
 ) {
     if use_lba48 {
         ide_write(channel, ATA_REG_HDDEVSEL, 0x40 | (drive_bit << 4));
-        ide_write(
-            channel,
-            ATA_REG_SECCOUNT1,
-            ((sectors >> 8) & 0xFF) as u8,
-        );
+        ide_write(channel, ATA_REG_SECCOUNT1, ((sectors >> 8) & 0xFF) as u8);
         ide_write(channel, ATA_REG_LBA3, ((lba >> 24) & 0xFF) as u8);
         ide_write(channel, ATA_REG_LBA4, ((lba >> 32) & 0xFF) as u8);
         ide_write(channel, ATA_REG_LBA5, ((lba >> 40) & 0xFF) as u8);
@@ -652,7 +660,8 @@ fn ide_detect_device(channel: usize, drive: usize) -> bool {
                     ]);
                     serial_println!(
                         "Device {}: LBA48, Size: {} sectors",
-                        drive_index, IDE_DEVICES[drive_index].size
+                        drive_index,
+                        IDE_DEVICES[drive_index].size
                     );
                 } else {
                     IDE_DEVICES[drive_index].size = u64::from_le_bytes([
@@ -667,7 +676,8 @@ fn ide_detect_device(channel: usize, drive: usize) -> bool {
                     ]);
                     serial_println!(
                         "Device {}: LBA28, Size: {} sectors",
-                        drive_index, IDE_DEVICES[drive_index].size
+                        drive_index,
+                        IDE_DEVICES[drive_index].size
                     );
                 }
 
@@ -688,22 +698,14 @@ fn ide_detect_device(channel: usize, drive: usize) -> bool {
 fn ide_init_channel(channel: &mut IDEChannelRegisters, bar_base: u8, bar_ctrl: u8, bmide: u16) {
     channel.base = (((bar_base as u32) & 0xFFFF_FFFC)
         + if bar_base == 0 {
-            if bmide == 0 {
-                0x1F0
-            } else {
-                0x170
-            }
+            if bmide == 0 { 0x1F0 } else { 0x170 }
         } else {
             0
         }) as u16;
 
     channel.ctrl = (((bar_ctrl as u32) & 0xFFFF_FFFC)
         + if bar_ctrl == 0 {
-            if bmide == 0 {
-                0x3F6
-            } else {
-                0x376
-            }
+            if bmide == 0 { 0x3F6 } else { 0x376 }
         } else {
             0
         }) as u16;
@@ -711,13 +713,12 @@ fn ide_init_channel(channel: &mut IDEChannelRegisters, bar_base: u8, bar_ctrl: u
     channel.bmide = bmide;
     channel.nien = 0;
 
-
     outb!(channel.ctrl, 0x02);
 }
 
 pub fn ide_init(bar0: u8, bar1: u8, bar2: u8, bar3: u8, bar4: u8) {
     ide_lock();
-    
+
     let bm = ((bar4 as u32) & 0xFFFF_FFFC) as u16;
 
     unsafe {
@@ -748,6 +749,6 @@ pub fn ide_init(bar0: u8, bar1: u8, bar2: u8, bar3: u8, bar4: u8) {
             serial_println!("IDE: devices detected: {}", count);
         }
     }
-    
+
     ide_unlock();
 }

@@ -1,7 +1,6 @@
 #![no_std]
 /// FAT12 Filesystem Driver - Static Function API
 /// Supports reading, writing and creating files on FAT12 formatted drives
-
 extern crate alloc;
 
 use alloc::string::String;
@@ -128,7 +127,7 @@ impl DirectoryEntry {
         }
 
         let mut name = String::new();
-        
+
         for i in 0..8 {
             if self.name[i] == b' ' {
                 break;
@@ -199,23 +198,23 @@ impl DirectoryEntry {
 }
 
 /// Initializes the FAT12 filesystem on the specified drive
-/// 
+///
 /// # Arguments
 /// * `drive` - The drive number to initialize
-/// 
+///
 /// # Returns
 /// * `Ok(())` if initialization succeeded
 /// * `Err` with error message if failed
 pub fn fat12_init(drive: usize) -> Result<(), &'static str> {
     fat_lock();
-    
+
     serial_println!("FAT12: Reading boot sector from drive {}...", drive);
-    
+
     let mut boot_sector = [0u8; SECTOR_SIZE];
     let err = ide_read_sectors(drive, 0, &mut boot_sector);
-    
+
     serial_println!("FAT12: Boot sector read returned error code: {}", err);
-    
+
     if err != 0 {
         fat_unlock();
         return Err("Failed to read boot sector");
@@ -227,8 +226,12 @@ pub fn fat12_init(drive: usize) -> Result<(), &'static str> {
     let boot_sig_1 = boot_sector[511];
     let bytes_per_sector = bpb.bytes_per_sector;
     let fs_type = bpb.fs_type;
-    
-    serial_println!("Boot sector signature: 0x{:02x}{:02x}", boot_sig_0, boot_sig_1);
+
+    serial_println!(
+        "Boot sector signature: 0x{:02x}{:02x}",
+        boot_sig_0,
+        boot_sig_1
+    );
     serial_println!("Bytes per sector: {}", bytes_per_sector);
     serial_println!("FS Type: {:?}", core::str::from_utf8(&fs_type));
 
@@ -237,23 +240,23 @@ pub fn fat12_init(drive: usize) -> Result<(), &'static str> {
         return Err("Invalid boot sector signature");
     }
 
-    let is_fat12 = &fs_type[0..5] == b"FAT12" || 
-                   bytes_per_sector == 512 && bpb.sectors_per_cluster > 0;
-    
+    let is_fat12 =
+        &fs_type[0..5] == b"FAT12" || bytes_per_sector == 512 && bpb.sectors_per_cluster > 0;
+
     if !is_fat12 {
         fat_unlock();
         return Err("Not a FAT12 filesystem");
     }
 
     let fat_start_sector = bpb.reserved_sectors as u64;
-    let root_dir_sectors = ((bpb.root_entry_count as u32 * 32) 
-        + (bpb.bytes_per_sector as u32 - 1)) / bpb.bytes_per_sector as u32;
+    let root_dir_sectors = ((bpb.root_entry_count as u32 * 32) + (bpb.bytes_per_sector as u32 - 1))
+        / bpb.bytes_per_sector as u32;
     let root_dir_start_sector = fat_start_sector + (bpb.num_fats as u64 * bpb.fat_size_16 as u64);
     let data_start_sector = root_dir_start_sector + root_dir_sectors as u64;
 
     let fat_size_bytes = bpb.fat_size_16 as usize * SECTOR_SIZE;
     let mut fat_cache = alloc::vec![0u8; fat_size_bytes];
-    
+
     for i in 0..bpb.fat_size_16 {
         let sector_data = &mut fat_cache[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
         let err = ide_read_sectors(drive, fat_start_sector + i as u64, sector_data);
@@ -282,15 +285,9 @@ fn get_fat_entry(cluster: u16) -> u16 {
     unsafe {
         let fat_offset = (cluster as usize * 3) / 2;
         let entry = if cluster & 1 == 0 {
-            u16::from_le_bytes([
-                FAT_CACHE[fat_offset],
-                FAT_CACHE[fat_offset + 1],
-            ]) & 0x0FFF
+            u16::from_le_bytes([FAT_CACHE[fat_offset], FAT_CACHE[fat_offset + 1]]) & 0x0FFF
         } else {
-            u16::from_le_bytes([
-                FAT_CACHE[fat_offset],
-                FAT_CACHE[fat_offset + 1],
-            ]) >> 4
+            u16::from_le_bytes([FAT_CACHE[fat_offset], FAT_CACHE[fat_offset + 1]]) >> 4
         };
         entry
     }
@@ -299,14 +296,13 @@ fn get_fat_entry(cluster: u16) -> u16 {
 fn set_fat_entry(cluster: u16, value: u16) {
     unsafe {
         let fat_offset = (cluster as usize * 3) / 2;
-        
+
         if cluster & 1 == 0 {
             FAT_CACHE[fat_offset] = (value & 0xFF) as u8;
-            FAT_CACHE[fat_offset + 1] = (FAT_CACHE[fat_offset + 1] & 0xF0) 
-                | ((value >> 8) & 0x0F) as u8;
+            FAT_CACHE[fat_offset + 1] =
+                (FAT_CACHE[fat_offset + 1] & 0xF0) | ((value >> 8) & 0x0F) as u8;
         } else {
-            FAT_CACHE[fat_offset] = (FAT_CACHE[fat_offset] & 0x0F) 
-                | ((value & 0x0F) << 4) as u8;
+            FAT_CACHE[fat_offset] = (FAT_CACHE[fat_offset] & 0x0F) | ((value & 0x0F) << 4) as u8;
             FAT_CACHE[fat_offset + 1] = ((value >> 4) & 0xFF) as u8;
         }
     }
@@ -314,7 +310,7 @@ fn set_fat_entry(cluster: u16, value: u16) {
 
 fn flush_fat() -> Result<(), &'static str> {
     fat_lock();
-    
+
     unsafe {
         for i in 0..BPB.fat_size_16 {
             let sector_data = &FAT_CACHE[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
@@ -324,11 +320,12 @@ fn flush_fat() -> Result<(), &'static str> {
                 return Err("Failed to write FAT");
             }
         }
-        
+
         for fat_num in 1..BPB.num_fats {
             let backup_start = FAT_START_SECTOR + (fat_num as u64 * BPB.fat_size_16 as u64);
             for i in 0..BPB.fat_size_16 {
-                let sector_data = &FAT_CACHE[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
+                let sector_data =
+                    &FAT_CACHE[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
                 let err = ide_write_sectors(FAT_DRIVE, backup_start + i as u64, sector_data);
                 if err != 0 {
                     fat_unlock();
@@ -337,7 +334,7 @@ fn flush_fat() -> Result<(), &'static str> {
             }
         }
     }
-    
+
     fat_unlock();
     Ok(())
 }
@@ -358,19 +355,17 @@ fn allocate_cluster() -> Result<u16, &'static str> {
 }
 
 fn cluster_to_sector(cluster: u16) -> u64 {
-    unsafe {
-        DATA_START_SECTOR + ((cluster as u64 - 2) * BPB.sectors_per_cluster as u64)
-    }
+    unsafe { DATA_START_SECTOR + ((cluster as u64 - 2) * BPB.sectors_per_cluster as u64) }
 }
 
 fn read_cluster(cluster: u16) -> Result<Vec<u8>, &'static str> {
     fat_lock();
-    
+
     unsafe {
         let sector = cluster_to_sector(cluster);
         let cluster_size = BPB.sectors_per_cluster as usize * SECTOR_SIZE;
         let mut data = alloc::vec![0u8; cluster_size];
-        
+
         for i in 0..BPB.sectors_per_cluster {
             let sector_data = &mut data[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
             let err = ide_read_sectors(FAT_DRIVE, sector + i as u64, sector_data);
@@ -379,7 +374,7 @@ fn read_cluster(cluster: u16) -> Result<Vec<u8>, &'static str> {
                 return Err("Failed to read cluster");
             }
         }
-        
+
         fat_unlock();
         Ok(data)
     }
@@ -387,24 +382,25 @@ fn read_cluster(cluster: u16) -> Result<Vec<u8>, &'static str> {
 
 fn write_cluster(cluster: u16, data: &[u8]) -> Result<(), &'static str> {
     fat_lock();
-    
+
     unsafe {
         let sector = cluster_to_sector(cluster);
         let cluster_size = BPB.sectors_per_cluster as usize * SECTOR_SIZE;
-        
+
         let mut padded_data = alloc::vec![0u8; cluster_size];
         let copy_len = core::cmp::min(data.len(), cluster_size);
         padded_data[..copy_len].copy_from_slice(&data[..copy_len]);
-        
+
         for i in 0..BPB.sectors_per_cluster {
-            let sector_data = &padded_data[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
+            let sector_data =
+                &padded_data[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
             let err = ide_write_sectors(FAT_DRIVE, sector + i as u64, sector_data);
             if err != 0 {
                 fat_unlock();
                 return Err("Failed to write cluster");
             }
         }
-        
+
         fat_unlock();
         Ok(())
     }
@@ -412,20 +408,21 @@ fn write_cluster(cluster: u16, data: &[u8]) -> Result<(), &'static str> {
 
 fn fat12_read_root_directory() -> Result<Vec<DirectoryEntry>, &'static str> {
     fat_lock();
-    
+
     unsafe {
         let root_size = ROOT_DIR_SECTORS as usize * SECTOR_SIZE;
         let mut root_data = alloc::vec![0u8; root_size];
-        
+
         for i in 0..ROOT_DIR_SECTORS {
-            let sector_data = &mut root_data[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
+            let sector_data =
+                &mut root_data[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
             let err = ide_read_sectors(FAT_DRIVE, ROOT_DIR_START_SECTOR + i as u64, sector_data);
             if err != 0 {
                 fat_unlock();
                 return Err("Failed to read root directory");
             }
         }
-        
+
         fat_unlock();
 
         let num_entries = BPB.root_entry_count as usize;
@@ -434,11 +431,11 @@ fn fat12_read_root_directory() -> Result<Vec<DirectoryEntry>, &'static str> {
         for i in 0..num_entries {
             let offset = i * 32;
             let entry = *(root_data.as_ptr().add(offset) as *const DirectoryEntry);
-            
+
             if entry.is_empty() {
                 break;
             }
-            
+
             if !entry.is_deleted() && !entry.is_lfn() && !entry.is_volume_id() {
                 entries.push(entry);
             }
@@ -450,17 +447,17 @@ fn fat12_read_root_directory() -> Result<Vec<DirectoryEntry>, &'static str> {
 
 fn write_root_directory(entries: &[DirectoryEntry]) -> Result<(), &'static str> {
     fat_lock();
-    
+
     unsafe {
         let root_size = ROOT_DIR_SECTORS as usize * SECTOR_SIZE;
         let mut root_data = alloc::vec![0u8; root_size];
-        
+
         for (i, entry) in entries.iter().enumerate() {
             let offset = i * 32;
             let entry_ptr = root_data.as_mut_ptr().add(offset) as *mut DirectoryEntry;
             *entry_ptr = *entry;
         }
-        
+
         for i in 0..ROOT_DIR_SECTORS {
             let sector_data = &root_data[i as usize * SECTOR_SIZE..(i as usize + 1) * SECTOR_SIZE];
             let err = ide_write_sectors(FAT_DRIVE, ROOT_DIR_START_SECTOR + i as u64, sector_data);
@@ -469,7 +466,7 @@ fn write_root_directory(entries: &[DirectoryEntry]) -> Result<(), &'static str> 
                 return Err("Failed to write root directory");
             }
         }
-        
+
         fat_unlock();
         Ok(())
     }
@@ -477,7 +474,7 @@ fn write_root_directory(entries: &[DirectoryEntry]) -> Result<(), &'static str> 
 
 fn find_file_entry(filename: &str) -> Result<DirectoryEntry, &'static str> {
     let entries = fat12_read_root_directory()?;
-    
+
     for entry in entries {
         if let Ok(name) = entry.get_name() {
             if name.to_uppercase() == filename.to_uppercase() {
@@ -485,21 +482,21 @@ fn find_file_entry(filename: &str) -> Result<DirectoryEntry, &'static str> {
             }
         }
     }
-    
+
     Err("File not found")
 }
 
 /// Reads a file by filename
-/// 
+///
 /// # Arguments
 /// * `filename` - Name of the file to read
-/// 
+///
 /// # Returns
 /// * `Ok(Vec<u8>)` containing file contents if successful
 /// * `Err` with error message if failed
 pub fn fat12_read_file(filename: &str) -> Result<Vec<u8>, &'static str> {
     let entry = find_file_entry(filename)?;
-    
+
     if entry.file_size == 0 {
         return Ok(Vec::new());
     }
@@ -526,11 +523,11 @@ pub fn fat12_read_file(filename: &str) -> Result<Vec<u8>, &'static str> {
 }
 
 /// Creates a new file with the given data
-/// 
+///
 /// # Arguments
 /// * `filename` - Name for the new file (8.3 format)
 /// * `data` - File contents to write
-/// 
+///
 /// # Returns
 /// * `Ok(())` if file created successfully
 /// * `Err` with error message if failed
@@ -539,10 +536,10 @@ pub fn fat12_create_file(filename: &str, data: &[u8]) -> Result<(), &'static str
         if !FAT_INITIALIZED {
             return Err("FAT12 not initialized");
         }
-        
+
         let cluster_size = BPB.sectors_per_cluster as usize * SECTOR_SIZE;
         let num_clusters = (data.len() + cluster_size - 1) / cluster_size;
-        
+
         if num_clusters == 0 {
             return Err("Cannot create empty file");
         }
@@ -566,7 +563,7 @@ pub fn fat12_create_file(filename: &str, data: &[u8]) -> Result<(), &'static str
         let entry = DirectoryEntry::new_file(filename, clusters[0], data.len() as u32)?;
 
         let mut entries = fat12_read_root_directory()?;
-        
+
         for existing in &entries {
             if let Ok(name) = existing.get_name() {
                 if name.to_uppercase() == filename.to_uppercase() {
@@ -585,10 +582,10 @@ pub fn fat12_create_file(filename: &str, data: &[u8]) -> Result<(), &'static str
 }
 
 /// Deletes a file by filename
-/// 
+///
 /// # Arguments
 /// * `filename` - Name of the file to delete
-/// 
+///
 /// # Returns
 /// * `Ok(())` if file deleted successfully
 /// * `Err` with error message if failed
@@ -613,7 +610,7 @@ pub fn fat12_delete_file(filename: &str) -> Result<(), &'static str> {
     while cluster >= 2 && cluster < FAT12_BAD_CLUSTER {
         let next_cluster = get_fat_entry(cluster);
         set_fat_entry(cluster, FAT12_FREE_CLUSTER);
-        
+
         if next_cluster >= FAT12_EOF {
             break;
         }
@@ -622,14 +619,14 @@ pub fn fat12_delete_file(filename: &str) -> Result<(), &'static str> {
 
     entries[index].name[0] = 0xE5;
     write_root_directory(&entries)?;
-    
+
     flush_fat()?;
 
     Ok(())
 }
 
 /// Lists all files in the root directory
-/// 
+///
 /// # Returns
 /// * `Ok(Vec<String>)` containing filenames if successful
 /// * `Err` with error message if failed
@@ -647,10 +644,10 @@ pub fn fat12_list_files() -> Result<Vec<String>, &'static str> {
 }
 
 /// Checks if a file exists
-/// 
+///
 /// # Arguments
 /// * `filename` - Name of the file to check
-/// 
+///
 /// # Returns
 /// * `true` if file exists, `false` otherwise
 pub fn fat12_file_exists(filename: &str) -> bool {
@@ -658,10 +655,10 @@ pub fn fat12_file_exists(filename: &str) -> bool {
 }
 
 /// Gets the size of a file
-/// 
+///
 /// # Arguments
 /// * `filename` - Name of the file
-/// 
+///
 /// # Returns
 /// * `Some(u32)` with file size if file exists
 /// * `None` if file does not exist

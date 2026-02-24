@@ -2,8 +2,8 @@
 
 use core::{
     alloc::{GlobalAlloc, Layout},
-    ptr::null_mut,
     mem,
+    ptr::null_mut,
 };
 use limine::{memory_map::EntryType, response::MemoryMapResponse};
 
@@ -104,11 +104,11 @@ unsafe impl GlobalAlloc for LinkAllocator {
         unsafe {
             let free_list = &mut *core::ptr::addr_of_mut!(FREE_LIST);
             let mut current = free_list.head;
-            
+
             while !current.is_null() {
                 if (*current).size >= layout.size() {
                     free_list.remove(current);
-                    
+
                     return (current as *mut u8).add(mem::size_of::<LinkedListBlock>());
                 }
                 current = (*current).next;
@@ -121,18 +121,18 @@ unsafe impl GlobalAlloc for LinkAllocator {
             let align = layout.align().max(mem::align_of::<LinkedListBlock>());
             let aligned_offset = (HEAP_OFFSET + align - 1) & !(align - 1);
             let total_size = mem::size_of::<LinkedListBlock>() + layout.size();
-            
+
             if aligned_offset + total_size > HEAP_SIZE {
                 return null_mut();
             }
-            
+
             let block = HEAP_START.add(aligned_offset) as *mut LinkedListBlock;
             (*block).size = layout.size();
             (*block).next = null_mut();
             (*block).prev = null_mut();
-            
+
             HEAP_OFFSET = aligned_offset + total_size;
-            
+
             (block as *mut u8).add(mem::size_of::<LinkedListBlock>())
         }
     }
@@ -144,7 +144,7 @@ unsafe impl GlobalAlloc for LinkAllocator {
             }
 
             let block = ptr.sub(mem::size_of::<LinkedListBlock>()) as *mut LinkedListBlock;
-            
+
             let free_list = &mut *core::ptr::addr_of_mut!(FREE_LIST);
             free_list.push_back(block);
         }
@@ -157,7 +157,7 @@ static ALLOCATOR: LinkAllocator = LinkAllocator;
 pub fn init_allocator(memory_map: &MemoryMapResponse) {
     unsafe {
         FREE_LIST = LinkedList::new();
-        
+
         for entry in memory_map.entries() {
             if entry.entry_type == EntryType::USABLE && entry.length > 16 * 1024 * 1024 {
                 HEAP_START = (entry.base + 0xFFFF800000000000) as *mut u8;
@@ -166,7 +166,7 @@ pub fn init_allocator(memory_map: &MemoryMapResponse) {
                 break;
             }
         }
-        
+
         if HEAP_START.is_null() {
             panic!("No usable memory found in memory map");
         }

@@ -3,8 +3,8 @@
 extern crate alloc;
 
 use core::alloc::Layout;
-use serial::serial_println;
 use memory::vmm::{PageTable, VMM};
+use serial::serial_println;
 
 // Defines the constants for the kernel and process count
 const KERNEL_STACK_SIZE: usize = 64 * 1024;
@@ -84,7 +84,11 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         }
 
         let stack_base = allocate_kernel_stack()?;
-        serial_println!("Allocated stack for process {} at 0x{:x}", pid, stack_base as u64);
+        serial_println!(
+            "Allocated stack for process {} at 0x{:x}",
+            pid,
+            stack_base as u64
+        );
 
         let rsp = setup_initial_stack(stack_base, entry);
         let kernel_pml4 = VMM::get_page_table();
@@ -104,12 +108,17 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         PROCESS_TABLE.processes[pid as usize] = Some(process);
         PROCESS_COUNT += 1;
 
-        serial_println!("Created process {} with entry 0x{:x}, RSP: 0x{:x}", pid, entry as u64, rsp);
+        serial_println!(
+            "Created process {} with entry 0x{:x}, RSP: 0x{:x}",
+            pid,
+            entry as u64,
+            rsp
+        );
         Some(pid)
     }
 }
 
-/// Destroys a process 
+/// Destroys a process
 pub fn destroy_process(pid: u64) -> bool {
     unsafe {
         if pid >= MAX_PROCESSES as u64 {
@@ -194,12 +203,8 @@ pub fn get_process_mut(pid: u64) -> Option<&'static mut Process> {
 fn allocate_kernel_stack() -> Option<*mut u8> {
     let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 4096).ok()?;
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
+
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 fn setup_initial_stack(stack_base: *mut u8, entry: *mut ()) -> u64 {

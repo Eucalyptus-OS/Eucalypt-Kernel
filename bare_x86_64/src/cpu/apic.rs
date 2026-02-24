@@ -1,5 +1,5 @@
 //! APIC support for x86_64 architecture
-//! 
+//!
 //! The APIC is the modern replacement for the obsolete PIT timer,
 //! with better multi-core support and additional features.
 //!

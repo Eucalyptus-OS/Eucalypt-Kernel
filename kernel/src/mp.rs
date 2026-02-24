@@ -1,5 +1,5 @@
-use serial::serial_println;
 use limine::response::MpResponse;
+use serial::serial_println;
 
 #[derive(Debug, Clone, Copy)]
 enum CoreType {
@@ -15,16 +15,16 @@ impl CoreType {
             0x20 => CoreType::Efficiency,
             0x40 => CoreType::Performance,
             0x00 => CoreType::Standard,
-            _    => CoreType::Unknown(value),
+            _ => CoreType::Unknown(value),
         }
     }
 
     fn as_str(&self) -> &'static str {
         match self {
             CoreType::Performance => "P-core (Performance)",
-            CoreType::Efficiency  => "E-core (Efficiency)",
-            CoreType::Standard    => "Standard SMP Core",
-            CoreType::Unknown(_)  => "Unknown Core Type",
+            CoreType::Efficiency => "E-core (Efficiency)",
+            CoreType::Standard => "Standard SMP Core",
+            CoreType::Unknown(_) => "Unknown Core Type",
         }
     }
 }
@@ -55,22 +55,26 @@ pub fn init_mp(res: &'static MpResponse) {
 
         match core_type {
             CoreType::Performance => p_core_count += 1,
-            CoreType::Efficiency  => e_core_count += 1,
-            CoreType::Standard    => standard_count += 1,
-            CoreType::Unknown(_)  => unknown_count += 1,
+            CoreType::Efficiency => e_core_count += 1,
+            CoreType::Standard => standard_count += 1,
+            CoreType::Unknown(_) => unknown_count += 1,
         }
 
         match core_type {
             CoreType::Unknown(val) => {
                 serial_println!(
                     "  Core {}: LAPIC ID 0x{:X}, Type: Unknown (0x{:X})",
-                    index, cpu.id, val
+                    index,
+                    cpu.id,
+                    val
                 );
             }
             _ => {
                 serial_println!(
                     "  Core {}: LAPIC ID 0x{:X}, Type: {}",
-                    index, cpu.id, core_type.as_str()
+                    index,
+                    cpu.id,
+                    core_type.as_str()
                 );
             }
         }

@@ -1,11 +1,11 @@
 //! This file defines all of the PCI functions
 //! What is PCI? PCI (Peripheral Component Interconnect) is a local bus used to connect
-//! hardware to a computers motherboard 
+//! hardware to a computers motherboard
 #![no_std]
 
 extern crate alloc;
 
-use bare_x86_64::{outl, inl};
+use bare_x86_64::{inl, outl};
 use serial::serial_println;
 
 // PCI Configuration Space I/O Ports
@@ -73,23 +73,23 @@ static mut PCI_DEVICES: [PCIDevice; MAX_PCI_DEVICES] = [PCIDevice::new(); MAX_PC
 static mut PCI_DEVICE_COUNT: u32 = 0;
 
 pub fn pci_config_read_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    let address: u32 = ((bus as u32) << 16) 
+    let address: u32 = ((bus as u32) << 16)
         | ((device as u32) << 11)
-        | ((function as u32) << 8) 
-        | ((offset as u32) & 0xFC) 
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC)
         | 0x80000000;
-    
+
     outl!(PCI_CONFIG_ADDRESS, address);
     inl!(PCI_CONFIG_DATA)
 }
 
 pub fn pci_config_write_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-    let address: u32 = ((bus as u32) << 16) 
+    let address: u32 = ((bus as u32) << 16)
         | ((device as u32) << 11)
-        | ((function as u32) << 8) 
-        | ((offset as u32) & 0xFC) 
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC)
         | 0x80000000;
-    
+
     outl!(PCI_CONFIG_ADDRESS, address);
     outl!(PCI_CONFIG_DATA, value);
 }
@@ -143,13 +143,13 @@ pub fn pci_get_bar_size(bus: u8, device: u8, function: u8, bar_num: u8) -> u32 {
     pci_write_bar(bus, device, function, bar_num, 0xFFFFFFFF);
     let mut size = pci_read_bar(bus, device, function, bar_num);
     pci_write_bar(bus, device, function, bar_num, original);
-    
+
     if (original & 0x1) != 0 {
         size &= 0xFFFFFFFC;
     } else {
         size &= 0xFFFFFFF0;
     }
-    
+
     (!size).wrapping_add(1)
 }
 
@@ -195,12 +195,12 @@ pub fn pci_add_device(bus: u8, device: u8, function: u8) {
         dev.bus = bus;
         dev.device = device;
         dev.function = function;
-    dev.vendor_id = get_vendor_id(bus, device, function);
-    dev.device_id = get_device_id(bus, device, function);
-    dev.class_code = pci_config_read_byte(bus, device, function, PCI_CLASS_CODE);
-    dev.subclass = pci_config_read_byte(bus, device, function, PCI_SUBCLASS);
-    dev.prog_if = pci_config_read_byte(bus, device, function, PCI_PROG_IF);
-    dev.interrupt_line = pci_get_interrupt_line(bus, device, function);
+        dev.vendor_id = get_vendor_id(bus, device, function);
+        dev.device_id = get_device_id(bus, device, function);
+        dev.class_code = pci_config_read_byte(bus, device, function, PCI_CLASS_CODE);
+        dev.subclass = pci_config_read_byte(bus, device, function, PCI_SUBCLASS);
+        dev.prog_if = pci_config_read_byte(bus, device, function, PCI_PROG_IF);
+        dev.interrupt_line = pci_get_interrupt_line(bus, device, function);
 
         for i in 0..6 {
             dev.bar[i] = pci_read_bar(bus, device, function, i as u8);
@@ -232,12 +232,17 @@ pub fn pci_find_class(class_code: u8, subclass: u8) -> Option<&'static PCIDevice
     None
 }
 
-pub fn pci_find_class_prog_if(class_code: u8, subclass: u8, prog_if: u8) -> Option<&'static PCIDevice> {
+pub fn pci_find_class_prog_if(
+    class_code: u8,
+    subclass: u8,
+    prog_if: u8,
+) -> Option<&'static PCIDevice> {
     unsafe {
         for i in 0..PCI_DEVICE_COUNT as usize {
-            if PCI_DEVICES[i].class_code == class_code 
+            if PCI_DEVICES[i].class_code == class_code
                 && PCI_DEVICES[i].subclass == subclass
-                && PCI_DEVICES[i].prog_if == prog_if {
+                && PCI_DEVICES[i].prog_if == prog_if
+            {
                 return Some(&PCI_DEVICES[i]);
             }
         }
@@ -252,8 +257,14 @@ pub fn check_function(bus: u8, device: u8, function: u8) {
     }
 
     let device_id = get_device_id(bus, device, function);
-    serial_println!("Found PCI device: Bus {:02x}, Device {:02x}, Func {:02x} => Vendor: {:04x}, Device: {:04x}",
-             bus, device, function, vendor, device_id);
+    serial_println!(
+        "Found PCI device: Bus {:02x}, Device {:02x}, Func {:02x} => Vendor: {:04x}, Device: {:04x}",
+        bus,
+        device,
+        function,
+        vendor,
+        device_id
+    );
 
     pci_add_device(bus, device, function);
 
@@ -304,9 +315,7 @@ pub fn check_all_buses() {
 }
 
 pub fn pci_get_all_devices() -> &'static [PCIDevice] {
-    unsafe {
-        &PCI_DEVICES[0..PCI_DEVICE_COUNT as usize]
-    }
+    unsafe { &PCI_DEVICES[0..PCI_DEVICE_COUNT as usize] }
 }
 
 pub fn pci_find_xhci_controller() -> Option<&'static PCIDevice> {

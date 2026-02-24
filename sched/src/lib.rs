@@ -63,9 +63,7 @@ pub fn handle_timer_interrupt(current_rsp: u64) -> u64 {
 fn schedule(current_rsp: u64) -> u64 {
     unsafe {
         let current = PROCESS_TABLE.current;
-        let current_state = PROCESS_TABLE.processes[current]
-            .as_ref()
-            .map(|p| p.state);
+        let current_state = PROCESS_TABLE.processes[current].as_ref().map(|p| p.state);
 
         match current_state {
             Some(ProcessState::Running) => {

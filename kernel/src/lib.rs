@@ -5,11 +5,10 @@
 extern crate alloc;
 
 // Modules
+pub mod elf;
 pub mod gdt;
 pub mod idt;
-pub mod elf;
 pub mod mp;
 
 // C functions go here
-unsafe extern "C" {
-}
+unsafe extern "C" {}

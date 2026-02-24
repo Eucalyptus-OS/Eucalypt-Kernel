@@ -1,13 +1,13 @@
+use bare_x86_64::cpu::apic;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU64, Ordering};
-use bare_x86_64::cpu::apic;
 use ide::ide_irq_handler;
 use pic8259::ChainedPics;
 use spin::Mutex;
 use syscall::syscall_handler::syscall_handler;
 use x86_64::registers::control::Cr2;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::registers::model_specific::Msr;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 // PIC vector offsets - IRQs 0-7 map to 32-39, IRQs 8-15 map to 40-47
 const PIC_1_OFFSET: u8 = 32;
@@ -26,9 +26,8 @@ const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
-    ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET)
-});
+static PICS: Mutex<ChainedPics> =
+    Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 /// Registers CPU exception handlers in the IDT via a declarative macro.
 /// Supported kinds: (default) no error code, `error`, `diverging`, `diverging_no_error`.
@@ -108,7 +107,11 @@ pub fn idt_init() {
     unsafe { pics.write_masks(masks[0], masks[1]) };
 
     // APIC timer uses a naked handler so must be registered via raw entry
-    set_raw_idt_entry(idt, APIC_TIMER_VECTOR, apic_timer_handler as *const () as u64);
+    set_raw_idt_entry(
+        idt,
+        APIC_TIMER_VECTOR,
+        apic_timer_handler as *const () as u64,
+    );
 
     idt[PIC_2_OFFSET + 6].set_handler_fn(ide_primary_handler);
     idt[PIC_2_OFFSET + 7].set_handler_fn(ide_secondary_handler);

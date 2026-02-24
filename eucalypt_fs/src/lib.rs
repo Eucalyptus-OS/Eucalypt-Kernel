@@ -4,7 +4,7 @@
 extern crate alloc;
 
 use alloc::vec;
-use ide::{ide_read_sectors, ide_write_sectors, IDE_DEVICES};
+use ide::{IDE_DEVICES, ide_read_sectors, ide_write_sectors};
 use serial::serial_println;
 
 mod super_block;
@@ -49,9 +49,7 @@ fn zero_blocks(drive: usize, start_block: u64, num_blocks: u64, block_size_bytes
 }
 
 fn erase_disk(drive: usize) {
-    let sector_count = unsafe { 
-        IDE_DEVICES[drive].size 
-    };
+    let sector_count = unsafe { IDE_DEVICES[drive].size };
     let _ = ide_write_sectors(drive, 0, &[]);
 }
 
