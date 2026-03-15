@@ -157,18 +157,32 @@ static ALLOCATOR: LinkAllocator = LinkAllocator;
 pub fn init_allocator(memory_map: &MemoryMapResponse) {
     unsafe {
         FREE_LIST = LinkedList::new();
-        
+
+        let bitmap_size_bytes = {
+            let mut max_addr = 0u64;
+            for entry in memory_map.entries() {
+                let end = entry.base + entry.length;
+                if end > max_addr { max_addr = end; }
+            }
+            let total_frames = (max_addr as usize + 4095) / 4096;
+            let bitmap_size = (total_frames + 63) / 64;
+            (bitmap_size * 8 + 4095) & !4095
+        };
+
         for entry in memory_map.entries() {
             if entry.entry_type == EntryType::USABLE && entry.length > 16 * 1024 * 1024 {
-                HEAP_START = (entry.base + 0xFFFF800000000000) as *mut u8;
-                HEAP_SIZE = entry.length as usize;
+                let heap_phys = entry.base + bitmap_size_bytes as u64;
+                let heap_len = entry.length as usize - bitmap_size_bytes;
+                
+                HEAP_START = (heap_phys + 0xFFFF800000000000) as *mut u8;
+                HEAP_SIZE = heap_len;
                 HEAP_OFFSET = 0;
                 break;
             }
         }
-        
+
         if HEAP_START.is_null() {
-            panic!("No usable memory found in memory map");
+            panic!("No usable memory found for heap");
         }
     }
 }

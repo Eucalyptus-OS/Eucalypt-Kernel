@@ -77,7 +77,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
     let clb_phys = clb_frame.unwrap().as_u64();
     let fb_phys = fb_frame.unwrap().as_u64();
     
-    let clb_virt = match map_mmio(clb_phys, 0x1000) {
+    let clb_virt = match map_mmio(memory::vmm::VMM::get_page_table(), clb_phys, 0x1000) {
         Ok(v) => v,
         Err(_) => {
             println!("Failed to map CLB for port {}", portno);
@@ -85,7 +85,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
         }
     };
     
-    let fb_virt = match map_mmio(fb_phys, 0x1000) {
+    let fb_virt = match map_mmio(memory::vmm::VMM::get_page_table(), fb_phys, 0x1000) {
         Ok(v) => v,
         Err(_) => {
             println!("Failed to map FB for port {}", portno);
@@ -105,7 +105,7 @@ fn rebase_port(port: &mut HbaPort, portno: u32) {
         if let Some(frame) = ctba_frame {
             let ctba_phys = frame.as_u64();
             
-            let ctba_virt = match map_mmio(ctba_phys, 0x1000) {
+            let ctba_virt = match map_mmio(memory::vmm::VMM::get_page_table(), ctba_phys, 0x1000) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -212,7 +212,7 @@ pub fn ahci_read(port: &HbaPort, lba: u64, count: u32, buffer: *mut u8) -> bool 
             return false;
         }
 
-        let cmdheader_virt = match map_mmio(port.clb, 0x1000) {
+        let cmdheader_virt = match map_mmio(memory::vmm::VMM::get_page_table(), port.clb, 0x1000) {
             Ok(v) => v as *mut HbaCmdHeader,
             Err(_) => {
                 ahci_unlock();
@@ -224,7 +224,7 @@ pub fn ahci_read(port: &HbaPort, lba: u64, count: u32, buffer: *mut u8) -> bool 
             (*cmdheader_virt).prdtl = 1;
             
             let ctba_phys = (*cmdheader_virt).ctba;
-            let cmdtbl_virt = match map_mmio(ctba_phys, 0x1000) {
+            let cmdtbl_virt = match map_mmio(memory::vmm::VMM::get_page_table(), ctba_phys, 0x1000) {
                 Ok(v) => v as *mut HbaCmdTbl,
                 Err(_) => {
                     ahci_unlock();
@@ -278,7 +278,7 @@ pub fn ahci_write(port: &HbaPort, lba: u64, count: u32, buffer: *const u8) -> bo
             return false;
         }
 
-        let cmdheader_virt = match map_mmio(port.clb, 0x1000) {
+        let cmdheader_virt = match map_mmio(memory::vmm::VMM::get_page_table(), port.clb, 0x1000) {
             Ok(v) => v as *mut HbaCmdHeader,
             Err(_) => {
                 ahci_unlock();
@@ -290,7 +290,7 @@ pub fn ahci_write(port: &HbaPort, lba: u64, count: u32, buffer: *const u8) -> bo
             (*cmdheader_virt).prdtl = 1;
             
             let ctba_phys = (*cmdheader_virt).ctba;
-            let cmdtbl_virt = match map_mmio(ctba_phys, 0x1000) {
+            let cmdtbl_virt = match map_mmio(memory::vmm::VMM::get_page_table(), ctba_phys, 0x1000) {
                 Ok(v) => v as *mut HbaCmdTbl,
                 Err(_) => {
                     ahci_unlock();
@@ -351,7 +351,7 @@ pub fn init_ahci() {
                 pci_enable_memory_space(ahci_dev.bus, ahci_dev.device, ahci_dev.function);
 
                 println!("Mapping AHCI MMIO region...");
-                match map_mmio(abar_phys, 0x4000) {
+                match map_mmio(memory::vmm::VMM::get_page_table(), abar_phys, 0x4000) {
                     Ok(abar_virt) => {
                         println!("AHCI ABAR mapped at virtual: 0x{:X}", abar_virt);
                         println!("AHCI ABAR mapped successfully");

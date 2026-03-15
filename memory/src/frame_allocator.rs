@@ -14,56 +14,67 @@ impl FrameAllocator {
     pub unsafe fn init(memory_map: &MemoryMapResponse) {
         unsafe {
             let mut max_addr = 0u64;
-            
             for entry in memory_map.entries() {
                 let end = entry.base + entry.length;
                 if end > max_addr {
                     max_addr = end;
                 }
             }
-            
-            TOTAL_FRAMES = (max_addr / PAGE_SIZE as u64) as usize;
+
+            TOTAL_FRAMES = (max_addr as usize + PAGE_SIZE - 1) / PAGE_SIZE;
             BITMAP_SIZE = (TOTAL_FRAMES + 63) / 64;
-            
+
+            let mut bitmap_placed = false;
             for entry in memory_map.entries() {
-                if entry.entry_type == EntryType::USABLE && entry.length >= (BITMAP_SIZE * 8) as u64 {
+                if entry.entry_type == EntryType::USABLE
+                    && entry.length >= (BITMAP_SIZE * 8) as u64
+                {
                     FRAME_BITMAP = (entry.base + 0xFFFF800000000000) as *mut u64;
-                    
                     for i in 0..BITMAP_SIZE {
                         *FRAME_BITMAP.add(i) = 0;
                     }
-                    
-                    let bitmap_frames = (BITMAP_SIZE * 8 + PAGE_SIZE - 1) / PAGE_SIZE;
-                    for i in 0..bitmap_frames {
-                        let frame = (entry.base as usize / PAGE_SIZE) + i;
-                        Self::mark_used(frame);
-                    }
-                    
+                    bitmap_placed = true;
                     break;
                 }
             }
-            
+            if !bitmap_placed {
+                panic!("FrameAllocator: no region large enough for bitmap");
+            }
+
             for entry in memory_map.entries() {
                 if entry.entry_type == EntryType::USABLE {
-                    let start_frame = (entry.base as usize) / PAGE_SIZE;
-                    let frame_count = (entry.length as usize) / PAGE_SIZE;
-                    
+                    let start_frame = entry.base as usize / PAGE_SIZE;
+                    let frame_count = entry.length as usize / PAGE_SIZE;
                     for i in 0..frame_count {
                         Self::mark_free(start_frame + i);
                     }
                 }
             }
-            
+
             for entry in memory_map.entries() {
                 if entry.entry_type != EntryType::USABLE {
-                    let start_frame = (entry.base as usize) / PAGE_SIZE;
-                    let frame_count = (entry.length as usize) / PAGE_SIZE;
-                    
+                    let start_frame = entry.base as usize / PAGE_SIZE;
+                    let frame_count =
+                        (entry.length as usize + PAGE_SIZE - 1) / PAGE_SIZE;
                     for i in 0..frame_count {
                         Self::mark_used(start_frame + i);
                     }
                 }
             }
+
+            let low_frames = 0x100000 / PAGE_SIZE;
+            for i in 0..low_frames {
+                Self::mark_used(i);
+            }
+
+            let bitmap_phys =
+                (FRAME_BITMAP as u64).saturating_sub(0xFFFF800000000000);
+            let bitmap_start_frame = bitmap_phys as usize / PAGE_SIZE;
+            let bitmap_frame_count = (BITMAP_SIZE * 8 + PAGE_SIZE - 1) / PAGE_SIZE;
+            for i in 0..bitmap_frame_count {
+                Self::mark_used(bitmap_start_frame + i);
+            }
+
         }
     }
     

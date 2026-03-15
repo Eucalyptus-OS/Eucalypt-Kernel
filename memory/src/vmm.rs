@@ -2,6 +2,7 @@
 
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
+use framebuffer::println;
 use limine::response::MemoryMapResponse;
 use super::addr::{PhysAddr, VirtAddr};
 use super::frame_allocator::FrameAllocator;
@@ -95,9 +96,9 @@ impl Mapper {
         }
     }
     
-    pub fn map_page(&mut self, virt: VirtAddr, phys: PhysAddr, flags: u64) -> Option<()> {
+    pub fn map_page(&mut self, pml4: *mut PageTable, virt: VirtAddr, phys: PhysAddr, flags: u64) -> Option<()> {
         unsafe {
-            let p4 = &mut *((self.page_table as u64 | HHDM_OFFSET) as *mut PageTable);
+            let p4 = &mut *((pml4 as u64 | HHDM_OFFSET) as *mut PageTable);
 
             let p3_entry = &mut p4.entries[virt.p4_index()];
             let p3 = self.get_or_create_table(p3_entry)?;
@@ -116,9 +117,9 @@ impl Mapper {
         }
     }
     
-    pub fn unmap_page(&mut self, virt: VirtAddr) -> Option<PhysAddr> {
+    pub fn unmap_page(&mut self, pml4: *mut PageTable, virt: VirtAddr) -> Option<PhysAddr> {
         unsafe {
-            let p4 = &mut *((self.page_table as u64 | HHDM_OFFSET) as *mut PageTable);
+            let p4 = &mut *((pml4 as u64 | HHDM_OFFSET) as *mut PageTable);
             
             if !p4.entries[virt.p4_index()].is_present() {
                 return None;
@@ -149,13 +150,13 @@ impl Mapper {
         }
     }
 
-    pub fn map_range(&mut self, virt_start: VirtAddr, phys_start: PhysAddr, size: usize, flags: u64) -> Option<()> {
+    pub fn map_range(&mut self, pml4: *mut PageTable, virt_start: VirtAddr, phys_start: PhysAddr, size: usize, flags: u64) -> Option<()> {
         let pages = (size + 0xFFF) / 0x1000;
         let mut current_virt = virt_start.as_u64();
         let mut current_phys = phys_start.as_u64();
         
         for _ in 0..pages {
-            self.map_page(VirtAddr::new(current_virt), PhysAddr::new(current_phys), flags)?;
+            self.map_page(pml4, VirtAddr::new(current_virt), PhysAddr::new(current_phys), flags)?;
             current_virt += 0x1000;
             current_phys += 0x1000;
         }
@@ -163,12 +164,12 @@ impl Mapper {
         Some(())
     }
     
-    pub fn unmap_range(&mut self, virt_start: VirtAddr, size: usize) {
+    pub fn unmap_range(&mut self, pml4: *mut PageTable, virt_start: VirtAddr, size: usize) {
         let pages = (size + 0xFFF) / 0x1000;
         let mut current_virt = virt_start.as_u64();
         
         for _ in 0..pages {
-            self.unmap_page(VirtAddr::new(current_virt));
+            self.unmap_page(pml4, VirtAddr::new(current_virt));
             current_virt += 0x1000;
         }
     }
@@ -176,6 +177,7 @@ impl Mapper {
     pub fn create_user_pml4(&mut self) -> Option<*mut PageTable> {
         unsafe {
             let frame = FrameAllocator::alloc_frame()?;
+            println!("create_user_pml4: got frame phys=0x{:x}", frame.as_u64());
             let pml4 = (frame.as_u64() | HHDM_OFFSET) as *mut PageTable;
             (*pml4).zero();
 

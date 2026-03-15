@@ -6,6 +6,7 @@ extern crate alloc;
 // Core
 use core::arch::asm;
 
+use alloc::boxed::Box;
 // Eucalypt
 use eucalypt_os::gdt::gdt_init;
 use eucalypt_os::idt::idt_init;
@@ -33,6 +34,7 @@ use bare_x86_64::cpu::apic::{
     calibrate_apic_timer,
 };
 
+use memory::vmm;
 use memory::{
     mmio::{
         map_mmio,
@@ -59,11 +61,11 @@ use process::{
 
 use framebuffer::{
     ScrollingTextRenderer,
-    panic_print,
 };
 
 // FS
-use fat12::{fat12_create_file, fat12_init, fat12_read_file};
+use fat12::fat12_init;
+use vfs::*;
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
 
@@ -131,11 +133,11 @@ extern "C" fn kmain() -> ! {
         asm!("sti");
     }
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
-    let apic_virt = map_mmio(get_apic_base() as u64, 0x1000)
+    let apic_virt = map_mmio(VMM::get_page_table(), get_apic_base() as u64, 0x1000)
         .expect("Failed to map APIC MMIO region");
     set_apic_virt_base(apic_virt as usize);
     enable_apic();
-    let initial_count = calibrate_apic_timer(1000);
+    let initial_count = calibrate_apic_timer(10000);
     init_apic_timer(32, initial_count);
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
@@ -144,30 +146,10 @@ extern "C" fn kmain() -> ! {
     let mp_response = MP_REQUEST.get_response().expect("No MP response from Limine");
     init_mp(mp_response);
 
-    println!("Initializing FAT12 filesystem...");
-    match fat12_init(0) {
-        Ok(_) => {
-            println!("FAT12 initialized successfully");
-            let data = b"Hello, World";
-            match fat12_create_file("hello.txt", data) {
-                Ok(_) => {
-                    println!("Created hello.txt");
-                    match fat12_read_file("hello.txt") {
-                        Ok(content) => {
-                            let content_str = core::str::from_utf8(&content).unwrap_or("Invalid UTF-8");
-                            println!("File content: {}", content_str);
-                        }
-                        Err(e) => println!("Failed to read file: {}", e),
-                    }
-                }
-                Err(e) => println!("Failed to create file: {}", e),
-            }
-        }
-        Err(e) => {
-            println!("FAT12 initialization failed: {}", e);
-            println!("This is expected if the disk is not formatted as FAT12");
-        }
-    }
+    vfs_init();
+    fat12_init(0).expect("disk init failed");
+    vfs_mount("fat12", Box::new(Fat12Driver::new(0))).unwrap();
+    vfs_mount("ramfs", Box::new(RamFs::new())).unwrap();
 
     let kernel_main_rsp: u64;
     println!("Getting RSP");
@@ -206,6 +188,7 @@ fn test_process_2() {
 #[cfg(not(test))]
 #[panic_handler]
 fn rust_panic(info: &core::panic::PanicInfo) -> ! {
+    use framebuffer::panic_print;
     let (rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp): (u64, u64, u64, u64, u64, u64, u64, u64);
     let (r8, r9, r10, r11, r12, r13, r14, r15): (u64, u64, u64, u64, u64, u64, u64, u64);
     let (rflags, cs, ss): (u64, u16, u16);

@@ -29,14 +29,17 @@ impl xhci::accessor::Mapper for UsbMapper {
         let virt = memory::addr::VirtAddr::new(virt_u64);
         let phys = memory::addr::PhysAddr::new(phys_u64);
         let flags = memory::vmm::PageTableEntry::WRITABLE;
+        let kernel_pml4 = memory::vmm::VMM::get_page_table();
 
-        self.0.map_range(virt, phys, bytes, flags).expect("UsbMapper: map_range failed");
+        self.0.map_range(kernel_pml4, virt, phys, bytes, flags)
+            .expect("UsbMapper: map_range failed");
         unsafe { core::num::NonZeroUsize::new_unchecked(virt_u64 as usize) }
     }
 
     fn unmap(&mut self, virt_start: usize, bytes: usize) {
         let virt = memory::addr::VirtAddr::new(virt_start as u64);
-        self.0.unmap_range(virt, bytes);
+        let kernel_pml4 = memory::vmm::VMM::get_page_table();
+        self.0.unmap_range(kernel_pml4, virt, bytes);
     }
 }
 
@@ -83,45 +86,20 @@ pub fn init_usb() {
     });
     while xhci_operational_regs.usbcmd.read_volatile().host_controller_reset() {}
     while !xhci_operational_regs.usbsts.read_volatile().hc_halted() {}
-    const RING_PAGES: usize = 1;
     const PAGE_SIZE: usize = 0x1000;
 
-    let mut cmd_phys = None;
-    let mut evt_phys = None;
-    for _ in 0..RING_PAGES {
-        let f = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() };
-        if cmd_phys.is_none() {
-            cmd_phys = f;
-        } else if evt_phys.is_none() {
-            evt_phys = f;
-        }
-    }
-
-    let cmd_phys = match cmd_phys {
-        Some(p) => p,
-        None => {
-            println!("Failed to allocate command ring frame");
-            usb_unlock();
-            return;
-        }
-    };
-
-    let evt_phys = match evt_phys {
-        Some(p) => p,
-        None => {
-            println!("Failed to allocate event ring frame");
-            usb_unlock();
-            return;
-        }
-    };
+    let cmd_phys = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() }
+        .expect("Failed to allocate command ring frame");
+    let evt_phys = unsafe { memory::frame_allocator::FrameAllocator::alloc_frame() }
+        .expect("Failed to allocate event ring frame");
 
     const HHDM_OFFSET: u64 = 0xFFFF_8000_0000_0000;
     let cmd_virt = (cmd_phys.as_u64() | HHDM_OFFSET) as usize;
     let evt_virt = (evt_phys.as_u64() | HHDM_OFFSET) as usize;
 
     let mut inner_mapper = mapper.0;
-    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(cmd_virt as u64), memory::addr::PhysAddr::new(cmd_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
-    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
+    let _ = inner_mapper.map_range(memory::vmm::VMM::get_page_table(), memory::addr::VirtAddr::new(cmd_virt as u64), memory::addr::PhysAddr::new(cmd_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
+    let _ = inner_mapper.map_range(memory::vmm::VMM::get_page_table(), memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
     
 
     println!("Command ring phys=0x{:x} virt=0x{:x}", cmd_phys.as_u64(), cmd_virt);
@@ -141,7 +119,7 @@ pub fn init_usb() {
         }
     };
     let erst_virt = (erst_phys.as_u64() | HHDM_OFFSET) as usize;
-    let _ = inner_mapper.map_range(memory::addr::VirtAddr::new(erst_virt as u64), memory::addr::PhysAddr::new(erst_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
+    let _ = inner_mapper.map_range(memory::vmm::VMM::get_page_table(), memory::addr::VirtAddr::new(erst_virt as u64), memory::addr::PhysAddr::new(erst_phys.as_u64()), PAGE_SIZE, memory::vmm::PageTableEntry::WRITABLE);
 
     unsafe {
         let p = erst_virt as *mut u8;

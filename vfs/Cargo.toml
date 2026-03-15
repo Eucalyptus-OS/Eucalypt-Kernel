@@ -1,0 +1,8 @@
+[package]
+name = "vfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fat12 = { workspace = true }
+spin = {workspace = true }

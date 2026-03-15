@@ -1,5 +1,6 @@
 use crate::vmm;
 use crate::addr;
+use crate::vmm::PageTable;
 
 static mut MMIO_LOWER: u64 = 0;
 static mut MMIO_UPPER: u64 = 0;
@@ -13,7 +14,7 @@ pub fn mmio_map_range(lower: u64, upper: u64) {
     }
 }
 
-pub fn map_mmio(phys_addr: u64, size: u64) -> Result<u64, &'static str> {
+pub fn map_mmio(pml4: *mut PageTable, phys_addr: u64, size: u64) -> Result<u64, &'static str> {
     unsafe {
         let pages_needed = (size + 0xFFF) / 0x1000;
         let total_size = pages_needed * 0x1000;
@@ -29,7 +30,7 @@ pub fn map_mmio(phys_addr: u64, size: u64) -> Result<u64, &'static str> {
             let virt = addr::VirtAddr::new(virt_addr + (i * 0x1000));
             let phys = addr::PhysAddr::new(phys_addr + (i * 0x1000));
             
-            mapper.map_page(
+            mapper.map_page(pml4,
                 virt,
                 phys,
                 vmm::PageTableEntry::WRITABLE | 

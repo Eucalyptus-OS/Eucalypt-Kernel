@@ -1,5 +1,11 @@
 #![no_std]
+
+/// Round robin scheduler
+/// How it works
+/// first we have a list of processes and the scheduler goes from pid1 -> pid2 and so on
+
 use core::sync::atomic::{AtomicBool, Ordering};
+use memory::vmm::PageTable;
 use process::{PROCESS_COUNT, PROCESS_TABLE, Priority, ProcessState};
 
 unsafe extern "C" {
@@ -115,6 +121,23 @@ fn find_next_ready(current: usize, allow_idle: bool) -> Option<usize> {
     }
 }
 
+fn load_cr3(pml4: *mut PageTable) {
+    const HHDM_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+    let phys = if (pml4 as u64) >= HHDM_OFFSET {
+        (pml4 as u64) - HHDM_OFFSET
+    } else {
+        pml4 as u64
+    };
+
+    let current_cr3: u64;
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack)) };
+    if current_cr3 & 0x000F_FFFF_FFFF_F000 == phys {
+        return;
+    }
+
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) phys, options(nostack, preserves_flags)) };
+}
+
 #[inline(always)]
 fn switch_to(current: usize, current_rsp: u64, next: usize) -> u64 {
     unsafe {
@@ -124,13 +147,20 @@ fn switch_to(current: usize, current_rsp: u64, next: usize) -> u64 {
                 proc.state = ProcessState::Ready;
             }
         }
-        
+
         let proc = PROCESS_TABLE.processes[next].as_mut().unwrap();
         proc.state = ProcessState::Running;
         PROCESS_TABLE.current = next;
-        proc.rsp
+
+        let new_pml4 = proc.pml4;
+        let new_rsp = proc.rsp;
+
+        load_cr3(new_pml4);
+
+        new_rsp
     }
 }
+
 
 pub fn yield_process() {
     unsafe {

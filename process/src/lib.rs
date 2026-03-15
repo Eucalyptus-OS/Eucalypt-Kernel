@@ -1,5 +1,7 @@
 #![no_std]
 
+/// Creation yes
+
 extern crate alloc;
 
 use core::alloc::Layout;
@@ -81,17 +83,19 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         }
 
         let stack_base = allocate_kernel_stack()?;
-        println!("Allocated stack for process {} at 0x{:x}", pid, stack_base as u64);
-
         let rsp = setup_initial_stack(stack_base, entry);
-        let kernel_pml4 = VMM::get_page_table();
+
+        let mut mapper = VMM::get_mapper();
+        println!("Creating user pml4");
+        let user_pml4 = mapper.create_user_pml4()?;
+        println!("Created");
 
         let process = Process {
             pid,
             rsp,
             stack_base,
             entry,
-            pml4: kernel_pml4,
+            pml4: user_pml4,
             state: ProcessState::Ready,
             priority: Priority::Normal,
             ticks_ready: 0,
@@ -101,11 +105,9 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         PROCESS_TABLE.processes[pid as usize] = Some(process);
         PROCESS_COUNT += 1;
 
-        println!("Created process {} with entry 0x{:x}, RSP: 0x{:x}", pid, entry as u64, rsp);
         Some(pid)
     }
 }
-
 pub fn destroy_process(pid: u64) -> bool {
     unsafe {
         if pid >= MAX_PROCESSES as u64 {
@@ -176,6 +178,15 @@ pub fn get_process(pid: u64) -> Option<&'static Process> {
         }
         PROCESS_TABLE.processes[pid as usize].as_ref()
     }
+}
+
+pub fn does_pid_exist(pid: u64) -> bool {
+    unsafe {
+        if pid >= MAX_PROCESSES as u64 && pid > PROCESS_COUNT as u64 {
+            return false
+        }
+    }
+    true
 }
 
 pub fn get_process_mut(pid: u64) -> Option<&'static mut Process> {
