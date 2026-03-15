@@ -196,15 +196,16 @@ run_qemu_codespace() {
     fi
     echo "Starting QEMU"
     qemu-system-${KARCH} \
-    -M pc -display curses\
-    -drive if=pflash,unit=0,format=raw,file=${OVMF_DIR}/ovmf-code-${KARCH}.fd,readonly=on \
-    -drive if=pflash,unit=1,format=raw,file=${OVMF_DIR}/ovmf-vars-${KARCH}.fd \
-    -cdrom ${IMAGE_NAME}.iso \
-    -drive file=${DISK_DIR}/ide_disk.img,format=raw,if=ide,index=0,media=disk \
-    -drive file=${DISK_DIR}/ahci_disk.img,format=raw,if=none,id=ahci0 \
-    -device ahci,id=ahci \
-    -device ide-hd,drive=ahci0,bus=ahci.0 \
-    ${QEMUFLAGS}
+        -M pc \
+        -drive if=pflash,unit=0,format=raw,file=${OVMF_DIR}/ovmf-code-${KARCH}.fd,readonly=on \
+        -drive if=pflash,unit=1,format=raw,file=${OVMF_DIR}/ovmf-vars-${KARCH}.fd \
+        -drive file=${IMAGE_NAME}.iso,format=raw,if=ide,index=0,media=cdrom \
+        -drive file=${DISK_DIR}/ide_disk.img,format=raw,if=ide,index=1,media=disk \
+        -drive file=${DISK_DIR}/ahci_disk.img,format=raw,if=none,id=ahci0 \
+        -device ahci,id=ahci \
+        -device ide-hd,drive=ahci0,bus=ahci.0 \
+        -smp 4 \
+        ${QEMUFLAGS}
 }
 
 clean() {

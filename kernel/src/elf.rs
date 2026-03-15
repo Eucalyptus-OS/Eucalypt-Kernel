@@ -1,13 +1,16 @@
-use framebuffer::println;
-use fat12::{fat12_file_exists, fat12_read_file};
+/// Unfinished elf parser
 
+use framebuffer::println;
+use vfs::{self, vfs_file_exists, vfs_read_file};
+
+#[allow(unused)]
 fn parse_elf(filename: &str) {
-    if !fat12_file_exists(filename) {
+    if !vfs_file_exists(filename) {
         println!("File does not exist: {}", filename);
         return;
     }
 
-    match fat12_read_file(filename) {
+    match vfs_read_file(filename) {
         Ok(contents) => {
             if contents.len() >= 4 && &contents[0..4] == b"\x7fELF" {
                 println!("{} is a valid ELF file!", filename);

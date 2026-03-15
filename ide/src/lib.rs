@@ -1,12 +1,11 @@
 #![no_std]
-//! This file is for initializng and writing to IDE drives
-//! In 1986 Western Digital and Compaq created a new drive
-//! Called the ata drive which replaced old storage devices
-//! It was also known as IDE
+//! IDE/ATA driver for x86
+//! In 1986 Western Digital and Compaq created the ATA drive standard
+//! also known as IDE, replacing older storage interfaces
 extern crate alloc;
 
 use bare_x86_64::*;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use framebuffer::println;
 
 const ATA_SR_BSY: u8 = 0x80;
@@ -28,153 +27,75 @@ const ATA_CMD_READ_PIO_EXT: u8 = 0x24;
 const ATA_CMD_WRITE_PIO: u8 = 0x30;
 const ATA_CMD_WRITE_PIO_EXT: u8 = 0x34;
 const ATA_CMD_CACHE_FLUSH: u8 = 0xE7;
+const ATA_CMD_CACHE_FLUSH_EXT: u8 = 0xEA;
 const ATA_CMD_IDENTIFY: u8 = 0xEC;
 
-const ATA_IDENT_MODEL: usize = 54;
-const ATA_IDENT_MAX_LBA: usize = 120;
 const ATA_IDENT_COMMANDSETS: usize = 164;
+const ATA_IDENT_MAX_LBA: usize = 120;
 const ATA_IDENT_MAX_LBA_EXT: usize = 200;
+const ATA_IDENT_MODEL: usize = 54;
 
-const IDE_ATA: u8 = 0x00;
+const ATA_REG_DATA: u16 = 0x00;
+const ATA_REG_ERROR: u16 = 0x01;
+const ATA_REG_SECCOUNT0: u16 = 0x02;
+const ATA_REG_LBA0: u16 = 0x03;
+const ATA_REG_LBA1: u16 = 0x04;
+const ATA_REG_LBA2: u16 = 0x05;
+const ATA_REG_HDDEVSEL: u16 = 0x06;
+const ATA_REG_COMMAND: u16 = 0x07;
+const ATA_REG_STATUS: u16 = 0x07;
 
-const ATA_REG_DATA: u8 = 0x00;
-const ATA_REG_ERROR: u8 = 0x01;
-const ATA_REG_SECCOUNT0: u8 = 0x02;
-const ATA_REG_LBA0: u8 = 0x03;
-const ATA_REG_LBA1: u8 = 0x04;
-const ATA_REG_LBA2: u8 = 0x05;
-const ATA_REG_HDDEVSEL: u8 = 0x06;
-const ATA_REG_COMMAND: u8 = 0x07;
-const ATA_REG_STATUS: u8 = 0x07;
-const ATA_REG_SECCOUNT1: u8 = 0x08;
-const ATA_REG_LBA3: u8 = 0x09;
-const ATA_REG_LBA4: u8 = 0x0A;
-const ATA_REG_LBA5: u8 = 0x0B;
-const ATA_REG_ALTSTATUS: u8 = 0x0C;
+const ATA_PRIMARY_BASE: u16 = 0x1F0;
+const ATA_PRIMARY_CTRL: u16 = 0x3F6;
+const ATA_SECONDARY_BASE: u16 = 0x170;
+const ATA_SECONDARY_CTRL: u16 = 0x376;
 
-const ATA_PRIMARY: u8 = 0x00;
-const ATA_SECONDARY: u8 = 0x01;
+const ATA_PRIMARY: usize = 0;
+const ATA_SECONDARY: usize = 1;
 
-const MAX_SECTORS_PER_TRANSFER: usize = 128;
 const SECTOR_SIZE: usize = 512;
 const QUADS_PER_SECTOR: u32 = 128;
+const MAX_SECTORS_PER_TRANSFER: usize = 128;
+const IRQ_TIMEOUT: u32 = 10_000_000;
+const POLL_TIMEOUT: u32 = 100_000;
 
 static IDE_LOCK: AtomicBool = AtomicBool::new(false);
+static IDE_PRIMARY_IRQ: AtomicU8 = AtomicU8::new(0);
+static IDE_SECONDARY_IRQ: AtomicU8 = AtomicU8::new(0);
 
-#[repr(C)]
-struct IDEChannelRegisters {
+struct IdeChannel {
     base: u16,
     ctrl: u16,
     bmide: u16,
-    nien: u8,
 }
 
-impl Default for IDEChannelRegisters {
-    fn default() -> Self {
-        Self {
-            base: 0,
-            ctrl: 0,
-            bmide: 0,
-            nien: 0,
-        }
-    }
-}
-
-static mut CHANNELS: [IDEChannelRegisters; 2] = [
-    IDEChannelRegisters {
-        base: 0,
-        ctrl: 0,
-        bmide: 0,
-        nien: 0,
-    },
-    IDEChannelRegisters {
-        base: 0,
-        ctrl: 0,
-        bmide: 0,
-        nien: 0,
-    },
+static mut CHANNELS: [IdeChannel; 2] = [
+    IdeChannel { base: ATA_PRIMARY_BASE,   ctrl: ATA_PRIMARY_CTRL,   bmide: 0 },
+    IdeChannel { base: ATA_SECONDARY_BASE, ctrl: ATA_SECONDARY_CTRL, bmide: 0 },
 ];
-
-static mut IDE_BUF: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
-static mut IDE_IRQ_INVOKED: u8 = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IdeDevice {
-    reserved: u8,
-    channel: u8,
-    drive: u8,
-    device_type: u16,
-    signature: u16,
-    capabilities: u16,
-    command_sets: u32,
+    pub reserved: u8,
+    pub channel: usize,
+    pub drive: u8,
     pub size: u64,
     pub model: [u8; 41],
+    pub lba48: bool,
 }
 
-impl Default for IdeDevice {
-    fn default() -> Self {
-        Self {
-            reserved: 0,
-            channel: 0,
-            drive: 0,
-            device_type: 0,
-            signature: 0,
-            capabilities: 0,
-            command_sets: 0,
-            size: 0,
-            model: [0; 41],
-        }
+impl IdeDevice {
+    const fn zeroed() -> Self {
+        Self { reserved: 0, channel: 0, drive: 0, size: 0, model: [0; 41], lba48: false }
     }
 }
 
-pub static mut COUNT: usize = 0;
 pub static mut IDE_DEVICES: [IdeDevice; 4] = [
-    IdeDevice {
-        reserved: 0,
-        channel: 0,
-        drive: 0,
-        device_type: 0,
-        signature: 0,
-        capabilities: 0,
-        command_sets: 0,
-        size: 0,
-        model: [0; 41],
-    },
-    IdeDevice {
-        reserved: 0,
-        channel: 0,
-        drive: 0,
-        device_type: 0,
-        signature: 0,
-        capabilities: 0,
-        command_sets: 0,
-        size: 0,
-        model: [0; 41],
-    },
-    IdeDevice {
-        reserved: 0,
-        channel: 0,
-        drive: 0,
-        device_type: 0,
-        signature: 0,
-        capabilities: 0,
-        command_sets: 0,
-        size: 0,
-        model: [0; 41],
-    },
-    IdeDevice {
-        reserved: 0,
-        channel: 0,
-        drive: 0,
-        device_type: 0,
-        signature: 0,
-        capabilities: 0,
-        command_sets: 0,
-        size: 0,
-        model: [0; 41],
-    },
+    IdeDevice::zeroed(), IdeDevice::zeroed(),
+    IdeDevice::zeroed(), IdeDevice::zeroed(),
 ];
+pub static mut COUNT: usize = 0;
 
 fn ide_lock() {
     while IDE_LOCK
@@ -189,321 +110,234 @@ fn ide_unlock() {
     IDE_LOCK.store(false, Ordering::Release);
 }
 
-fn ide_write(channel: u8, reg: u8, data: u8) {
-    unsafe {
-        if reg > 0x07 && reg < 0x0C {
-            outb!(
-                CHANNELS[channel as usize].ctrl,
-                0x80 | CHANNELS[channel as usize].nien
-            );
-        }
+fn base(channel: usize) -> u16 { unsafe { CHANNELS[channel].base } }
+fn ctrl(channel: usize) -> u16 { unsafe { CHANNELS[channel].ctrl } }
 
-        match reg {
-            0x00..=0x07 => outb!(CHANNELS[channel as usize].base + (reg - 0x00) as u16, data),
-            0x08..=0x0B => outb!(CHANNELS[channel as usize].base + (reg - 0x06) as u16, data),
-            0x0C..=0x0D => outb!(CHANNELS[channel as usize].ctrl + (reg - 0x0A) as u16, data),
-            0x0E..=0x15 => outb!(CHANNELS[channel as usize].bmide + (reg - 0x0E) as u16, data),
-            _ => {}
-        }
+fn ata_read(channel: usize, reg: u16) -> u8 {
+    inb!(base(channel) + reg)
+}
 
-        if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
-        }
+fn ata_write(channel: usize, reg: u16, val: u8) {
+    outb!(base(channel) + reg, val)
+}
+
+fn ata_read_ctrl(channel: usize) -> u8 {
+    inb!(ctrl(channel))
+}
+
+fn ata_write_ctrl(channel: usize, val: u8) {
+    outb!(ctrl(channel), val)
+}
+
+fn ata_read_data_u32(channel: usize) -> u32 {
+    inl!(base(channel) + ATA_REG_DATA)
+}
+
+fn ata_write_data_u32(channel: usize, val: u32) {
+    outl!(base(channel) + ATA_REG_DATA, val)
+}
+
+// 400ns delay by reading alt-status 4 times
+fn delay400ns(channel: usize) {
+    for _ in 0..4 { ata_read_ctrl(channel); }
+}
+
+/// Sets or clears the HOB bit in the control register for LBA48 high-byte access.
+fn set_hob(channel: usize, hob: bool) {
+    ata_write_ctrl(channel, if hob { 0x80 } else { 0x00 });
+}
+
+/// Polls alt-status until BSY clears. Returns false on timeout.
+fn poll_bsy(channel: usize) -> bool {
+    let mut t = POLL_TIMEOUT;
+    loop {
+        if ata_read_ctrl(channel) & ATA_SR_BSY == 0 { return true; }
+        t -= 1;
+        if t == 0 { return false; }
+        core::hint::spin_loop();
     }
 }
 
-fn ide_read(channel: u8, reg: u8) -> u8 {
-    unsafe {
-        if reg > 0x07 && reg < 0x0C {
-            outb!(
-                CHANNELS[channel as usize].ctrl,
-                0x80 | CHANNELS[channel as usize].nien
-            );
-        }
-
-        let result = match reg {
-            0x00..=0x07 => inb!(CHANNELS[channel as usize].base + (reg - 0x00) as u16),
-            0x08..=0x0B => inb!(CHANNELS[channel as usize].base + (reg - 0x06) as u16),
-            0x0C..=0x0D => inb!(CHANNELS[channel as usize].ctrl + (reg - 0x0A) as u16),
-            0x0E..=0x15 => inb!(CHANNELS[channel as usize].bmide + (reg - 0x0E) as u16),
-            _ => 0,
-        };
-
-        if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
-        }
-
-        result
+/// Polls alt-status until BSY clears and DRQ sets. Returns false on timeout or error.
+fn poll_drq(channel: usize) -> bool {
+    let mut t = POLL_TIMEOUT;
+    loop {
+        let s = ata_read_ctrl(channel);
+        if s & ATA_SR_ERR != 0 || s & ATA_SR_DF != 0 { return false; }
+        if s & ATA_SR_BSY == 0 && s & ATA_SR_DRQ != 0 { return true; }
+        t -= 1;
+        if t == 0 { return false; }
+        core::hint::spin_loop();
     }
 }
 
-fn ide_read_buffer(channel: u8, reg: u8, buffer: *mut u32, quads: u32) {
-    unsafe {
-        if reg > 0x07 && reg < 0x0C {
-            outb!(
-                CHANNELS[channel as usize].ctrl,
-                0x80 | CHANNELS[channel as usize].nien
-            );
-        }
-
-        let port = match reg {
-            0x00..=0x07 => CHANNELS[channel as usize].base + (reg - 0x00) as u16,
-            0x08..=0x0B => CHANNELS[channel as usize].base + (reg - 0x06) as u16,
-            0x0C..=0x0D => CHANNELS[channel as usize].ctrl + (reg - 0x0A) as u16,
-            0x0E..=0x15 => CHANNELS[channel as usize].bmide + (reg - 0x0E) as u16,
-            _ => return,
-        };
-
-        for i in 0..quads {
-            *buffer.add(i as usize) = inl!(port);
-        }
-
-        if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
-        }
+/// Spins on the IRQ flag for the given channel. Returns false on timeout.
+fn wait_irq(channel: usize) -> bool {
+    let flag = if channel == ATA_PRIMARY { &IDE_PRIMARY_IRQ } else { &IDE_SECONDARY_IRQ };
+    let mut t = IRQ_TIMEOUT;
+    loop {
+        if flag.swap(0, Ordering::AcqRel) != 0 { return true; }
+        t -= 1;
+        if t == 0 { return false; }
+        core::hint::spin_loop();
     }
 }
 
-fn ide_write_buffer(channel: u8, reg: u8, buffer: *const u32, quads: u32) {
-    unsafe {
-        if reg > 0x07 && reg < 0x0C {
-            outb!(
-                CHANNELS[channel as usize].ctrl,
-                0x80 | CHANNELS[channel as usize].nien
-            );
-        }
-
-        let port = match reg {
-            0x00..=0x07 => CHANNELS[channel as usize].base + (reg - 0x00) as u16,
-            0x08..=0x0B => CHANNELS[channel as usize].base + (reg - 0x06) as u16,
-            0x0C..=0x0D => CHANNELS[channel as usize].ctrl + (reg - 0x0A) as u16,
-            0x0E..=0x15 => CHANNELS[channel as usize].bmide + (reg - 0x0E) as u16,
-            _ => return,
-        };
-
-        for i in 0..quads {
-            outl!(port, *buffer.add(i as usize));
-        }
-
-        if reg > 0x07 && reg < 0x0C {
-            outb!(CHANNELS[channel as usize].ctrl, CHANNELS[channel as usize].nien);
-        }
+fn clear_irq(channel: usize) {
+    if channel == ATA_PRIMARY {
+        IDE_PRIMARY_IRQ.store(0, Ordering::Release);
+    } else {
+        IDE_SECONDARY_IRQ.store(0, Ordering::Release);
     }
 }
 
-fn ide_polling(channel: u8, advanced_check: bool) -> u8 {
-    for _ in 0..4 {
-        let _ = ide_read(channel, ATA_REG_ALTSTATUS);
-    }
-
-    let mut timeout = 100000;
-    while timeout > 0 {
-        let status = ide_read(channel, ATA_REG_STATUS);
-        if (status & ATA_SR_BSY) == 0 {
-            break;
-        }
-        timeout -= 1;
-    }
-
-    if timeout == 0 {
-        return 3;
-    }
-
-    if advanced_check {
-        let status = ide_read(channel, ATA_REG_STATUS);
-        if (status & ATA_SR_ERR) != 0 {
-            return 2;
-        }
-        if (status & ATA_SR_DF) != 0 {
-            return 1;
-        }
-        if (status & ATA_SR_DRQ) == 0 {
-            return 3;
-        }
-    }
-
-    0
+/// Selects the drive on the channel and waits for BSY to clear.
+fn select_drive(channel: usize, drive: u8, lba_high_nibble: u8, lba48: bool) {
+    let sel = if lba48 {
+        0x40 | (drive << 4)
+    } else {
+        0xE0 | (drive << 4) | (lba_high_nibble & 0x0F)
+    };
+    ata_write(channel, ATA_REG_HDDEVSEL, sel);
+    delay400ns(channel);
+    poll_bsy(channel);
 }
 
-pub fn ide_irq_handler() {
-    ide_lock();
-    unsafe {
-        let _ = ide_read(ATA_PRIMARY, ATA_REG_STATUS);
-        let _ = ide_read(ATA_SECONDARY, ATA_REG_STATUS);
-        IDE_IRQ_INVOKED = 1;
+/// Issues a PIO read or write command with full LBA28/LBA48 register setup.
+fn issue_command(channel: usize, drive: u8, lba: u64, sectors: usize, lba48: bool, write: bool) {
+    select_drive(channel, drive, ((lba >> 24) & 0x0F) as u8, lba48);
+
+    if lba48 {
+        // high bytes first (HOB=1), then low bytes (HOB=0)
+        set_hob(channel, true);
+        ata_write(channel, ATA_REG_SECCOUNT0, ((sectors >> 8) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA0, ((lba >> 24) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA1, ((lba >> 32) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA2, ((lba >> 40) & 0xFF) as u8);
+        set_hob(channel, false);
+        ata_write(channel, ATA_REG_SECCOUNT0, (sectors & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA0, (lba & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA1, ((lba >> 8) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA2, ((lba >> 16) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_COMMAND,
+            if write { ATA_CMD_WRITE_PIO_EXT } else { ATA_CMD_READ_PIO_EXT });
+    } else {
+        ata_write(channel, ATA_REG_SECCOUNT0, (sectors & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA0, (lba & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA1, ((lba >> 8) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_LBA2, ((lba >> 16) & 0xFF) as u8);
+        ata_write(channel, ATA_REG_COMMAND,
+            if write { ATA_CMD_WRITE_PIO } else { ATA_CMD_READ_PIO });
     }
-    ide_unlock();
 }
 
-fn ide_print_error(drive: usize, mut err: u8) -> u8 {
-    if err == 0 {
-        return err;
+fn read_sector(channel: usize, buf: &mut [u8; SECTOR_SIZE]) {
+    for i in 0..QUADS_PER_SECTOR as usize {
+        let val = ata_read_data_u32(channel);
+        buf[i * 4]     = (val & 0xFF) as u8;
+        buf[i * 4 + 1] = ((val >> 8) & 0xFF) as u8;
+        buf[i * 4 + 2] = ((val >> 16) & 0xFF) as u8;
+        buf[i * 4 + 3] = ((val >> 24) & 0xFF) as u8;
     }
+}
 
+fn write_sector(channel: usize, buf: &[u8; SECTOR_SIZE]) {
+    for i in 0..QUADS_PER_SECTOR as usize {
+        let val = (buf[i * 4] as u32)
+            | ((buf[i * 4 + 1] as u32) << 8)
+            | ((buf[i * 4 + 2] as u32) << 16)
+            | ((buf[i * 4 + 3] as u32) << 24);
+        ata_write_data_u32(channel, val);
+    }
+}
+
+fn print_error(drive: usize, err: u8) -> u8 {
+    if err == 0 { return 0; }
     println!("IDE:");
-    
+    let mut code = err;
     if err == 1 {
         println!("- Device Fault");
-        err = 19;
+        code = 19;
     } else if err == 2 {
-        let st = ide_read(unsafe { IDE_DEVICES }[drive].channel, ATA_REG_ERROR);
-        if st & ATA_ER_AMNF != 0 {
-            println!("- No Address Mark Found");
-            err = 7;
-        }
-        if st & ATA_ER_TK0NF != 0 {
-            println!("- No Media or Media Error");
-            err = 3;
-        }
-        if st & ATA_ER_ABRT != 0 {
-            println!("- Command Aborted");
-            err = 20;
-        }
-        if st & ATA_ER_MCR != 0 {
-            println!("- No Media or Media Error");
-            err = 3;
-        }
-        if st & ATA_ER_IDNF != 0 {
-            println!("- ID mark not Found");
-            err = 21;
-        }
-        if st & ATA_ER_MC != 0 {
-            println!("- No Media or Media Error");
-            err = 3;
-        }
-        if st & ATA_ER_UNC != 0 {
-            println!("- Uncorrectable Data Error");
-            err = 22;
-        }
-        if st & ATA_ER_BBK != 0 {
-            println!("- Bad Sectors");
-            err = 13;
-        }
+        let st = ata_read(unsafe { IDE_DEVICES[drive].channel }, ATA_REG_ERROR);
+        if st & ATA_ER_AMNF  != 0 { println!("- No Address Mark Found");    code = 7;  }
+        if st & ATA_ER_TK0NF != 0 { println!("- No Media or Media Error");  code = 3;  }
+        if st & ATA_ER_ABRT  != 0 { println!("- Command Aborted");          code = 20; }
+        if st & ATA_ER_MCR   != 0 { println!("- No Media or Media Error");  code = 3;  }
+        if st & ATA_ER_IDNF  != 0 { println!("- ID Mark Not Found");        code = 21; }
+        if st & ATA_ER_MC    != 0 { println!("- No Media or Media Error");  code = 3;  }
+        if st & ATA_ER_UNC   != 0 { println!("- Uncorrectable Data Error"); code = 22; }
+        if st & ATA_ER_BBK   != 0 { println!("- Bad Sectors");              code = 13; }
     } else if err == 3 {
-        println!("- Reads Nothing");
-        err = 23;
+        println!("- Timeout / No Response");
+        code = 23;
     } else if err == 4 {
         println!("- Write Protected");
-        err = 8;
+        code = 8;
     }
-
-    println!(
-        "- [{} {}] {}",
-        ["Primary", "Secondary"][unsafe { IDE_DEVICES }[drive].channel as usize],
-        ["Master", "Slave"][unsafe { IDE_DEVICES }[drive].drive as usize],
-        core::str::from_utf8(&unsafe { IDE_DEVICES }[drive].model).unwrap_or("Unknown")
-    );
-
-    err
+    unsafe {
+        let dev = &IDE_DEVICES[drive];
+        println!("- [{} {}] {}",
+            if dev.channel == ATA_PRIMARY { "Primary" } else { "Secondary" },
+            if dev.drive == 0 { "Master" } else { "Slave" },
+            core::str::from_utf8(&dev.model).unwrap_or("Unknown"));
+    }
+    code
 }
 
-fn ide_configure_transfer(
-    channel: u8,
-    drive_bit: u8,
-    lba: u64,
-    sectors: usize,
-    use_lba48: bool,
-    is_write: bool,
-) {
-    if use_lba48 {
-        ide_write(channel, ATA_REG_HDDEVSEL, 0x40 | (drive_bit << 4));
-        ide_write(
-            channel,
-            ATA_REG_SECCOUNT1,
-            ((sectors >> 8) & 0xFF) as u8,
-        );
-        ide_write(channel, ATA_REG_LBA3, ((lba >> 24) & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA4, ((lba >> 32) & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA5, ((lba >> 40) & 0xFF) as u8);
-        ide_write(channel, ATA_REG_SECCOUNT0, (sectors & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA0, (lba & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA1, ((lba >> 8) & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA2, ((lba >> 16) & 0xFF) as u8);
-        ide_write(
-            channel,
-            ATA_REG_COMMAND,
-            if is_write {
-                ATA_CMD_WRITE_PIO_EXT
-            } else {
-                ATA_CMD_READ_PIO_EXT
-            },
-        );
-    } else {
-        ide_write(
-            channel,
-            ATA_REG_HDDEVSEL,
-            0xE0 | (drive_bit << 4) | (((lba >> 24) & 0x0F) as u8),
-        );
-        ide_write(channel, ATA_REG_SECCOUNT0, sectors as u8);
-        ide_write(channel, ATA_REG_LBA0, (lba & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA1, ((lba >> 8) & 0xFF) as u8);
-        ide_write(channel, ATA_REG_LBA2, ((lba >> 16) & 0xFF) as u8);
-        ide_write(
-            channel,
-            ATA_REG_COMMAND,
-            if is_write {
-                ATA_CMD_WRITE_PIO
-            } else {
-                ATA_CMD_READ_PIO
-            },
-        );
+pub fn ide_primary_irq_handler() {
+    let status = ata_read(ATA_PRIMARY, ATA_REG_STATUS);
+    if status & ATA_SR_BSY == 0 {
+        IDE_PRIMARY_IRQ.store(1, Ordering::Release);
     }
 }
 
+pub fn ide_secondary_irq_handler() {
+    let status = ata_read(ATA_SECONDARY, ATA_REG_STATUS);
+    if status & ATA_SR_BSY == 0 {
+        IDE_SECONDARY_IRQ.store(1, Ordering::Release);
+    }
+}
+
+/// Reads `buffer.len()` bytes starting at `lba` from the given drive.
+/// Uses IRQ-driven flow per sector.
 pub fn ide_read_sectors(drive: usize, lba: u64, buffer: &mut [u8]) -> u8 {
     ide_lock();
     let result = unsafe {
         let dev = &IDE_DEVICES[drive];
-        if dev.reserved == 0 {
-            ide_unlock();
-            return 1;
-        }
+        if dev.reserved == 0 { ide_unlock(); return 1; }
 
-        let channel = dev.channel;
+        let channel  = dev.channel;
         let drive_bit = dev.drive;
-        let total_sectors = buffer.len() / SECTOR_SIZE;
+        let lba48    = dev.lba48 || lba >= 0x10000000;
+        let total    = buffer.len() / SECTOR_SIZE;
+        let mut done = 0usize;
 
-        if buffer.len() < total_sectors * SECTOR_SIZE {
-            ide_unlock();
-            return 1;
-        }
+        while done < total {
+            let count = core::cmp::min(MAX_SECTORS_PER_TRANSFER, total - done);
+            clear_irq(channel);
+            issue_command(channel, drive_bit, lba + done as u64, count, lba48, false);
 
-        let mut sectors_read = 0;
-        while sectors_read < total_sectors {
-            let sectors_to_read =
-                core::cmp::min(MAX_SECTORS_PER_TRANSFER, total_sectors - sectors_read);
-            let current_lba = lba + sectors_read as u64;
-            let use_lba48 = current_lba >= 0x10000000 || sectors_to_read > 256;
-
-            while (ide_read(channel, ATA_REG_STATUS) & ATA_SR_BSY) != 0 {}
-
-            ide_configure_transfer(
-                channel,
-                drive_bit,
-                current_lba,
-                sectors_to_read,
-                use_lba48,
-                false,
-            );
-
-            for s in 0..sectors_to_read {
-                let err = ide_polling(channel, true);
-                if err != 0 {
-                    let error = ide_print_error(drive, err);
+            for s in 0..count {
+                if !wait_irq(channel) {
                     ide_unlock();
-                    return error;
+                    return print_error(drive, 3);
                 }
 
-                let offset = (sectors_read + s) * SECTOR_SIZE;
-                ide_read_buffer(
-                    channel,
-                    ATA_REG_DATA,
-                    buffer.as_mut_ptr().add(offset).cast::<u32>(),
-                    QUADS_PER_SECTOR,
-                );
+                let status = ata_read(channel, ATA_REG_STATUS);
+                if status & ATA_SR_ERR != 0 { ide_unlock(); return print_error(drive, 2); }
+                if status & ATA_SR_DF  != 0 { ide_unlock(); return print_error(drive, 1); }
+                if status & ATA_SR_DRQ == 0 { ide_unlock(); return print_error(drive, 3); }
+
+                let offset = (done + s) * SECTOR_SIZE;
+                let mut tmp = [0u8; SECTOR_SIZE];
+                read_sector(channel, &mut tmp);
+                buffer[offset..offset + SECTOR_SIZE].copy_from_slice(&tmp);
+
+                clear_irq(channel);
             }
 
-            sectors_read += sectors_to_read;
+            done += count;
         }
         0
     };
@@ -511,243 +345,178 @@ pub fn ide_read_sectors(drive: usize, lba: u64, buffer: &mut [u8]) -> u8 {
     result
 }
 
+/// Writes `data` starting at `lba` to the given drive using polling.
 pub fn ide_write_sectors(drive: usize, lba: u64, data: &[u8]) -> u8 {
     ide_lock();
     let result = unsafe {
         let dev = &IDE_DEVICES[drive];
-        if dev.reserved == 0 {
-            ide_unlock();
-            return 1;
-        }
+        if dev.reserved == 0 { ide_unlock(); return 1; }
 
-        let channel = dev.channel;
+        let channel   = dev.channel;
         let drive_bit = dev.drive;
-        let data_size = data.len();
-        let total_sectors = (data_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+        let lba48     = dev.lba48 || lba >= 0x10000000;
+        let total     = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
+        let mut done  = 0usize;
 
-        let mut sectors_written = 0;
-        while sectors_written < total_sectors {
-            let sectors_to_write =
-                core::cmp::min(MAX_SECTORS_PER_TRANSFER, total_sectors - sectors_written);
-            let current_lba = lba + sectors_written as u64;
-            let use_lba48 = current_lba >= 0x10000000 || sectors_to_write > 256;
+        while done < total {
+            let count = core::cmp::min(MAX_SECTORS_PER_TRANSFER, total - done);
 
-            while (ide_read(channel, ATA_REG_STATUS) & ATA_SR_BSY) != 0 {}
+            // disable IRQs for the polling write path (nIEN=1)
+            ata_write_ctrl(channel, 0x02);
 
-            ide_configure_transfer(
-                channel,
-                drive_bit,
-                current_lba,
-                sectors_to_write,
-                use_lba48,
-                true,
-            );
+            issue_command(channel, drive_bit, lba + done as u64, count, lba48, true);
 
-            for s in 0..sectors_to_write {
-                let err = ide_polling(channel, true);
-                if err != 0 {
-                    let error = ide_print_error(drive, err);
+            for s in 0..count {
+                // drive asserts DRQ when ready to accept sector data
+                if !poll_drq(channel) {
+                    ata_write_ctrl(channel, 0x00);
                     ide_unlock();
-                    return error;
+                    return print_error(drive, 3);
                 }
 
-                let offset = (sectors_written + s) * SECTOR_SIZE;
-                let bytes_left = data_size.saturating_sub(offset);
-                let bytes_to_write = core::cmp::min(SECTOR_SIZE, bytes_left);
+                let offset = (done + s) * SECTOR_SIZE;
+                let bytes_left = data.len().saturating_sub(offset);
+                let mut sector_buf = [0u8; SECTOR_SIZE];
+                let copy = core::cmp::min(SECTOR_SIZE, bytes_left);
+                sector_buf[..copy].copy_from_slice(&data[offset..offset + copy]);
+                write_sector(channel, &sector_buf);
 
-                if bytes_to_write >= SECTOR_SIZE {
-                    ide_write_buffer(
-                        channel,
-                        ATA_REG_DATA,
-                        data.as_ptr().add(offset).cast::<u32>(),
-                        QUADS_PER_SECTOR,
-                    );
-                } else {
-                    let mut padded = [0u8; SECTOR_SIZE];
-                    padded[..bytes_to_write]
-                        .copy_from_slice(&data[offset..offset + bytes_to_write]);
-                    ide_write_buffer(
-                        channel,
-                        ATA_REG_DATA,
-                        padded.as_ptr().cast::<u32>(),
-                        QUADS_PER_SECTOR,
-                    );
+                // wait for BSY to clear before checking status or writing next sector
+                if !poll_bsy(channel) {
+                    ata_write_ctrl(channel, 0x00);
+                    ide_unlock();
+                    return print_error(drive, 3);
                 }
 
-                ide_write(channel, ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
-                let flush_err = ide_polling(channel, false);
-                if flush_err != 0 {
-                    let error = ide_print_error(drive, flush_err);
+                let status = ata_read(channel, ATA_REG_STATUS);
+                if status & ATA_SR_ERR != 0 {
+                    ata_write_ctrl(channel, 0x00);
                     ide_unlock();
-                    return error;
+                    return print_error(drive, 2);
+                }
+                if status & ATA_SR_DF != 0 {
+                    ata_write_ctrl(channel, 0x00);
+                    ide_unlock();
+                    return print_error(drive, 1);
                 }
             }
 
-            sectors_written += sectors_to_write;
-        }
+            // flush write cache to disk
+            let flush = if lba48 { ATA_CMD_CACHE_FLUSH_EXT } else { ATA_CMD_CACHE_FLUSH };
+            ata_write(channel, ATA_REG_COMMAND, flush);
+            poll_bsy(channel);
 
+            // re-enable IRQs
+            ata_write_ctrl(channel, 0x00);
+            done += count;
+        }
         0
     };
     ide_unlock();
     result
 }
 
-fn ide_detect_device(channel: usize, drive: usize) -> bool {
-    let drive_index = channel * 2 + drive;
-
+fn detect_device(channel: usize, drive: usize) -> bool {
+    let idx = channel * 2 + drive;
     unsafe {
-        IDE_DEVICES[drive_index].reserved = 0;
-        IDE_DEVICES[drive_index].channel = channel as u8;
-        IDE_DEVICES[drive_index].drive = drive as u8;
+        IDE_DEVICES[idx] = IdeDevice::zeroed();
+        IDE_DEVICES[idx].channel = channel;
+        IDE_DEVICES[idx].drive = drive as u8;
 
-        ide_write(channel as u8, ATA_REG_HDDEVSEL, 0xA0 | ((drive as u8) << 4));
-        for _ in 0..4 {
-            let _ = ide_read(channel as u8, ATA_REG_STATUS);
-        }
+        ata_write(channel, ATA_REG_HDDEVSEL, 0xA0 | ((drive as u8) << 4));
+        delay400ns(channel);
+        ata_write(channel, ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
+        delay400ns(channel);
 
-        ide_write(channel as u8, ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
+        // status 0x00 means no drive present
+        if ata_read(channel, ATA_REG_STATUS) == 0 { return false; }
 
-        let mut timeout = 100000;
+        let mut t = 100_000u32;
         loop {
-            let status = ide_read(channel as u8, ATA_REG_STATUS);
-            if status == 0 {
-                break;
-            }
-            if (status & ATA_SR_ERR) != 0 {
-                break;
-            }
-            if (status & ATA_SR_BSY) == 0 && (status & ATA_SR_DRQ) != 0 {
-                let mut buf = IDE_BUF;
-                ide_read_buffer(
-                    channel as u8,
-                    ATA_REG_DATA,
-                    buf.as_mut_ptr().cast::<u32>(),
-                    QUADS_PER_SECTOR,
-                );
-
-                for m in 0..40 {
-                    IDE_DEVICES[drive_index].model[m] = buf[ATA_IDENT_MODEL + m];
-                }
-                IDE_DEVICES[drive_index].model[40] = 0;
-                IDE_DEVICES[drive_index].reserved = 1;
-                IDE_DEVICES[drive_index].device_type = IDE_ATA as u16;
-
-                let commands_sets = u16::from_le_bytes([
-                    buf[ATA_IDENT_COMMANDSETS],
-                    buf[ATA_IDENT_COMMANDSETS + 1],
-                ]);
-
-                let lba48 = (commands_sets & (1 << 10)) != 0;
-
-                if lba48 {
-                    IDE_DEVICES[drive_index].size = u64::from_le_bytes([
-                        buf[ATA_IDENT_MAX_LBA_EXT],
-                        buf[ATA_IDENT_MAX_LBA_EXT + 1],
-                        buf[ATA_IDENT_MAX_LBA_EXT + 2],
-                        buf[ATA_IDENT_MAX_LBA_EXT + 3],
-                        buf[ATA_IDENT_MAX_LBA_EXT + 4],
-                        buf[ATA_IDENT_MAX_LBA_EXT + 5],
-                        0,
-                        0,
-                    ]);
-                    println!(
-                        "Device {}: LBA48, Size: {} sectors",
-                        drive_index, IDE_DEVICES[drive_index].size
-                    );
-                } else {
-                    IDE_DEVICES[drive_index].size = u64::from_le_bytes([
-                        buf[ATA_IDENT_MAX_LBA],
-                        buf[ATA_IDENT_MAX_LBA + 1],
-                        buf[ATA_IDENT_MAX_LBA + 2],
-                        buf[ATA_IDENT_MAX_LBA + 3],
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]);
-                    println!(
-                        "Device {}: LBA28, Size: {} sectors",
-                        drive_index, IDE_DEVICES[drive_index].size
-                    );
-                }
-
-                COUNT += 1;
-                return true;
-            }
-
-            timeout -= 1;
-            if timeout == 0 {
-                break;
-            }
+            let s = ata_read(channel, ATA_REG_STATUS);
+            if s & ATA_SR_ERR != 0 { return false; }
+            if s & ATA_SR_BSY == 0 && s & ATA_SR_DRQ != 0 { break; }
+            t -= 1;
+            if t == 0 { return false; }
         }
+
+        let mut buf = [0u8; SECTOR_SIZE];
+        read_sector(channel, &mut buf);
+
+        // ATA model strings are byte-swapped
+        let mut model = [0u8; 41];
+        for i in 0..20 {
+            model[i * 2]     = buf[ATA_IDENT_MODEL + i * 2 + 1];
+            model[i * 2 + 1] = buf[ATA_IDENT_MODEL + i * 2];
+        }
+        let mut end = 40;
+        while end > 0 && model[end - 1] == b' ' { end -= 1; }
+        model[end] = 0;
+
+        IDE_DEVICES[idx].model    = model;
+        IDE_DEVICES[idx].reserved = 1;
+
+        let cmdsets = u16::from_le_bytes([
+            buf[ATA_IDENT_COMMANDSETS], buf[ATA_IDENT_COMMANDSETS + 1]
+        ]);
+        let lba48 = cmdsets & (1 << 10) != 0;
+        IDE_DEVICES[idx].lba48 = lba48;
+
+        if lba48 {
+            IDE_DEVICES[idx].size = u64::from_le_bytes([
+                buf[ATA_IDENT_MAX_LBA_EXT],     buf[ATA_IDENT_MAX_LBA_EXT + 1],
+                buf[ATA_IDENT_MAX_LBA_EXT + 2], buf[ATA_IDENT_MAX_LBA_EXT + 3],
+                buf[ATA_IDENT_MAX_LBA_EXT + 4], buf[ATA_IDENT_MAX_LBA_EXT + 5],
+                0, 0,
+            ]);
+        } else {
+            IDE_DEVICES[idx].size = u64::from_le_bytes([
+                buf[ATA_IDENT_MAX_LBA],     buf[ATA_IDENT_MAX_LBA + 1],
+                buf[ATA_IDENT_MAX_LBA + 2], buf[ATA_IDENT_MAX_LBA + 3],
+                0, 0, 0, 0,
+            ]);
+        }
+
+        println!("Device {}: {} {} sectors, model: {}",
+            idx,
+            if lba48 { "LBA48," } else { "LBA28," },
+            IDE_DEVICES[idx].size,
+            core::str::from_utf8(&model[..end]).unwrap_or("?"));
+
+        COUNT += 1;
+        true
     }
-
-    false
 }
 
-fn ide_init_channel(channel: &mut IDEChannelRegisters, bar_base: u8, bar_ctrl: u8, bmide: u16) {
-    channel.base = (((bar_base as u32) & 0xFFFF_FFFC)
-        + if bar_base == 0 {
-            if bmide == 0 {
-                0x1F0
-            } else {
-                0x170
-            }
-        } else {
-            0
-        }) as u16;
-
-    channel.ctrl = (((bar_ctrl as u32) & 0xFFFF_FFFC)
-        + if bar_ctrl == 0 {
-            if bmide == 0 {
-                0x3F6
-            } else {
-                0x376
-            }
-        } else {
-            0
-        }) as u16;
-
-    channel.bmide = bmide;
-    channel.nien = 0;
-
-
-    outb!(channel.ctrl, 0x02);
-}
-
-pub fn ide_init(bar0: u8, bar1: u8, bar2: u8, bar3: u8, bar4: u8) {
-    ide_lock();
-    
-    let bm = ((bar4 as u32) & 0xFFFF_FFFC) as u16;
-
+/// Initialises both IDE channels and detects all attached drives.
+pub fn ide_init(bar0: u16, bar1: u16, bar2: u16, bar3: u16, bar4: u16) {
     unsafe {
-        ide_init_channel(&mut CHANNELS[ATA_PRIMARY as usize], bar0, bar1, bm);
-        ide_init_channel(
-            &mut CHANNELS[ATA_SECONDARY as usize],
-            bar2,
-            bar3,
-            bm.wrapping_add(8),
-        );
+        // use PCI BARs if provided, otherwise fall back to legacy ISA ports
+        CHANNELS[ATA_PRIMARY].base  = if bar0 > 1 { bar0 & 0xFFFC } else { ATA_PRIMARY_BASE };
+        CHANNELS[ATA_PRIMARY].ctrl  = if bar1 > 1 { bar1 & 0xFFFC } else { ATA_PRIMARY_CTRL };
+        CHANNELS[ATA_PRIMARY].bmide = if bar4 > 0 { bar4 & 0xFFFC } else { 0 };
+
+        CHANNELS[ATA_SECONDARY].base  = if bar2 > 1 { bar2 & 0xFFFC } else { ATA_SECONDARY_BASE };
+        CHANNELS[ATA_SECONDARY].ctrl  = if bar3 > 1 { bar3 & 0xFFFC } else { ATA_SECONDARY_CTRL };
+        CHANNELS[ATA_SECONDARY].bmide = if bar4 > 0 { (bar4 & 0xFFFC) + 8 } else { 0 };
+
+        // enable IRQs on both channels (nIEN=0)
+        ata_write_ctrl(ATA_PRIMARY, 0x00);
+        ata_write_ctrl(ATA_SECONDARY, 0x00);
     }
 
-    for channel in 0..2 {
-        for drive in 0..2 {
-            ide_detect_device(channel, drive);
+    for ch in 0..2 {
+        for dr in 0..2 {
+            detect_device(ch, dr);
         }
     }
 
     unsafe {
-        for i in 0..2 {
-            outb!(CHANNELS[i].ctrl, 0x00);
-        }
-
         let count = COUNT;
         if count == 0 {
-            println!("IDE: No devices found");
+            println!("IDE: no devices found");
         } else {
-            println!("IDE: devices detected: {}", count);
+            println!("IDE: {} device(s) detected", count);
         }
     }
-    
-    ide_unlock();
 }

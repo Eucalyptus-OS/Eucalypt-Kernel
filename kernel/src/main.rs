@@ -34,7 +34,6 @@ use bare_x86_64::cpu::apic::{
     calibrate_apic_timer,
 };
 
-use memory::vmm;
 use memory::{
     mmio::{
         map_mmio,
@@ -104,6 +103,7 @@ static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 extern "C" fn kmain() -> ! {
     assert!(BASE_REVISION.is_supported());
 
+    // Framebuffer
     let framebuffer_response = FRAMEBUFFER_REQUEST
         .get_response()
         .expect("No framebuffer response");
@@ -121,36 +121,60 @@ extern "C" fn kmain() -> ! {
     );
     println!("eucalyptOS Starting...");
 
+    // Memory
     let memmap_response = MEMMAP_REQUEST
         .get_response()
         .expect("No memory map available");
     VMM::init(memmap_response);
     init_allocator(memmap_response);
 
+    // GDT
     gdt_init();
-    idt_init();
-    unsafe {
-        asm!("sti");
-    }
+
+    // Map MMIO range before mapping any devices
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
+
+    // Map and enable local APIC
     let apic_virt = map_mmio(VMM::get_page_table(), get_apic_base() as u64, 0x1000)
         .expect("Failed to map APIC MMIO region");
     set_apic_virt_base(apic_virt as usize);
     enable_apic();
+
+    // Map and init IOAPIC
+    let ioapic_virt = map_mmio(VMM::get_page_table(), 0xFEC00000, 0x1000)
+        .expect("Failed to map IOAPIC MMIO region");
+    bare_x86_64::cpu::apic::set_ioapic_virt_base(ioapic_virt as usize);
+    bare_x86_64::cpu::apic::init_ioapic();
+
+    // IDT — safe now that IOAPIC is mapped
+    idt_init();
+
+    // Enable interrupts
+    unsafe { asm!("sti"); }
+
+    // Calibrate and start APIC timer
     let initial_count = calibrate_apic_timer(10000);
     init_apic_timer(32, initial_count);
+
+    // Devices
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
     init_usb();
     init_ahci();
+
+    // SMP
     let mp_response = MP_REQUEST.get_response().expect("No MP response from Limine");
     init_mp(mp_response);
 
+    // Filesystem
     vfs_init();
     fat12_init(0).expect("disk init failed");
     vfs_mount("fat12", Box::new(Fat12Driver::new(0))).unwrap();
     vfs_mount("ramfs", Box::new(RamFs::new())).unwrap();
+    vfs_create_file("fat12/HELLO.TXT", b"Hello world!").unwrap();
+    println!("Read: {:?}", vfs_read_file("fat12/HELLO.TXT"));
 
+    // Scheduler
     let kernel_main_rsp: u64;
     println!("Getting RSP");
     unsafe {
@@ -165,9 +189,7 @@ extern "C" fn kmain() -> ! {
     enable_scheduler();
 
     loop {
-        unsafe {
-            asm!("hlt");
-        }
+        unsafe { asm!("hlt"); }
     }
 }
 
