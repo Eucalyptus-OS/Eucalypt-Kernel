@@ -1,8 +1,8 @@
 //! Object based syscall dispatch and handler implementations.
 
 use limine::request::FramebufferRequest;
-use framebuffer::println;
-use vfs::{vfs_close, vfs_open};
+use framebuffer::{print, println};
+use vfs::{vfs_close, vfs_open, vfs_read, vfs_write_node, STDIN_NODE_ID, STDOUT_NODE_ID, STDERR_NODE_ID};
 use memory::allocator::sbrk;
 use process;
 
@@ -11,6 +11,8 @@ unsafe extern "C" {
 }
 
 const ENOSYS: i64 = -38;
+const EBADF:  i64 = -9;
+const EINVAL: i64 = -22;
 
 #[repr(u64)]
 pub enum Syscall {
@@ -21,6 +23,8 @@ pub enum Syscall {
     Close           = 4,
     Sbrk            = 5,
     GetPid          = 6,
+    Read            = 7,
+    Write           = 8,
 }
 
 impl Syscall {
@@ -33,6 +37,8 @@ impl Syscall {
             4 => Some(Self::Close),
             5 => Some(Self::Sbrk),
             6 => Some(Self::GetPid),
+            7 => Some(Self::Read),
+            8 => Some(Self::Write),
             _ => None,
         }
     }
@@ -54,6 +60,8 @@ impl SyscallHandler {
             Some(Syscall::Close)           => self.close(arg1),
             Some(Syscall::Sbrk)            => self.sbrk(arg1),
             Some(Syscall::GetPid)          => self.get_pid(),
+            Some(Syscall::Read)            => self.read(arg1, arg2, arg3),
+            Some(Syscall::Write)           => self.write(arg1, arg2, arg3),
             None => ENOSYS,
         }
     }
@@ -107,34 +115,131 @@ impl SyscallHandler {
         0
     }
 
+    /// open(path_ptr, path_len, flags) -> fd | -errno
+    ///
+    /// Opens the file at `path` with the given `flags`, registers the backing
+    /// VFS node in the current process's FD table, and returns the FD index.
     fn open(&self, ptr: i64, len: i64, flags: i64) -> i64 {
         let ptr = ptr as *const u8;
         let len = len as usize;
-        if ptr.is_null() || len == 0 {
-            return -1;
+        if ptr.is_null() || len == 0 || len > 4096 {
+            return EINVAL;
         }
         let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
         let path = match core::str::from_utf8(slice) {
             Ok(s)  => s,
+            Err(_) => return EINVAL,
+        };
+        let flags_u32 = flags as u32;
+        let node = match vfs_open(path, flags_u32, 0) {
+            Ok(n)  => n,
             Err(_) => return -1,
         };
-        match vfs_open(path, flags as u32, 0) {
-            Ok(node) => node.id as i64,
-            Err(_)   => -1,
+        let node_id = node.id;
+        let proc = match process::get_current_process_mut() {
+            Some(p) => p,
+            None => {
+                let _ = vfs_close(node_id);
+                return -1;
+            }
+        };
+        match proc.open_fd(node_id, flags_u32) {
+            Some(fd_idx) => fd_idx as i64,
+            None => {
+                let _ = vfs_close(node_id);
+                -1
+            }
         }
     }
 
-    fn close(&self, node_id: i64) -> i64 {
-        match vfs_close(node_id as u32) {
-            Ok(_)  => 0,
-            Err(_) => -1,
+    /// close(fd) -> 0 | -errno
+    fn close(&self, fd: i64) -> i64 {
+        if fd < 0 || fd > 1023 {
+            return EBADF;
+        }
+        let proc = match process::get_current_process_mut() {
+            Some(p) => p,
+            None    => return -1,
+        };
+        if proc.close_fd(fd as usize) { 0 } else { EBADF }
+    }
+
+    /// read(fd, buf, count) -> bytes_read | -errno
+    ///
+    /// Reads up to `count` bytes from `fd` into `buf`.
+    /// Returns the number of bytes placed in `buf`, or a negative errno.
+    /// Reading from stdin (FD 0) always returns 0 (no data yet).
+    fn read(&self, fd: i64, buf: i64, count: i64) -> i64 {
+        if fd < 0 || fd > 1023 {
+            return EBADF;
+        }
+        if buf == 0 || count < 0 {
+            return EINVAL;
+        }
+        if count == 0 {
+            return 0;
+        }
+        let proc = match process::get_current_process() {
+            Some(p) => p,
+            None    => return -1,
+        };
+        let entry = &proc.fildes[fd as usize];
+        if entry.is_empty() {
+            return EBADF;
+        }
+        // stdin has no backing data yet
+        if entry.node_id == STDIN_NODE_ID {
+            return 0;
+        }
+        let data = match vfs_read(entry.node_id, count as usize) {
+            Ok(d)  => d,
+            Err(_) => return -1,
+        };
+        let n = data.len();
+        if n > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), buf as *mut u8, n);
+            }
+        }
+        n as i64
+    }
+
+    /// write(fd, buf, count) -> bytes_written | -errno
+    ///
+    /// Writes `count` bytes from `buf` to `fd`.
+    /// Writes to stdout (FD 1) and stderr (FD 2) are routed to the framebuffer.
+    fn write(&self, fd: i64, buf: i64, count: i64) -> i64 {
+        if fd < 0 || fd > 1023 {
+            return EBADF;
+        }
+        if buf == 0 || count < 0 {
+            return EINVAL;
+        }
+        if count == 0 {
+            return 0;
+        }
+        let proc = match process::get_current_process() {
+            Some(p) => p,
+            None    => return -1,
+        };
+        let entry = &proc.fildes[fd as usize];
+        if entry.is_empty() {
+            return EBADF;
+        }
+        let node_id = entry.node_id;
+        let data = unsafe { core::slice::from_raw_parts(buf as *const u8, count as usize) };
+        // stdout / stderr → framebuffer
+        if node_id == STDOUT_NODE_ID || node_id == STDERR_NODE_ID {
+            if let Ok(s) = core::str::from_utf8(data) {
+                print!("{}", s);
+            }
+            return count;
+        }
+        match vfs_write_node(node_id, data) {
+            Ok(())  => count,
+            Err(_)  => -1,
         }
     }
-
-    fn read(&self, ) {
-
-    }
-
     fn sbrk(&self, increment: i64) -> i64 {
         let ptr = sbrk(increment as isize);
         if ptr.is_null() {

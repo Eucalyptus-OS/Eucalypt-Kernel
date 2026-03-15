@@ -45,6 +45,13 @@ pub const S_IROTH: u32 = 0o004;
 /// Convenience mode: rw-r--r--
 pub const S_IFREG: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
+/// VFS node ID reserved for the process stdin stream.
+pub const STDIN_NODE_ID:  u32 = 1;
+/// VFS node ID reserved for the process stdout stream.
+pub const STDOUT_NODE_ID: u32 = 2;
+/// VFS node ID reserved for the process stderr stream.
+pub const STDERR_NODE_ID: u32 = 3;
+
 /// Volume statistics returned by [`FileSystem::stat_fs`].
 pub struct FsInfo {
     pub total_bytes: u64,
@@ -89,24 +96,33 @@ pub struct VfsNode {
     pub mode:   u32,
 }
 
-#[derive(Clone, Debug)]
+/// A kernel file descriptor stored in each process's per-process FD table.
+///
+/// Node IDs 1–3 are reserved for stdin, stdout, and stderr and are never
+/// backed by a real VFS node. Node ID 0 means the slot is empty/closed.
+#[derive(Clone, Copy, Debug)]
 pub struct FD {
-    pub vfs_node: *mut VfsNode, // Pointer to file or device
-    pub offset:    u32,         // Current read/write position
-    pub flags:     u32,         // Perms
-    pub ref_count: u32,         // How many file descriptors point here
+    /// Backing VFS node ID. `0` means this slot is empty/closed.
+    pub node_id:   u32,
+    /// Open flags (e.g. [`O_RDWR`]).
+    pub flags:     u32,
+    /// Number of file descriptors in this process sharing this VFS node.
+    /// Reaches 0 only via `dup`/`dup2` semantics; starts at 1 on `open`.
+    pub ref_count: u32,
 }
 
 impl FD {
-    pub const EMPTY: Self = Self {
-        vfs_node: core::ptr::null_mut(),
-        offset: 0,
-        flags: 0,
-        ref_count: 0,
-    };
+    pub const EMPTY: Self = Self { node_id: 0, flags: 0, ref_count: 0 };
 
-    pub fn is_empty(&self) -> bool {
-        self.vfs_node.is_null()
+    /// Returns `true` when this descriptor slot is not in use.
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.node_id == 0 }
+
+    /// Returns `true` for the three reserved pseudo-descriptors (stdin/stdout/stderr).
+    /// These are never closed through the VFS node table.
+    #[inline]
+    pub fn is_special(&self) -> bool {
+        self.node_id >= STDIN_NODE_ID && self.node_id <= STDERR_NODE_ID
     }
 }
 
@@ -312,7 +328,8 @@ unsafe impl Sync for NodeTable {}
 static VFS_LOCK:    AtomicBool = AtomicBool::new(false);
 static MOUNT_TABLE: MountTable = MountTable(UnsafeCell::new(None));
 static NODE_TABLE:  NodeTable  = NodeTable(UnsafeCell::new(None));
-static NEXT_NODE_ID: AtomicU32 = AtomicU32::new(1);
+// Node IDs 1–3 are reserved for stdin/stdout/stderr; real nodes start at 4.
+static NEXT_NODE_ID: AtomicU32 = AtomicU32::new(4);
 
 fn vfs_lock() {
     while VFS_LOCK
@@ -518,9 +535,10 @@ pub fn vfs_read_file(path: &str) -> Result<Vec<u8>, &'static str> {
     result
 }
 
-/// Reads from an open node starting at its cursor. Advances cursor to end.
+/// Reads up to `max_count` bytes from an open node at its cursor position.
+/// Advances the cursor by the number of bytes actually read.
 /// Fails if the node was opened write-only.
-pub fn vfs_read_node(node_id: u32) -> Result<Vec<u8>, &'static str> {
+pub fn vfs_read(node_id: u32, max_count: usize) -> Result<Vec<u8>, &'static str> {
     vfs_lock();
     let result = (|| {
         let node = get_node(node_id)?;
@@ -534,12 +552,21 @@ pub fn vfs_read_node(node_id: u32) -> Result<Vec<u8>, &'static str> {
         let fs    = get_fs(node.mount)?;
         let data  = fs.read_file(&node.name.clone())?;
         let start = node.cursor as usize;
-        let slice = if start < data.len() { data[start..].to_vec() } else { Vec::new() };
-        node.cursor = node.size;
+        let avail = data.len().saturating_sub(start);
+        let count = avail.min(max_count);
+        let slice = if count > 0 { data[start..start + count].to_vec() } else { Vec::new() };
+        node.cursor += count as u32;
         Ok(slice)
     })();
     vfs_unlock();
     result
+}
+
+/// Reads from an open node starting at its cursor all the way to EOF.
+/// Advances the cursor to the end of the file.
+/// Fails if the node was opened write-only.
+pub fn vfs_read_node(node_id: u32) -> Result<Vec<u8>, &'static str> {
+    vfs_read(node_id, usize::MAX)
 }
 
 /// Creates a new file by path.

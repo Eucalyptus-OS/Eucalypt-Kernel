@@ -7,7 +7,7 @@ extern crate alloc;
 use core::alloc::Layout;
 use framebuffer::println;
 use memory::vmm::{PageTable, VMM};
-use vfs::{FD, VfsNode, vfs_close};
+use vfs::{FD, STDIN_NODE_ID, STDOUT_NODE_ID, STDERR_NODE_ID, O_RDONLY, O_WRONLY, vfs_close};
 
 const KERNEL_STACK_SIZE: usize = 64 * 1024;
 const MAX_PROCESSES: usize = 64;
@@ -49,19 +49,39 @@ pub struct Process {
 }
 
 impl Process {
+    /// Returns the index of the first empty FD slot at index ≥ 3 (0–2 are
+    /// reserved for stdin/stdout/stderr).
     pub fn get_free_fd_index(&self) -> Option<usize> {
-        self.fildes.iter().position(|fd| fd.is_empty())
+        self.fildes[3..].iter().position(|fd| fd.is_empty()).map(|i| i + 3)
     }
 
-    pub fn open_file(&mut self, node: *mut VfsNode, flags: u32) -> Option<usize> {
+    /// Opens `node_id` in this process and returns the assigned FD index.
+    /// Returns `None` when the FD table is full.
+    pub fn open_fd(&mut self, node_id: u32, flags: u32) -> Option<usize> {
         let idx = self.get_free_fd_index()?;
-        self.fildes[idx] = FD {
-            vfs_node: node,
-            offset: 0,
-            flags,
-            ref_count: 1,
-        };
+        self.fildes[idx] = FD { node_id, flags, ref_count: 1 };
         Some(idx)
+    }
+
+    /// Closes the FD at `fd`. Decrements the ref-count and removes the
+    /// backing VFS node when it reaches zero.
+    /// Returns `false` when `fd` is out of range or already closed.
+    pub fn close_fd(&mut self, fd: usize) -> bool {
+        if fd >= self.fildes.len() {
+            return false;
+        }
+        let entry = &mut self.fildes[fd];
+        if entry.is_empty() {
+            return false;
+        }
+        entry.ref_count = entry.ref_count.saturating_sub(1);
+        if entry.ref_count == 0 {
+            if !entry.is_special() {
+                let _ = vfs_close(entry.node_id);
+            }
+            *entry = FD::EMPTY;
+        }
+        true
     }
 }
 
@@ -73,6 +93,11 @@ pub struct ProcessTable {
 pub fn init_kernel_process(rsp: u64) {
     let kernel_pml4 = VMM::get_page_table();
 
+    let mut fildes = [FD::EMPTY; 1024];
+    fildes[0] = FD { node_id: STDIN_NODE_ID,  flags: O_RDONLY, ref_count: 1 };
+    fildes[1] = FD { node_id: STDOUT_NODE_ID, flags: O_WRONLY, ref_count: 1 };
+    fildes[2] = FD { node_id: STDERR_NODE_ID, flags: O_WRONLY, ref_count: 1 };
+
     let process = Process {
         pid: 0,
         rsp,
@@ -81,6 +106,7 @@ pub fn init_kernel_process(rsp: u64) {
         pml4: kernel_pml4,
         state: ProcessState::Running,
         priority: Priority::Idle,
+        fildes,
         ticks_ready: 0,
         wake_at_tick: 0,
     };
@@ -109,7 +135,10 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         let user_pml4 = mapper.create_user_pml4()?;
         println!("Created");
 
-        let fildes = [FD::EMPTY; 1024];
+        let mut fildes = [FD::EMPTY; 1024];
+        fildes[0] = FD { node_id: STDIN_NODE_ID,  flags: O_RDONLY, ref_count: 1 };
+        fildes[1] = FD { node_id: STDOUT_NODE_ID, flags: O_WRONLY, ref_count: 1 };
+        fildes[2] = FD { node_id: STDERR_NODE_ID, flags: O_WRONLY, ref_count: 1 };
 
         let process = Process {
             pid,
@@ -140,13 +169,14 @@ pub fn destroy_process(pid: u64) -> bool {
         if let Some(mut process) = PROCESS_TABLE.processes[pid as usize].take() {
             for fd in process.fildes.iter_mut() {
                 if !fd.is_empty() {
-                    fd.ref_count -= 1;
-                    
+                    fd.ref_count = fd.ref_count.saturating_sub(1);
                     if fd.ref_count == 0 {
-                        vfs_close(fd.vfs_node.id);
-                        println!("Closed VFS node at 0x{:x}", fd.vfs_node as usize);
+                        if !fd.is_special() {
+                            let _ = vfs_close(fd.node_id);
+                            println!("Closed VFS node {}", fd.node_id);
+                        }
+                        *fd = FD::EMPTY;
                     }
-                    *fd = FD::EMPTY;
                 }
             }
             if !process.stack_base.is_null() {
