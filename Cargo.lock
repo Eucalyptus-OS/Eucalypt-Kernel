@@ -117,6 +117,7 @@ dependencies = [
  "pci",
  "pic8259",
  "process",
+ "ramfs",
  "sched",
  "spin",
  "syscall",
@@ -288,6 +289,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "ramfs"
+version = "0.1.0"
+dependencies = [
+ "framebuffer",
+ "limine",
+ "vfs",
 ]
 
 [[package]]

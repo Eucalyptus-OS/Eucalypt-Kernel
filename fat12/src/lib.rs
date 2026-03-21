@@ -66,28 +66,28 @@ fn fat_unlock() {
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct BiosParameterBlock {
-    jmp_boot: [u8; 3],
-    oem_name: [u8; 8],
-    bytes_per_sector: u16,
-    sectors_per_cluster: u8,
-    reserved_sectors: u16,
-    num_fats: u8,
-    root_entry_count: u16,
-    total_sectors_16: u16,
-    media_type: u8,
-    fat_size_16: u16,
-    sectors_per_track: u16,
-    num_heads: u16,
-    hidden_sectors: u32,
-    total_sectors_32: u32,
-    drive_number: u8,
-    reserved1: u8,
-    boot_signature: u8,
-    volume_id: u32,
-    volume_label: [u8; 11],
-    fs_type: [u8; 8],
-}
+pub struct BiosParameterBlock {
+    pub jmp_boot: [u8; 3],
+    pub oem_name: [u8; 8],
+    pub bytes_per_sector: u16,
+    pub sectors_per_cluster: u8,
+    pub reserved_sectors: u16,
+    pub num_fats: u8,
+    pub root_entry_count: u16,
+    pub total_sectors_16: u16,
+    pub media_type: u8,
+    pub fat_size_16: u16,
+    pub sectors_per_track: u16,
+    pub num_heads: u16,
+    pub hidden_sectors: u32,
+    pub total_sectors_32: u32,
+    pub drive_number: u8,
+    pub reserved1: u8,
+    pub boot_signature: u8,
+    pub volume_id: u32,
+    pub volume_label: [u8; 11],
+    pub fs_type: [u8; 8],
+} 
 
 /// Raw 32-byte FAT12 directory entry.
 #[repr(C, packed)]

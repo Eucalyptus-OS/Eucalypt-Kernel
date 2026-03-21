@@ -12,7 +12,7 @@ unsafe extern "C" {
     static APIC_TICKS_PER_SEC: u64;
 }
 
-const QUANTUM_TICKS: u64 = 5;
+const QUANTUM_TICKS: u64 = 25;
 
 static SCHEDULER_ENABLED: AtomicBool = AtomicBool::new(false);
 static mut CURRENT_TICKS: u64 = 0;
@@ -99,25 +99,37 @@ fn schedule(current_rsp: u64) -> u64 {
 fn find_next_ready(current: usize, allow_idle: bool) -> Option<usize> {
     unsafe {
         let count = PROCESS_COUNT as usize;
-        let mut idle_fallback: Option<usize> = None;
-        
+        let mut best_idx = None;
+        let mut best_priority = Priority::Idle;
+
         for offset in 1..=count {
             let idx = (current + offset) % count;
             if let Some(proc) = PROCESS_TABLE.processes[idx].as_ref() {
                 if proc.state != ProcessState::Ready {
                     continue;
                 }
-                if proc.priority == Priority::Idle {
-                    if idle_fallback.is_none() {
-                        idle_fallback = Some(idx);
+                
+                if proc.priority > best_priority {
+                    best_priority = proc.priority;
+                    best_idx = Some(idx);
+                    
+                    // Optimization: if we found a realtime task, we can stop if we just want round-robin within it.
+                    // But we want to preserve round-robin, so we should actually prefer the first one we find
+                    // that has the highest possible priority.
+                    if best_priority == Priority::Realtime {
+                        return Some(idx);
                     }
-                    continue;
+                } else if proc.priority == best_priority && best_idx.is_none() {
+                    best_idx = Some(idx);
                 }
-                return Some(idx);
             }
         }
         
-        if allow_idle { idle_fallback } else { None }
+        if best_priority == Priority::Idle && !allow_idle {
+            return None;
+        }
+
+        best_idx
     }
 }
 
@@ -162,6 +174,13 @@ fn switch_to(current: usize, current_rsp: u64, next: usize) -> u64 {
 }
 
 
+#[inline(always)]
+pub fn reschedule() {
+    unsafe {
+        core::arch::asm!("int 32");
+    }
+}
+
 pub fn yield_process() {
     unsafe {
         let current = PROCESS_TABLE.current;
@@ -169,7 +188,7 @@ pub fn yield_process() {
             proc.state = ProcessState::Ready;
         }
         QUANTUM_REMAINING = 0;
-        core::arch::asm!("hlt");
+        reschedule();
     }
 }
 
@@ -179,7 +198,7 @@ pub fn block_current() {
         if let Some(proc) = PROCESS_TABLE.processes[current].as_mut() {
             proc.state = ProcessState::Blocked;
         }
-        core::arch::asm!("hlt");
+        reschedule();
     }
 }
 
@@ -199,12 +218,13 @@ pub fn sleep_proc_ms(ms: u64) {
             proc.wake_at_tick = CURRENT_TICKS + ticks;
             proc.state = ProcessState::Sleeping;
         }
-        loop {
-            core::arch::asm!("hlt");
-            if let Some(proc) = PROCESS_TABLE.processes[PROCESS_TABLE.current].as_ref() {
-                if proc.state != ProcessState::Sleeping {
-                    return;
-                }
+        reschedule();
+        
+        while let Some(proc) = PROCESS_TABLE.processes[PROCESS_TABLE.current].as_ref() {
+            if proc.state == ProcessState::Sleeping {
+                reschedule();
+            } else {
+                break;
             }
         }
     }
@@ -218,12 +238,13 @@ pub fn sleep_proc_us(us: u64) {
             proc.wake_at_tick = CURRENT_TICKS + ticks;
             proc.state = ProcessState::Sleeping;
         }
-        loop {
-            core::arch::asm!("hlt");
-            if let Some(proc) = PROCESS_TABLE.processes[PROCESS_TABLE.current].as_ref() {
-                if proc.state != ProcessState::Sleeping {
-                    return;
-                }
+        reschedule();
+        
+        while let Some(proc) = PROCESS_TABLE.processes[PROCESS_TABLE.current].as_ref() {
+            if proc.state == ProcessState::Sleeping {
+                reschedule();
+            } else {
+                break;
             }
         }
     }

@@ -39,6 +39,7 @@ build_iso() {
     cp -v kernel/kernel "${ISO_ROOT}/"
     
     mkdir -p "${ISO_ROOT}/boot"
+    mkdir -p "${ISO_ROOT}/mod"
     
     echo "Copying Limine boot files..."
     if [ -f "${LIMINE_DIR}/limine-bios.sys" ]; then
@@ -74,14 +75,8 @@ build_iso() {
         echo "WARNING: BOOTIA32.EFI not found"
     fi
     
-    echo "Creating limine.conf..."
-    cat > "${ISO_ROOT}/boot/limine.conf" << 'EOF'
-timeout: 0
-
-/eucalyptOS
-    protocol: limine
-    kernel_path: boot():/kernel
-EOF
+    cp ./limine.conf ${ISO_ROOT}/boot/
+    cp ./${DISK_DIR}/ramfs.img ${ISO_ROOT}/mod/
     
     echo "ISO root contents:"
     find "${ISO_ROOT}" -type f
@@ -140,11 +135,15 @@ create_disks() {
     echo "Creating disk images..."
     mkdir -p "${DISK_DIR}"
     
-    echo "  Creating IDE disk (64MB) with FAT12..."
+    echo "  Creating IDE disk (2MB) with FAT12..."
     format_fat12 "${DISK_DIR}/ide_disk.img" 64
     
-    echo "  Creating AHCI disk (64MB)..."
-    dd if=/dev/zero of="${DISK_DIR}/ahci_disk.img" bs=1M count=64 status=none
+    echo "  Creating AHCI disk (2MB)..."
+    format_fat12 "${DISK_DIR}/ahci_disk.img" 2
+    
+    echo "  Creating RAMFS disk (2MB)"
+    format_fat12 "${DISK_DIR}/ramfs.img" 64
+    
     
     echo "✓ Disk images ready"
 }
@@ -227,18 +226,19 @@ distclean() {
 case "${1:-}" in
     build)
         build_kernel
+        create_disks
         build_iso
         ;;
     run)
         build_kernel
-        build_iso
         create_disks
+        build_iso
         run_qemu
         ;;
     run-codespace)
         build_kernel
-        build_iso
         create_disks
+        build_iso
         run_qemu_codespace
         ;;
     clean)

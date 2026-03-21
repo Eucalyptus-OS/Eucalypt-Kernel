@@ -6,7 +6,6 @@ extern crate alloc;
 // Core
 use core::arch::asm;
 
-use alloc::boxed::Box;
 // Eucalypt
 use eucalypt_os::gdt::gdt_init;
 use eucalypt_os::idt::idt_init;
@@ -15,12 +14,7 @@ use eucalypt_os::mp::init_mp;
 // Limine
 use limine::BaseRevision;
 use limine::request::{
-    FramebufferRequest,
-    MemoryMapRequest,
-    RsdpRequest,
-    MpRequest,
-    RequestsStartMarker,
-    RequestsEndMarker,
+    FramebufferRequest, MemoryMapRequest, ModuleRequest, MpRequest, RequestsEndMarker, RequestsStartMarker
 };
 
 // Hardware
@@ -46,6 +40,7 @@ use memory::{
 use pci::check_all_buses;
 use ide::ide_init;
 use ahci::init_ahci;
+use ramfs::mount_ramdisk;
 use usb::init_usb;
 
 use sched::{
@@ -63,7 +58,6 @@ use framebuffer::{
 };
 
 // FS
-use fat12::fat12_init;
 use vfs::*;
 
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
@@ -84,12 +78,12 @@ static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 #[used]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".requests")]
-pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
+pub static MP_REQUEST: MpRequest = MpRequest::new();
 
 #[used]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".requests")]
-pub static MP_REQUEST: MpRequest = MpRequest::new();
+static MODULE_REQUEST: ModuleRequest = ModuleRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
@@ -146,14 +140,14 @@ extern "C" fn kmain() -> ! {
     bare_x86_64::cpu::apic::set_ioapic_virt_base(ioapic_virt as usize);
     bare_x86_64::cpu::apic::init_ioapic();
 
-    // IDT — safe now that IOAPIC is mapped
+    // IDT
     idt_init();
 
     // Enable interrupts
     unsafe { asm!("sti"); }
 
     // Calibrate and start APIC timer
-    let initial_count = calibrate_apic_timer(10000);
+    let initial_count = calibrate_apic_timer(1000);
     init_apic_timer(32, initial_count);
 
     // Devices
@@ -168,11 +162,9 @@ extern "C" fn kmain() -> ! {
 
     // Filesystem
     vfs_init();
-    fat12_init(0).expect("disk init failed");
-    vfs_mount("fat12", Box::new(Fat12Driver::new(0))).unwrap();
-    vfs_mount("ramfs", Box::new(RamFs::new())).unwrap();
-    vfs_create_file("fat12/HELLO.TXT", b"Hello world!").unwrap();
-    println!("Read: {:?}", vfs_read_file("fat12/HELLO.TXT"));
+    if let Some(module_response) = MODULE_REQUEST.get_response() {
+        mount_ramdisk(module_response, "ram").expect("Failed to mount ramdisk");
+    }
 
     // Scheduler
     let kernel_main_rsp: u64;
@@ -203,7 +195,7 @@ fn test_process_1() {
 fn test_process_2() {
     loop {
         println!("Process 2 running");
-        sleep_proc_ms(1000);
+        sleep_proc_ms(500);
     }
 }
 

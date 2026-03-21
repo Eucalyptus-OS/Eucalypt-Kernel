@@ -12,7 +12,7 @@ pub use fat12::{
     fat12_append_file, fat12_create_directory, fat12_create_file, fat12_delete_directory,
     fat12_delete_file, fat12_file_exists, fat12_get_attributes, fat12_get_file_size,
     fat12_init, fat12_list_entries, fat12_list_files, fat12_read_file, fat12_rename_file,
-    fat12_stat, fat12_write_file, DirectoryEntry,
+    fat12_stat, fat12_write_file, DirectoryEntry, BiosParameterBlock,
 };
 
 /// Open for reading only.
@@ -149,14 +149,13 @@ pub trait FileSystem {
     fn stat_fs(&self) -> FsInfo;
 }
 
-/// VFS adapter for the static FAT12 driver. Call [`fat12_init`] before mounting.
 pub struct Fat12Driver {
-    pub drive: usize,
+    pub mnt: &'static str,
 }
 
 impl Fat12Driver {
-    pub fn new(drive: usize) -> Self {
-        Fat12Driver { drive }
+    pub fn new(mnt: &'static str) -> Self {
+        Fat12Driver { mnt }
     }
 }
 
@@ -225,6 +224,53 @@ impl RamFs {
     pub fn new() -> Self {
         RamFs { files: spin::Mutex::new(Vec::new()) }
     }
+
+    /// Populates this RAMFS by reading all files from a FAT12 image in memory.
+    pub fn load_from_fat12(&self, addr: *mut u8, size: u64) -> Result<(), &'static str> {
+        let data = unsafe { core::slice::from_raw_parts(addr, size as usize) };
+        if size < 512 { return Err("Image too small"); }
+
+        let bpb = unsafe { &*(addr as *const BiosParameterBlock) };
+        if bpb.bytes_per_sector != 512 { return Err("Unsupported sector size"); }
+
+        let fat_start = bpb.reserved_sectors as usize * 512;
+        let root_dir_sectors = ((bpb.root_entry_count as u32 * 32) + 511) / 512;
+        let root_dir_start = fat_start + (bpb.num_fats as usize * bpb.fat_size_16 as usize * 512);
+        let data_start = root_dir_start + (root_dir_sectors as usize * 512);
+
+        for i in 0..bpb.root_entry_count as usize {
+            let entry_ptr = (addr as usize + root_dir_start + i * 32) as *const DirectoryEntry;
+            let entry = unsafe { &*entry_ptr };
+
+            if entry.name[0] == 0 { break; }
+            if entry.name[0] == 0xE5 { continue; }
+            // Skip directories and volume IDs for the flat RamFs
+            if (entry.attributes & 0x10) != 0 || (entry.attributes & 0x08) != 0 { continue; }
+
+            let name = entry.get_name()?;
+            let mut file_data = Vec::with_capacity(entry.file_size as usize);
+
+            let mut cluster = entry.first_cluster;
+            while cluster >= 2 && cluster < 0xFF7 {
+                let cluster_offset = data_start + (cluster as usize - 2) * bpb.sectors_per_cluster as usize * 512;
+                let cluster_size = bpb.sectors_per_cluster as usize * 512;
+                let to_copy = core::cmp::min(cluster_size, entry.file_size as usize - file_data.len());
+                
+                if cluster_offset + to_copy > data.len() { break; }
+                file_data.extend_from_slice(&data[cluster_offset..cluster_offset + to_copy]);
+
+                if file_data.len() >= entry.file_size as usize { break; }
+
+                let fat_offset = fat_start + (cluster as usize * 3) / 2;
+                if fat_offset + 1 >= data.len() { break; }
+                let val = u16::from_le_bytes([data[fat_offset], data[fat_offset + 1]]);
+                cluster = if cluster & 1 == 0 { val & 0x0FFF } else { val >> 4 };
+                if cluster >= 0xFF8 { break; }
+            }
+            let _ = self.create_file(&name, &file_data);
+        }
+        Ok(())
+    }
 }
 
 impl FileSystem for RamFs {
@@ -232,82 +278,107 @@ impl FileSystem for RamFs {
         let files = self.files.lock();
         files
             .iter()
-            .find(|f| f.name.eq_ignore_ascii_case(filename))
+            .find(|f| f.name == filename)
             .map(|f| f.data.clone())
             .ok_or("File not found")
     }
+
     fn create_file(&self, filename: &str, data: &[u8]) -> Result<(), &'static str> {
         let mut files = self.files.lock();
-        if files.iter().any(|f| f.name.eq_ignore_ascii_case(filename)) {
+        if files.iter().any(|f| f.name == filename) {
             return Err("File already exists");
         }
-        files.push(RamFile { name: String::from(filename), data: data.to_vec() });
+        files.push(RamFile {
+            name: String::from(filename),
+            data: data.to_vec(),
+        });
         Ok(())
     }
+
     fn write_file(&self, filename: &str, data: &[u8]) -> Result<(), &'static str> {
         let mut files = self.files.lock();
-        files
+        let file = files
             .iter_mut()
-            .find(|f| f.name.eq_ignore_ascii_case(filename))
-            .map(|f| f.data = data.to_vec())
-            .ok_or("File not found")
+            .find(|f| f.name == filename)
+            .ok_or("File not found")?;
+        file.data = data.to_vec();
+        Ok(())
     }
+
     fn append_file(&self, filename: &str, data: &[u8]) -> Result<(), &'static str> {
         let mut files = self.files.lock();
-        files
+        let file = files
             .iter_mut()
-            .find(|f| f.name.eq_ignore_ascii_case(filename))
-            .map(|f| f.data.extend_from_slice(data))
-            .ok_or("File not found")
+            .find(|f| f.name == filename)
+            .ok_or("File not found")?;
+        file.data.extend_from_slice(data);
+        Ok(())
     }
+
     fn delete_file(&self, filename: &str) -> Result<(), &'static str> {
         let mut files = self.files.lock();
-        let before = files.len();
-        files.retain(|f| !f.name.eq_ignore_ascii_case(filename));
-        if files.len() == before { Err("File not found") } else { Ok(()) }
+        let pos = files
+            .iter()
+            .position(|f| f.name == filename)
+            .ok_or("File not found")?;
+        files.remove(pos);
+        Ok(())
     }
+
     fn rename_file(&self, old_name: &str, new_name: &str) -> Result<(), &'static str> {
         let mut files = self.files.lock();
-        if files.iter().any(|f| f.name.eq_ignore_ascii_case(new_name)) {
-            return Err("Destination filename already exists");
+        if files.iter().any(|f| f.name == new_name) {
+            return Err("Destination already exists");
         }
-        files
+        let file = files
             .iter_mut()
-            .find(|f| f.name.eq_ignore_ascii_case(old_name))
-            .map(|f| f.name = String::from(new_name))
-            .ok_or("File not found")
+            .find(|f| f.name == old_name)
+            .ok_or("File not found")?;
+        file.name = String::from(new_name);
+        Ok(())
     }
+
     fn file_exists(&self, filename: &str) -> bool {
-        self.files.lock().iter().any(|f| f.name.eq_ignore_ascii_case(filename))
+        let files = self.files.lock();
+        files.iter().any(|f| f.name == filename)
     }
+
     fn get_file_size(&self, filename: &str) -> Option<u32> {
-        self.files
-            .lock()
+        let files = self.files.lock();
+        files
             .iter()
-            .find(|f| f.name.eq_ignore_ascii_case(filename))
+            .find(|f| f.name == filename)
             .map(|f| f.data.len() as u32)
     }
+
     fn list_dir(&self) -> Result<Vec<VfsDirEntry>, &'static str> {
-        Ok(self
-            .files
-            .lock()
+        let files = self.files.lock();
+        Ok(files
             .iter()
             .map(|f| VfsDirEntry {
-                name:   f.name.clone(),
+                name: f.name.clone(),
                 is_dir: false,
-                size:   f.data.len() as u32,
+                size: f.data.len() as u32,
             })
             .collect())
     }
+
     fn create_dir(&self, _dirname: &str) -> Result<(), &'static str> {
-        Err("RamFs: subdirectories not supported")
+        Err("Subdirectories not supported in RamFs")
     }
+
     fn delete_dir(&self, _dirname: &str) -> Result<(), &'static str> {
-        Err("RamFs: subdirectories not supported")
+        Err("Subdirectories not supported in RamFs")
     }
+
     fn stat_fs(&self) -> FsInfo {
-        let used: u64 = self.files.lock().iter().map(|f| f.data.len() as u64).sum();
-        FsInfo { total_bytes: u64::MAX, free_bytes: u64::MAX - used, fs_type: "RAMFS" }
+        let files = self.files.lock();
+        let total_bytes: usize = files.iter().map(|f| f.data.len()).sum();
+        FsInfo {
+            total_bytes: total_bytes as u64,
+            free_bytes: 0,
+            fs_type: "RAMFS",
+        }
     }
 }
 

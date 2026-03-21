@@ -3,6 +3,8 @@
 /target
 /iso_root
 /kernel/target
+/ports/newlib-build
+/ports/sysroot
 *.lock
 *.iso
 *.hdd

@@ -1,9 +1,11 @@
 [workspace]
-members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall", "fat12", "vfs"]
+members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "process", "sched", "memory", "usb", "syscall", "fat12", "vfs", "ramfs"]
 resolver = "2"
 
 [profile.dev]
 opt-level = 1
+
+panic="abort"
 
 [workspace.dependencies]
 # External Dependencies
@@ -27,3 +29,4 @@ usb =         { path = "./usb" }
 syscall =     { path = "./syscall" }
 fat12 =       { path = "./fat12" }
 vfs =         { path = "./vfs" }
+ramfs =       { path = "./ramfs" }

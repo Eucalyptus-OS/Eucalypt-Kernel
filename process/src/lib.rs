@@ -122,18 +122,21 @@ pub fn init_kernel_process(rsp: u64) {
 
 pub fn create_process(entry: *mut ()) -> Option<u64> {
     unsafe {
-        let pid = PROCESS_COUNT;
-        if pid >= MAX_PROCESSES as u64 {
-            return None;
+        let mut free_slot = None;
+        for i in 0..MAX_PROCESSES {
+            if PROCESS_TABLE.processes[i].is_none() {
+                free_slot = Some(i);
+                break;
+            }
         }
 
+        let pid = free_slot? as u64;
+        
         let stack_base = allocate_kernel_stack()?;
         let rsp = setup_initial_stack(stack_base, entry);
 
         let mut mapper = VMM::get_mapper();
-        println!("Creating user pml4");
         let user_pml4 = mapper.create_user_pml4()?;
-        println!("Created");
 
         let mut fildes = [FD::EMPTY; 1024];
         fildes[0] = FD { node_id: STDIN_NODE_ID,  flags: O_RDONLY, ref_count: 1 };
@@ -154,7 +157,9 @@ pub fn create_process(entry: *mut ()) -> Option<u64> {
         };
 
         PROCESS_TABLE.processes[pid as usize] = Some(process);
-        PROCESS_COUNT += 1;
+        if pid >= PROCESS_COUNT {
+            PROCESS_COUNT = pid + 1;
+        }
 
         Some(pid)
     }
@@ -321,8 +326,9 @@ fn process_exit(return_value: u64) {
             println!("Process {} exited\nReturn val: {}", proc.pid, return_value);
             proc.state = ProcessState::Terminated;
         }
+        core::arch::asm!("int 32");
         loop {
-            core::arch::asm!("cli", "sti", "hlt");
+            core::arch::asm!("hlt");
         }
     }
 }
