@@ -1,5 +1,0 @@
-libnosys/sbrk.o: ../../../../ports/newlib/libgloss/libnosys/sbrk.c \
- config.h \
- /home/gavin/Repos/Eucalypt-Kernel/ports/newlib/newlib/libc/include/_syslist.h
-config.h:
-/home/gavin/Repos/Eucalypt-Kernel/ports/newlib/newlib/libc/include/_syslist.h:

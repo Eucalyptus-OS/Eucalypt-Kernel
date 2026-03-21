@@ -1,5 +1,0 @@
-libc/ctype/libc_a-jp2uc.o: \
- ../../../../ports/newlib/newlib/libc/ctype/jp2uc.c newlib.h \
- _newlib_version.h
-newlib.h:
-_newlib_version.h:

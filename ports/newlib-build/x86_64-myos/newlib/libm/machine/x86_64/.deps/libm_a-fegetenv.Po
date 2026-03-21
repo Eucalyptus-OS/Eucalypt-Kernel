@@ -1,4 +1,0 @@
-libm/machine/x86_64/libm_a-fegetenv.o: \
- ../../../../ports/newlib/newlib/libm/machine/x86_64/fegetenv.c \
- ../../../../ports/newlib/newlib/libm/machine/x86_64/../../fenv/fenv_stub.c
-../../../../ports/newlib/newlib/libm/machine/x86_64/../../fenv/fenv_stub.c:

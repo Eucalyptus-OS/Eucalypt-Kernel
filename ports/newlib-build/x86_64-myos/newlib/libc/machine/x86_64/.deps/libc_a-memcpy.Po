@@ -1,4 +1,0 @@
-libc/machine/x86_64/libc_a-memcpy.o: \
- ../../../../ports/newlib/newlib/libc/machine/x86_64/memcpy.S \
- ../../../../ports/newlib/newlib/libc/machine/x86_64/x86_64mach.h
-../../../../ports/newlib/newlib/libc/machine/x86_64/x86_64mach.h:

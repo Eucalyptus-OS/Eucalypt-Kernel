@@ -1,4 +1,0 @@
-libm/machine/x86_64/libm_a-fegetround.o: \
- ../../../../ports/newlib/newlib/libm/machine/x86_64/fegetround.c \
- ../../../../ports/newlib/newlib/libm/machine/x86_64/../../fenv/fenv_stub.c
-../../../../ports/newlib/newlib/libm/machine/x86_64/../../fenv/fenv_stub.c:

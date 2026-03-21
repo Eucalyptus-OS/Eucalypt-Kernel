@@ -1,2 +1,0 @@
-libc/sys/myos/crt0.o: \
- ../../../../ports/newlib/newlib/libc/sys/myos/crt0.S

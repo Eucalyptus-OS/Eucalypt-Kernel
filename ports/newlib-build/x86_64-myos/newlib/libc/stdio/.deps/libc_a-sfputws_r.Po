@@ -1,5 +1,0 @@
-libc/stdio/libc_a-sfputws_r.o: \
- ../../../../ports/newlib/newlib/libc/stdio/sfputws_r.c newlib.h \
- _newlib_version.h
-newlib.h:
-_newlib_version.h:

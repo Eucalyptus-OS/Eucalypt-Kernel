@@ -1,2 +1,0 @@
-libc/stdlib/libc_a-strtoll_r.o: \
- ../../../../ports/newlib/newlib/libc/stdlib/strtoll_r.c

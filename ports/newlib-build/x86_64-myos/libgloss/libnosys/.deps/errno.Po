@@ -1,1 +1,0 @@
-libnosys/errno.o: ../../../../ports/newlib/libgloss/libnosys/errno.c

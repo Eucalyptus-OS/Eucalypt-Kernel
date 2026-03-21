@@ -1,2 +1,0 @@
-libc/stdlib/libc_a-wcstoull_r.o: \
- ../../../../ports/newlib/newlib/libc/stdlib/wcstoull_r.c

@@ -1,2 +1,0 @@
-libc/stdlib/libc_a-environ.o: \
- ../../../../ports/newlib/newlib/libc/stdlib/environ.c

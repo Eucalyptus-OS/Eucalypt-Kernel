@@ -1,2 +1,0 @@
-libc/signal/libc_a-signal.o: \
- ../../../../ports/newlib/newlib/libc/signal/signal.c
