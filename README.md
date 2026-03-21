@@ -12,6 +12,10 @@ It uses the limine bootloader along with the requests
 - [x] Storage Drivers (AHCI and IDE)
 - [x] File System
 - [x] PCI
-- [ ] USB 1.0 - 3.1 Support
+- [ ] USB 1.0 - 3.1 Support (I'm too lazy to finish this)
 - [x] Multitasking
-- [ ] Syscalls
+- [x] Syscalls
+- [ ] File execution
+- [ ] Multiprocessing
+- [ ] ACPI stuff
+- [ ] Anything thats not fat12
