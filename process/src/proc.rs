@@ -2,7 +2,7 @@ use core::alloc::Layout;
 use alloc::vec::Vec;
 use framebuffer::println;
 use memory::vmm::VMM;
-use vfs::{FD, STDIN_NODE_ID, STDOUT_NODE_ID, STDERR_NODE_ID, O_RDONLY, O_WRONLY, vfs_close};
+use vfs::*;
 use crate::Process;
 
 const KERNEL_STACK_SIZE: usize = 64 * 1024;

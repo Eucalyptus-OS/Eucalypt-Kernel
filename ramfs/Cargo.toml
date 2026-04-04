@@ -7,3 +7,5 @@ edition = "2024"
 limine = { workspace = true }
 framebuffer = { workspace = true }
 vfs = { workspace = true }
+fat12 = { workspace = true }
+spin = { workspace = true }

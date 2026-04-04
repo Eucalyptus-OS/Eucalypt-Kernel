@@ -287,8 +287,10 @@ dependencies = [
 name = "ramfs"
 version = "0.1.0"
 dependencies = [
+ "fat12",
  "framebuffer",
  "limine",
+ "spin",
  "vfs",
 ]
 

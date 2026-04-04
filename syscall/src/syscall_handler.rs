@@ -2,7 +2,7 @@
 
 use limine::request::FramebufferRequest;
 use framebuffer::{print, println};
-use vfs::{vfs_close, vfs_open, vfs_read, vfs_write_node, STDIN_NODE_ID, STDOUT_NODE_ID, STDERR_NODE_ID};
+use vfs::{vfs_close, vfs_open, vfs_read, vfs_write, STDIN_NODE_ID, STDOUT_NODE_ID, STDERR_NODE_ID};
 use memory::allocator::sbrk;
 use process;
 
@@ -135,11 +135,10 @@ impl SyscallHandler {
             Err(_) => return EINVAL,
         };
         let flags_u32 = flags as u32;
-        let node = match vfs_open(path, flags_u32, 0) {
+        let node_id = match vfs_open(path, flags_u32, 0) {
             Ok(n)  => n,
             Err(_) => return -1,
         };
-        let node_id = node.id;
         let proc = match process::get_current_process_mut() {
             Some(p) => p,
             None => {
@@ -239,7 +238,7 @@ impl SyscallHandler {
             }
             return count;
         }
-        match vfs_write_node(node_id, data) {
+        match vfs_write(node_id, data) {
             Ok(())  => count,
             Err(_)  => -1,
         }

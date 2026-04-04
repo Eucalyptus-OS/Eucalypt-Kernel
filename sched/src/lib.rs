@@ -1,9 +1,5 @@
 #![no_std]
 
-/// Round robin scheduler
-/// How it works
-/// first we have a list of processes and the scheduler goes from pid1 -> pid2 and so on
-
 use core::sync::atomic::{AtomicBool, Ordering};
 use memory::paging::PageTable;
 use process::{PROCESS_COUNT, PROCESS_TABLE, Priority, ProcessState};

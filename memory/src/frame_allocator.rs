@@ -1,7 +1,7 @@
 use limine::memmap::MEMMAP_USABLE;
 use limine::request::MemmapResponse;
 
-use super::addr::PhysAddr;
+use crate::addr::PhysAddr;
 
 const PAGE_SIZE: u64 = 0x1000;
 
@@ -59,12 +59,21 @@ pub fn init_frame_allocator(memmap_response: &MemmapResponse) {
             continue;
         }
 
-        let mut current_addr = entry.base;
-        let end_addr = entry.base + entry.length;
+        let base = entry.base as usize;
+        let end = (entry.base + entry.length) as usize;
 
-        while current_addr < end_addr {
-            frame_free(current_addr as usize);
-            current_addr += PAGE_SIZE;
+        // Ensure we are page-aligned
+        let mut current = (base + (PAGE_SIZE as usize - 1)) & !(PAGE_SIZE as usize - 1);
+        
+        unsafe {
+            while current + (PAGE_SIZE as usize) <= end {
+                let next_ptr = crate::hhdm::phys_to_virt(current) as *mut usize;
+                
+                *next_ptr = PAGE_LIST;
+                PAGE_LIST = current;
+
+                current += PAGE_SIZE as usize;
+            }
         }
     }
 }

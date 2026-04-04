@@ -2,11 +2,13 @@ use core::ptr::{read_volatile, write_volatile};
 
 #[repr(C)]
 pub struct HbaPort {
-    pub clb: u64,
-    pub fb: u64,
+    pub clbl: u32,
+    pub clbu: u32,
+    pub fbl: u32,
+    pub fbu: u32,
     pub is: u32,
     pub ie: u32,
-    pub cmd: u32,
+    cmd: u32,
     reserved0: u32,
     pub tfd: u32,
     pub sig: u32,
@@ -14,7 +16,7 @@ pub struct HbaPort {
     pub sctl: u32,
     pub serr: u32,
     pub sact: u32,
-    pub ci: u32,
+    ci: u32,
     pub sntf: u32,
     pub fbs: u32,
     reserved1: [u32; 11],
@@ -22,6 +24,32 @@ pub struct HbaPort {
 }
 
 impl HbaPort {
+    pub fn clb(&self) -> u64 {
+        let lo = unsafe { read_volatile(&self.clbl) } as u64;
+        let hi = unsafe { read_volatile(&self.clbu) } as u64;
+        (hi << 32) | lo
+    }
+
+    pub fn set_clb(&mut self, addr: u64) {
+        unsafe {
+            write_volatile(&mut self.clbl, addr as u32);
+            write_volatile(&mut self.clbu, (addr >> 32) as u32);
+        }
+    }
+
+    pub fn fb(&self) -> u64 {
+        let lo = unsafe { read_volatile(&self.fbl) } as u64;
+        let hi = unsafe { read_volatile(&self.fbu) } as u64;
+        (hi << 32) | lo
+    }
+
+    pub fn set_fb(&mut self, addr: u64) {
+        unsafe {
+            write_volatile(&mut self.fbl, addr as u32);
+            write_volatile(&mut self.fbu, (addr >> 32) as u32);
+        }
+    }
+
     pub fn read_cmd(&self) -> u32 {
         unsafe { read_volatile(&self.cmd) }
     }
@@ -112,15 +140,35 @@ pub struct HbaCmdHeader {
     pub flags: u16,
     pub prdtl: u16,
     pub prdbc: u32,
-    pub ctba: u64,
+    pub ctbal: u32,
+    pub ctbau: u32,
     reserved: [u32; 4],
+}
+
+impl HbaCmdHeader {
+    pub fn ctba(&self) -> u64 {
+        (self.ctbau as u64) << 32 | self.ctbal as u64
+    }
+
+    pub fn set_ctba(&mut self, addr: u64) {
+        self.ctbal = addr as u32;
+        self.ctbau = (addr >> 32) as u32;
+    }
 }
 
 #[repr(C)]
 pub struct HbaPrdtEntry {
-    pub dba: u64,
+    pub dbal: u32,
+    pub dbau: u32,
     reserved0: u32,
     pub dbc: u32,
+}
+
+impl HbaPrdtEntry {
+    pub fn set_dba(&mut self, addr: u64) {
+        self.dbal = addr as u32;
+        self.dbau = (addr >> 32) as u32;
+    }
 }
 
 #[repr(C)]
@@ -128,7 +176,7 @@ pub struct HbaCmdTbl {
     pub cfis: [u8; 64],
     pub acmd: [u8; 16],
     reserved: [u8; 48],
-    pub prdt_entry: [HbaPrdtEntry; 1],
+    pub prdt_entry: [HbaPrdtEntry; 8],
 }
 
 #[repr(C)]
@@ -227,54 +275,51 @@ pub struct HbaFis {
     reserved: [u8; 96],
 }
 
-pub const HBA_PORT_CMD_ST: u32 = 0x0001;
-pub const HBA_PORT_CMD_FRE: u32 = 0x0010;
-pub const HBA_PORT_CMD_FR: u32 = 0x4000;
-pub const HBA_PORT_CMD_CR: u32 = 0x8000;
+pub const HBA_PORT_CMD_ST: u32  = 1 << 0;
+pub const HBA_PORT_CMD_FRE: u32 = 1 << 4;
+pub const HBA_PORT_CMD_FR: u32  = 1 << 14;
+pub const HBA_PORT_CMD_CR: u32  = 1 << 15;
 
 pub const HBA_PX_IS_TFES: u32 = 1 << 30;
 
-pub const HBA_PORT_SIG_ATA: u32 = 0x00000101;
+pub const HBA_PORT_SIG_ATA: u32   = 0x00000101;
 pub const HBA_PORT_SIG_ATAPI: u32 = 0xEB140101;
-pub const HBA_PORT_SIG_SEMB: u32 = 0xC33C0101;
-pub const HBA_PORT_SIG_PM: u32 = 0x96690101;
+pub const HBA_PORT_SIG_SEMB: u32  = 0xC33C0101;
+pub const HBA_PORT_SIG_PM: u32    = 0x96690101;
 
-pub const HBA_SSTS_DET_PRESENT: u32 = 0x3;
-pub const HBA_SSTS_IPM_ACTIVE: u32 = 0x1;
+pub const HBA_PORT_DET_PRESENT: u32 = 0x3;
+pub const HBA_PORT_IPM_ACTIVE: u32  = 0x1;
 
 pub const ATA_DEV_BUSY: u8 = 0x80;
-pub const ATA_DEV_DRQ: u8 = 0x08;
+pub const ATA_DEV_DRQ: u8  = 0x08;
 
-pub const ATA_CMD_READ_DMA_EX: u8 = 0x25;
+pub const ATA_CMD_READ_DMA_EX: u8  = 0x25;
 pub const ATA_CMD_WRITE_DMA_EX: u8 = 0x35;
-pub const ATA_CMD_IDENTIFY: u8 = 0xEC;
+pub const ATA_CMD_IDENTIFY: u8     = 0xEC;
 
-pub const FIS_TYPE_REG_H2D: u8 = 0x27;
-pub const FIS_TYPE_REG_D2H: u8 = 0x34;
-pub const FIS_TYPE_DMA_ACT: u8 = 0x39;
+pub const FIS_TYPE_REG_H2D: u8   = 0x27;
+pub const FIS_TYPE_REG_D2H: u8   = 0x34;
+pub const FIS_TYPE_DMA_ACT: u8   = 0x39;
 pub const FIS_TYPE_DMA_SETUP: u8 = 0x41;
-pub const FIS_TYPE_DATA: u8 = 0x46;
-pub const FIS_TYPE_BIST: u8 = 0x58;
+pub const FIS_TYPE_DATA: u8      = 0x46;
+pub const FIS_TYPE_BIST: u8      = 0x58;
 pub const FIS_TYPE_PIO_SETUP: u8 = 0x5F;
-pub const FIS_TYPE_DEV_BITS: u8 = 0xA1;
+pub const FIS_TYPE_DEV_BITS: u8  = 0xA1;
 
 pub const HBA_GHC_AE: u32 = 1 << 31;
 pub const HBA_GHC_IE: u32 = 1 << 1;
 pub const HBA_GHC_HR: u32 = 1 << 0;
 
-pub const AHCI_CMD_HEADER_FLAGS_FIS_LEN: u16 = 5;
-pub const AHCI_CMD_HEADER_FLAGS_WRITE: u16 = 1 << 6;
+pub const AHCI_CMD_HEADER_FLAGS_FIS_LEN: u16      = 5;
+pub const AHCI_CMD_HEADER_FLAGS_WRITE: u16        = 1 << 6;
 pub const AHCI_CMD_HEADER_FLAGS_PREFETCHABLE: u16 = 1 << 7;
-pub const AHCI_CMD_HEADER_FLAGS_CLR_BUSY: u16 = 1 << 10;
+pub const AHCI_CMD_HEADER_FLAGS_CLR_BUSY: u16     = 1 << 10;
 
 pub const AHCI_PRDT_DBC_MASK: u32 = 0x3FFFFF;
-pub const AHCI_PRDT_DBC_IPC: u32 = 1 << 31;
+pub const AHCI_PRDT_DBC_IPC: u32  = 1 << 31;
 
-pub const AHCI_DEV_NULL: u8 = 0;
-pub const AHCI_DEV_SATA: u8 = 1;
+pub const AHCI_DEV_NULL: u8   = 0;
+pub const AHCI_DEV_SATA: u8   = 1;
 pub const AHCI_DEV_SATAPI: u8 = 2;
-pub const AHCI_DEV_SEMB: u8 = 3;
-pub const AHCI_DEV_PM: u8 = 4;
-
-pub const HBA_PORT_DET_PRESENT: u32 = 0x3;
-pub const HBA_PORT_IPM_ACTIVE: u32 = 0x1;
+pub const AHCI_DEV_SEMB: u8   = 3;
+pub const AHCI_DEV_PM: u8     = 4;
