@@ -3,12 +3,9 @@
 
 extern crate alloc;
 
-// Core
-use core::arch::asm;
-
 // Eucalypt
 use eucalypt_os::gdt::gdt_init;
-use eucalypt_os::idt::idt_init;
+use eucalypt_os::idt::{self, idt_init};
 use eucalypt_os::mp::init_mp;
 
 // Limine
@@ -18,7 +15,7 @@ use limine::{RequestsEndMarker, RequestsStartMarker, request::{
 }};
 
 // Hardware
-use framebuffer::{print, println};
+use framebuffer::println;
 
 use bare_x86_64::cpu::apic::{
     enable_apic,
@@ -60,7 +57,7 @@ use framebuffer::{
 // FS
 use vfs::*;
 
-static FONT: &[u8] = include_bytes!("../../framebuffer/font/def2_8x16.psf");
+static FONT: &[u8] = include_bytes!("../../framebuffer/font/altc-8x16.psf");
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -127,9 +124,7 @@ extern "C" fn kmain() -> ! {
 
     idt_init();
 
-    let kernel_main_rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) kernel_main_rsp); }
-    process::thread::init_kernel_process(kernel_main_rsp);
+    process::thread::init_kernel_thread();
     
     // Test threads with 16KB stack
     process::thread::TCB::new(16384, test_process_1 as *const () as u64);
@@ -155,22 +150,19 @@ extern "C" fn kmain() -> ! {
     }
 
     loop {
-        unsafe { core::arch::asm!("hlt") };
+        unsafe { core::arch::asm!("hlt"); }
     }
 }
 
-// Dummy processes for testing
 fn test_process_1() {
     loop {
         println!("A");
-        for _ in 0..1000000 { unsafe { core::arch::asm!("nop") } }
     }
 }
 
 fn test_process_2() {
     loop {
         println!("B");
-        for _ in 0..1000000 { unsafe { core::arch::asm!("nop") } }
     }
 }
 

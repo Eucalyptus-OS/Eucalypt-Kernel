@@ -18,6 +18,7 @@ struct RamFile {
     mode: u32,
 }
 
+#[allow(dead_code)]
 struct RamDir {
     path: String,
     mode: u32,

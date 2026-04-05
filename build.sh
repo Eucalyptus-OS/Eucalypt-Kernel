@@ -5,7 +5,6 @@ KARCH="x86_64"
 OVMF_DIR="ovmf"
 DISK_DIR="disks"
 IMAGE_NAME="eucalypt-${KARCH}"
-QEMUFLAGS="-m 500M"
 ISO_ROOT="iso_root"
 LIMINE_DIR="limine"
 
@@ -139,7 +138,7 @@ run_qemu() {
         -drive file=${DISK_DIR}/ahci_disk.img,format=raw,if=none,id=ahci0 \
         -device ahci,id=ahci \
         -device ide-hd,drive=ahci0,bus=ahci.0 \
-        -smp 4
+        -smp 4 -m 500M -d int,cpu_reset
 }
 
 run_qemu_codespace() {
