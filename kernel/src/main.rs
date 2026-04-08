@@ -101,17 +101,6 @@ extern "C" fn kmain() -> ! {
 
     mmio_map_range(0xFFFF800000000000, 0xFFFF8000FFFFFFFF);
 
-    unsafe {
-        let kernel_pml4 = VMM::get_page_table();
-        let pml4_virt = (kernel_pml4 as u64 | 0xFFFF800000000000) as *mut memory::paging::PageTable;
-        for i in 0..256 {
-            let entry = &mut (*pml4_virt).entries[i];
-            if entry.is_present() {
-                entry.set_user();
-            }
-        }
-    }
-
     let apic_virt = map_mmio(VMM::get_page_table(), get_apic_base() as u64, 0x1000)
         .expect("Failed to map APIC");
     set_apic_virt_base(apic_virt as usize);
