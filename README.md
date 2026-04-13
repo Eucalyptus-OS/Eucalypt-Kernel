@@ -18,4 +18,4 @@ It uses the limine bootloader along with the requests
 - [ ] File execution
 - [ ] Multiprocessing
 - [ ] ACPI stuff
-- [ ] Anything thats not fat12
+- [ ] Anything thats not fart12
