@@ -5,7 +5,6 @@ use memory::vmm::VMM;
 use memory::paging::PageTableEntry;
 use memory::addr::VirtAddr;
 use memory::frame_allocator::FrameAllocator;
-use process::thread::spawn_userspace_process;
 
 const PAGE_SIZE: usize = 0x1000;
 const HHDM_OFFSET: u64 = 0xFFFF800000000000;
@@ -115,6 +114,5 @@ pub fn load_elf(filename: &str) -> Option<(u64, u64)> {
 
     let entry = ehdr.e_entry;
     let pml4_phys = pml4 as u64;
-    spawn_userspace_process(entry, pml4_phys);
     Some((entry, pml4_phys))
 }

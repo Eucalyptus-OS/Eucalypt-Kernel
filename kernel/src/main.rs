@@ -4,7 +4,6 @@
 extern crate alloc;
 
 // Eucalypt
-use eucalypt_os::gdt::gdt_init;
 use eucalypt_os::idt::idt_init;
 use eucalypt_os::mp::init_mp;
 
@@ -139,24 +138,6 @@ extern "C" fn kmain() -> ! {
 
     loop {
         unsafe { core::arch::asm!("hlt"); }
-    }
-}
-
-fn test_process_1() {
-    let mut i: u64 = 0;
-    loop {
-        println!("A {}", i);
-        i += 1;
-        for _ in 0..500_000 { unsafe { core::arch::asm!("nop"); } }
-    }
-}
-
-fn test_process_2() {
-    let mut i: u64 = 0;
-    loop {
-        println!("B {}", i);
-        i += 1;
-        for _ in 0..500_000 { unsafe { core::arch::asm!("nop"); } }
     }
 }
 

@@ -190,5 +190,4 @@ unsafe fn gdt_load() {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn test_user() {
-    panic!("I'm so fucking scared")
 }

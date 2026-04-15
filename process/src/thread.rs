@@ -2,9 +2,6 @@ use core::{alloc::Layout, sync::atomic::{AtomicU64, AtomicUsize, Ordering}};
 use alloc::alloc::alloc_zeroed;
 use framebuffer::println;
 use crate::scheduler;
-use memory::paging::PageTableEntry;
-use memory::addr::VirtAddr;
-use memory::frame_allocator::FrameAllocator;
 use memory::vmm::VMM;
 
 pub type ThreadId = u64;
@@ -64,13 +61,6 @@ static mut THREAD_STORAGE: [core::mem::MaybeUninit<TCB>; MAX_THREADS] =
     [const { core::mem::MaybeUninit::uninit() }; MAX_THREADS];
 static THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
-
-const USER_STACK_SIZE: u64   = 0x8000;
-const USER_STACK_TOP:  u64   = 0x0000_7FFF_FFFF_0000;
-const HHDM_OFFSET:     u64   = 0xFFFF800000000000;
-const PAGE_SIZE:       usize = 0x1000;
-const USER_CS:         u64   = 0x1B;
-const USER_SS:         u64   = 0x23;
 
 pub fn get_thread_count() -> usize {
     THREAD_COUNT.load(Ordering::Acquire)
@@ -184,44 +174,6 @@ impl TCB {
             THREAD_STORAGE[index].write(tcb);
             THREAD_STORAGE[index].as_mut_ptr()
         }
-    }
-}
-
-pub fn spawn_userspace_process(entry: u64, pml4_phys: u64) -> *mut TCB {
-    let kstack_size = 0x4000u64;
-    let layout = Layout::from_size_align(kstack_size as usize, 4096).unwrap();
-    let kstack_base = unsafe { alloc_zeroed(layout) };
-    assert!(!kstack_base.is_null());
-
-    let kstack_top = unsafe { kstack_base.add(kstack_size as usize) };
-
-    let pml4_ptr = (pml4_phys | HHDM_OFFSET) as *mut memory::paging::PageTable;
-    alloc_user_stack(pml4_ptr).expect("spawn_userspace_process: user stack mapping failed");
-
-    let rsp = setup_user_stack(kstack_base, kstack_size, entry);
-    let index = THREAD_COUNT.fetch_add(1, Ordering::AcqRel);
-    assert!(index < MAX_THREADS);
-
-    let tcb = TCB {
-        tid: NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed),
-        stack_size: kstack_size,
-        stack_base: kstack_base,
-        stack_top: kstack_top,
-        cpu_context: CpuContext {
-            rsp,
-            ..CpuContext::default()
-        },
-        next: core::ptr::null_mut(),
-        cr3: pml4_phys,
-        state: ThreadState::Ready,
-        priority: Priority::NORMAL,
-        is_userspace: true,
-        kernel_stack_top: kstack_top as u64,
-    };
-
-    unsafe {
-        THREAD_STORAGE[index].write(tcb);
-        THREAD_STORAGE[index].as_mut_ptr()
     }
 }
 
