@@ -28,7 +28,7 @@ use memory::{
     vmm::VMM,
 };
 
-use ahci::init_ahci;
+use ahci::{init_ahci, ahci_read_drive, get_drive_count};
 use ide::ide_init;
 use pci::check_all_buses;
 #[allow(unused)]
@@ -128,6 +128,15 @@ extern "C" fn kmain() -> ! {
     check_all_buses();
     init_usb();
     init_ahci();
+
+    if get_drive_count() > 0 {
+        let mut buf = [0u8; 512];
+        let ok = ahci_read_drive(0, 0, 1, buf.as_mut_ptr());
+        println!("AHCI read sector 0: ok={}", ok);
+        if ok {
+            println!("  first 16 bytes: {:02x?}", &buf[..16]);
+        }
+    }
 
     let mp_response = MP_REQUEST.response().expect("No MP response");
     init_mp(mp_response);

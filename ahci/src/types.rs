@@ -86,6 +86,10 @@ impl HbaPort {
         unsafe { write_volatile(&mut self.ci, value) }
     }
 
+    pub fn read_sact(&self) -> u32 {
+        unsafe { read_volatile(&self.sact) }
+    }
+
     pub fn write_serr(&mut self, value: u32) {
         unsafe { write_volatile(&mut self.serr, value) }
     }
@@ -147,12 +151,16 @@ pub struct HbaCmdHeader {
 
 impl HbaCmdHeader {
     pub fn ctba(&self) -> u64 {
-        (self.ctbau as u64) << 32 | self.ctbal as u64
+        let lo = unsafe { read_volatile(&self.ctbal) } as u64;
+        let hi = unsafe { read_volatile(&self.ctbau) } as u64;
+        (hi << 32) | lo
     }
 
     pub fn set_ctba(&mut self, addr: u64) {
-        self.ctbal = addr as u32;
-        self.ctbau = (addr >> 32) as u32;
+        unsafe {
+            write_volatile(&mut self.ctbal, addr as u32);
+            write_volatile(&mut self.ctbau, (addr >> 32) as u32);
+        }
     }
 }
 

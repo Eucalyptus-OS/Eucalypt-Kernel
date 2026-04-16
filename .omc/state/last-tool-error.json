@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"pkill -f \\\"qemu-system-x86_64\\\" 2>/dev/null; pkill -f \\\"gunzip\\\" 2>/dev/null; wait 2>/dev/null; echo \\\"done\\\"\",\"description\":\"Kill background QEMU/download processes\"}",
+  "error": "Exit code 144",
+  "timestamp": "2026-04-16T12:34:16.030Z",
+  "retry_count": 1
+}

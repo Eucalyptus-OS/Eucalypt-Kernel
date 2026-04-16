@@ -1,0 +1,594 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1776341425078,
+  "projectRoot": "/home/mmzs/projects/Eucalypt-Kernel",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Rust",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Cargo.toml"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "cargo",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "cargo build",
+    "testCommand": "cargo test",
+    "lintCommand": "cargo clippy",
+    "devCommand": "cargo run",
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "ahci": {
+      "path": "ahci",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425074,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "bare_x86_64": {
+      "path": "bare_x86_64",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425075,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "eucalypt_fs": {
+      "path": "eucalypt_fs",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1776341425075,
+      "keyFiles": [
+        "Cargo.toml",
+        "LICENSE",
+        "README.md"
+      ]
+    },
+    "fat12": {
+      "path": "fat12",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425075,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "framebuffer": {
+      "path": "framebuffer",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml",
+        "LICENSE",
+        "README.md"
+      ]
+    },
+    "gdt": {
+      "path": "gdt",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "ide": {
+      "path": "ide",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "kernel": {
+      "path": "kernel",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "GNUmakefile",
+        "build.rs"
+      ]
+    },
+    "memory": {
+      "path": "memory",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "pci": {
+      "path": "pci",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "process": {
+      "path": "process",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "ramfs": {
+      "path": "ramfs",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "syscall": {
+      "path": "syscall",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "test_userspace": {
+      "path": "test_userspace",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "INIT",
+        "main.c",
+        "user.ld"
+      ]
+    },
+    "tty": {
+      "path": "tty",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "usb": {
+      "path": "usb",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "vfs": {
+      "path": "vfs",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425076,
+      "keyFiles": [
+        "Cargo.toml"
+      ]
+    },
+    "z_files_to_copy": {
+      "path": "z_files_to_copy",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "INIT"
+      ]
+    },
+    "ahci/src": {
+      "path": "ahci/src",
+      "purpose": "Source code",
+      "fileCount": 2,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs",
+        "types.rs"
+      ]
+    },
+    "bare_x86_64/src": {
+      "path": "bare_x86_64/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "eucalypt_fs/src": {
+      "path": "eucalypt_fs/src",
+      "purpose": "Source code",
+      "fileCount": 2,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs",
+        "super_block.rs"
+      ]
+    },
+    "fat12/src": {
+      "path": "fat12/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "framebuffer/src": {
+      "path": "framebuffer/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "gdt/src": {
+      "path": "gdt/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "ide/src": {
+      "path": "ide/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "kernel/src": {
+      "path": "kernel/src",
+      "purpose": "Source code",
+      "fileCount": 5,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "elf.rs",
+        "idt.rs",
+        "lib.rs"
+      ]
+    },
+    "memory/src": {
+      "path": "memory/src",
+      "purpose": "Source code",
+      "fileCount": 8,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "addr.rs",
+        "allocator.rs",
+        "frame_allocator.rs"
+      ]
+    },
+    "pci/src": {
+      "path": "pci/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "process/src": {
+      "path": "process/src",
+      "purpose": "Source code",
+      "fileCount": 4,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs",
+        "scheduler.rs",
+        "switch.asm"
+      ]
+    },
+    "ramfs/src": {
+      "path": "ramfs/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "syscall/src": {
+      "path": "syscall/src",
+      "purpose": "Source code",
+      "fileCount": 2,
+      "lastAccessed": 1776341425077,
+      "keyFiles": [
+        "lib.rs",
+        "syscall_handler.rs"
+      ]
+    },
+    "tty/src": {
+      "path": "tty/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425078,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "usb/src": {
+      "path": "usb/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425078,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    },
+    "vfs/src": {
+      "path": "vfs/src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1776341425078,
+      "keyFiles": [
+        "lib.rs"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "ahci/src/lib.rs",
+      "accessCount": 5,
+      "lastAccessed": 1776342536357,
+      "type": "file"
+    },
+    {
+      "path": "kernel/src/main.rs",
+      "accessCount": 5,
+      "lastAccessed": 1776342763670,
+      "type": "file"
+    },
+    {
+      "path": "ahci/src/types.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776341928721,
+      "type": "file"
+    },
+    {
+      "path": "memory/src/vmm.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776341718387,
+      "type": "file"
+    },
+    {
+      "path": "memory/src/lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776341886092,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1776342035281,
+      "type": "file"
+    },
+    {
+      "path": "ahci/Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1776342039399,
+      "type": "file"
+    },
+    {
+      "path": "GNUmakefile",
+      "accessCount": 2,
+      "lastAccessed": 1776342771938,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1776341478111,
+      "type": "file"
+    },
+    {
+      "path": "kernel/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1776341478267,
+      "type": "file"
+    },
+    {
+      "path": "kernel/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341478492,
+      "type": "file"
+    },
+    {
+      "path": "memory/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1776341480563,
+      "type": "file"
+    },
+    {
+      "path": "process/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1776341480786,
+      "type": "file"
+    },
+    {
+      "path": "syscall/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1776341480996,
+      "type": "file"
+    },
+    {
+      "path": "kernel/src/idt.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341481267,
+      "type": "file"
+    },
+    {
+      "path": "kernel/src/mp.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341481537,
+      "type": "file"
+    },
+    {
+      "path": "process/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341487309,
+      "type": "file"
+    },
+    {
+      "path": "process/src/scheduler.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341487550,
+      "type": "file"
+    },
+    {
+      "path": "vfs/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341487747,
+      "type": "file"
+    },
+    {
+      "path": "syscall/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341487812,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 1,
+      "lastAccessed": 1776341491616,
+      "type": "directory"
+    },
+    {
+      "path": "syscall/src/syscall_handler.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341491823,
+      "type": "file"
+    },
+    {
+      "path": "process/src/thread.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341492097,
+      "type": "file"
+    },
+    {
+      "path": "ide/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341494719,
+      "type": "file"
+    },
+    {
+      "path": "usb/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341494934,
+      "type": "file"
+    },
+    {
+      "path": "pci/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341495137,
+      "type": "file"
+    },
+    {
+      "path": "fat12/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341495376,
+      "type": "file"
+    },
+    {
+      "path": "framebuffer/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341498604,
+      "type": "file"
+    },
+    {
+      "path": "ramfs/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341501060,
+      "type": "file"
+    },
+    {
+      "path": "eucalypt_fs/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341501547,
+      "type": "file"
+    },
+    {
+      "path": "linker-x86_64.ld",
+      "accessCount": 1,
+      "lastAccessed": 1776341503751,
+      "type": "file"
+    },
+    {
+      "path": "tty/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341507854,
+      "type": "file"
+    },
+    {
+      "path": "kernel/src/elf.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341507997,
+      "type": "file"
+    },
+    {
+      "path": "bare_x86_64/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341508185,
+      "type": "file"
+    },
+    {
+      "path": "gdt/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341508621,
+      "type": "file"
+    },
+    {
+      "path": "memory/src/hhdm.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776341717923,
+      "type": "file"
+    },
+    {
+      "path": "kernel/src",
+      "accessCount": 1,
+      "lastAccessed": 1776342706628,
+      "type": "directory"
+    }
+  ],
+  "userDirectives": []
+}
