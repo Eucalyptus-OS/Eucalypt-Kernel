@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod idt;
 pub mod elf;
 pub mod mp;
+pub mod keyboard;
 
 // C functions go here
 unsafe extern "C" {

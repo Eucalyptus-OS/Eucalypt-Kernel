@@ -11,8 +11,10 @@ use syscall::syscall_handler::syscall_handler;
 const APIC_TIMER_VECTOR: u8 = 32;
 const IDE_PRIMARY_VECTOR: u8 = 33;
 const IDE_SECONDARY_VECTOR: u8 = 34;
+const KB_VECTOR: u8 = 35;
 const IDE_PRIMARY_IRQ: u8 = 14;
 const IDE_SECONDARY_IRQ: u8 = 15;
+const KB_IRQ: u8 = 1;
 
 const IA32_STAR: u32 = 0xC000_0081;
 const IA32_LSTAR: u32 = 0xC000_0082;
@@ -91,6 +93,7 @@ pub fn idt_init() {
 
     idt[IDE_PRIMARY_VECTOR].set_handler_fn(ide_primary_handler);
     idt[IDE_SECONDARY_VECTOR].set_handler_fn(ide_secondary_handler);
+    idt[KB_VECTOR].set_handler_fn(keyboard_handler);
 
     idt.load();
 
@@ -98,6 +101,7 @@ pub fn idt_init() {
 
     apic::ioapic_set_irq(IDE_PRIMARY_IRQ,   IDE_PRIMARY_VECTOR,   0, false, false);
     apic::ioapic_set_irq(IDE_SECONDARY_IRQ, IDE_SECONDARY_VECTOR, 0, false, false);
+    apic::ioapic_set_irq(KB_IRQ,            KB_VECTOR,            0, false, false);
 }
 
 extern "x86-interrupt" fn double_fault_handler(sf: InterruptStackFrame, ec: u64) -> ! {
@@ -160,6 +164,10 @@ extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFram
     apic::apic_eoi();
 }
 
+extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
+    crate::keyboard::keyboard_irq_handler();
+    apic::apic_eoi();
+}
 
 fn init_syscall() {
     unsafe {

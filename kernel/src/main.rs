@@ -149,7 +149,7 @@ extern "C" fn kmain() -> ! {
     }
 
     tty::tty_init();
-    tty::tty_write_str("eucalyptOS\n\n");
+    tty::tty_write_str("eucalyptOS\n\n> ");
 
     loop {
         unsafe { core::arch::asm!("hlt"); }
