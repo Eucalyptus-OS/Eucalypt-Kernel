@@ -376,6 +376,7 @@ dependencies = [
  "limine",
  "memory",
  "process",
+ "tty",
  "vfs",
 ]
 
@@ -384,8 +385,6 @@ name = "tty"
 version = "0.1.0"
 dependencies = [
  "framebuffer",
- "memory",
- "vfs",
 ]
 
 [[package]]

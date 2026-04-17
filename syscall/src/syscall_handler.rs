@@ -9,12 +9,14 @@ unsafe extern "C" {
 }
 
 const ENOSYS: i64 = -38;
+const EINVAL: i64 = -22;
 
 #[repr(u64)]
 pub enum Syscall {
     PlotPoint       = 0,
     FramebufferInfo = 1,
     Print           = 2,
+    TtyWrite        = 3,
     Sbrk            = 5,
 }
 
@@ -24,6 +26,7 @@ impl Syscall {
             0 => Some(Self::PlotPoint),
             1 => Some(Self::FramebufferInfo),
             2 => Some(Self::Print),
+            3 => Some(Self::TtyWrite),
             5 => Some(Self::Sbrk),
             _ => None,
         }
@@ -42,6 +45,7 @@ impl SyscallHandler {
             Some(Syscall::PlotPoint)       => self.plot_point(arg1, arg2, arg3),
             Some(Syscall::FramebufferInfo) => self.framebuffer_info(arg1),
             Some(Syscall::Print)           => self.print(arg1, arg2),
+            Some(Syscall::TtyWrite)        => self.tty_write(arg1, arg2),
             Some(Syscall::Sbrk)            => self.sbrk(arg1),
             None => ENOSYS,
         }
@@ -58,7 +62,7 @@ impl SyscallHandler {
                 || x >= fb.width as i64
                 || y >= fb.height as i64
             {
-                return -1;
+                return EINVAL;
             }
 
             let pitch  = fb.pitch as i64;
@@ -98,6 +102,18 @@ impl SyscallHandler {
             }
         }
         0
+    }
+
+    // syscall 3: write bytes to the TTY
+    // arg1 = pointer to buffer, arg2 = length
+    // returns bytes written, or -EINVAL on bad args
+    fn tty_write(&self, ptr: i64, len: i64) -> i64 {
+        if ptr == 0 || len <= 0 || len > 65536 {
+            return EINVAL;
+        }
+        let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        tty::tty_write(slice);
+        len
     }
 
     fn sbrk(&self, increment: i64) -> i64 {

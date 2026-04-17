@@ -91,7 +91,6 @@ pub fn idt_init() {
 
     idt[IDE_PRIMARY_VECTOR].set_handler_fn(ide_primary_handler);
     idt[IDE_SECONDARY_VECTOR].set_handler_fn(ide_secondary_handler);
-    idt[0x40].set_handler_fn(tty_handler);
 
     idt.load();
 
@@ -161,11 +160,6 @@ extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFram
     apic::apic_eoi();
 }
 
-extern "x86-interrupt" fn tty_handler(_stack_frame: InterruptStackFrame) {
-    let b = tty::tty_read_byte();
-    println!("Read byte: {}", b);
-    apic::apic_eoi();
-}
 
 fn init_syscall() {
     unsafe {

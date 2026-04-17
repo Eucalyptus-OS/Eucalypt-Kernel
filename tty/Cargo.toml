@@ -4,6 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-vfs = { workspace = true }
 framebuffer = { workspace = true }
-memory = { workspace = true }

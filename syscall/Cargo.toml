@@ -9,3 +9,4 @@ memory = { workspace = true }
 framebuffer = { workspace = true }
 vfs = { workspace = true }
 process = { workspace = true }
+tty = { workspace = true }

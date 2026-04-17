@@ -148,12 +148,8 @@ extern "C" fn kmain() -> ! {
         vfs_mount("ram", Box::new(ramfs::RamFs::new())).expect("Failed to mount empty ramfs");
     }
 
-    vfs_write("ram/tty", b"\0", O_RDWR | O_CREAT | O_TRUNC, 0o644)
-        .expect("Failed to write ram/tty");
-
     tty::tty_init();
-    let message = b"Hello from eucalyptOS!\n";
-    tty::tty_write(message);
+    tty::tty_write_str("eucalyptOS\n\n");
 
     loop {
         unsafe { core::arch::asm!("hlt"); }
