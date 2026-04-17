@@ -409,6 +409,22 @@ impl ScrollingTextRenderer {
                 let spaces = 4 - (self.cursor_col & 3);
                 for _ in 0..spaces { self.write_char(b' '); }
             }
+            0x08 => {
+                if self.cursor_col > 0 {
+                    self.cursor_col -= 1;
+                } else if self.cursor_line > 0 {
+                    self.cursor_line -= 1;
+                    self.cursor_col = self.cols - 1;
+                } else {
+                    return;
+                }
+                let col  = self.cursor_col;
+                let line = self.cursor_line;
+                let blank = ConsoleChar::new(b' ', self.fg_color, self.bg_color);
+                if let Some(l) = self.get_line_mut(line) {
+                    l.set_char(col, blank);
+                }
+            }
             _ => {
                 let console_char = ConsoleChar::new(ch, self.fg_color, self.bg_color);
                 let col          = self.cursor_col;
