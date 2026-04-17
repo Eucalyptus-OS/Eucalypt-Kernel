@@ -13,7 +13,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y xorriso ovmf nasm mtools
+        sudo apt-get install -y xorriso ovmf nasm mtools make
     
     - name: Build
-      run: ./build.sh build
+      run: make
