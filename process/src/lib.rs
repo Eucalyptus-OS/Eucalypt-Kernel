@@ -4,4 +4,5 @@
 extern crate alloc;
 
 pub mod thread;
+pub mod proc;
 pub mod scheduler;

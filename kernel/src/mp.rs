@@ -92,6 +92,8 @@ pub fn init_mp(res: &'static MpResponse) {
     }
 }
 
+
+
 fn check_hybrid_support() -> bool {
     let max_leaf = core::arch::x86_64::__cpuid(0x0).eax;
 
