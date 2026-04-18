@@ -2,7 +2,7 @@ use framebuffer::println;
 use elf_parser::elf64::Elf64;
 use vfs::{vfs_read, vfs_stat};
 use memory::vmm::VMM;
-use memory::paging::PageTableEntry;
+use memory::paging::{PageTable, PageTableEntry};
 use memory::addr::VirtAddr;
 use memory::frame_allocator::FrameAllocator;
 
@@ -105,4 +105,54 @@ pub fn load_elf(filename: &str) -> Option<(u64, u64)> {
     let entry = ehdr.e_entry;
     let pml4_phys = pml4 as u64;
     Some((entry, pml4_phys))
+}
+
+/// Allocates 4 pages for a user stack, maps them into `pml4`, and returns
+/// the virtual address of the stack top (highest address, 16-byte aligned).
+pub fn alloc_user_stack(pml4: *mut PageTable) -> Option<u64> {
+    const STACK_BASE: u64 = 0x0000_7FFF_FFF0_0000;
+    const STACK_PAGES: usize = 4;
+    let flags = PageTableEntry::PRESENT
+        | PageTableEntry::WRITABLE
+        | PageTableEntry::USER
+        | PageTableEntry::NO_EXECUTE;
+    let mapper = VMM::get_kernel_mapper();
+    for i in 0..STACK_PAGES {
+        let frame = FrameAllocator::alloc_frame()?;
+        let virt = VirtAddr::new(STACK_BASE + (i * PAGE_SIZE) as u64);
+        mapper.map_page(pml4, virt, frame, flags)?;
+    }
+    Some(STACK_BASE + (STACK_PAGES * PAGE_SIZE) as u64)
+}
+
+/// Switches the CPU to ring-3 and jumps to `entry` with `user_rsp` as the
+/// stack pointer. Never returns.
+///
+/// # Safety
+/// `entry` must be a valid user-mode virtual address mapped in the current
+/// address space. Caller must have loaded the correct CR3 beforehand.
+pub unsafe fn jump_to_usermode(entry: u64, user_rsp: u64) -> ! {
+    const USER_CS: u64 = 0x1B; // GDT index 3 | RPL 3
+    const USER_SS: u64 = 0x23; // GDT index 4 | RPL 3
+    const RFLAGS_IF: u64 = 0x202;
+    unsafe {
+        core::arch::asm!(
+            "mov ds, {ss:x}",
+            "mov es, {ss:x}",
+            "mov fs, {ss:x}",
+            "mov gs, {ss:x}",
+            "push {ss}",      // SS
+            "push {rsp}",     // RSP
+            "push {rfl}",     // RFLAGS
+            "push {cs}",      // CS
+            "push {rip}",     // RIP
+            "iretq",
+            ss  = in(reg) USER_SS,
+            rsp = in(reg) user_rsp,
+            rfl = in(reg) RFLAGS_IF,
+            cs  = in(reg) USER_CS,
+            rip = in(reg) entry,
+            options(noreturn),
+        );
+    }
 }
