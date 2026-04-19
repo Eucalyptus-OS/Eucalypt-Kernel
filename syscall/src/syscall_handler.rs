@@ -1,6 +1,6 @@
 use limine::request::FramebufferRequest;
 use framebuffer::println;
-use memory::allocator::sbrk;
+use memory::{addr::{PhysAddr, VirtAddr}, allocator::sbrk, paging::PageTableEntry, vmm::{Mapper, VMM}};
 
 unsafe extern "C" {
     static FRAMEBUFFER_REQUEST: FramebufferRequest;
@@ -8,24 +8,28 @@ unsafe extern "C" {
 
 const ENOSYS: i64 = -38;
 const EINVAL: i64 = -22;
+const HHDM_OFFSET: u64 = 0xFFFF800000000000;
+const USER_FB_VA:  u64 = 0x0000_7000_0000_0000;
 
 #[repr(u64)]
 pub enum Syscall {
     PlotPoint       = 0,
-    FramebufferInfo = 1,
-    Print           = 2,
-    TtyWrite        = 3,
-    Sbrk            = 4,
+    GetFramebuffer  = 1,
+    FramebufferInfo = 2,
+    Print           = 3,
+    TtyWrite        = 4,
+    Sbrk            = 5,
 }
 
 impl Syscall {
     pub fn from_u64(n: u64) -> Option<Self> {
         match n {
             0 => Some(Self::PlotPoint),
-            1 => Some(Self::FramebufferInfo),
-            2 => Some(Self::Print),
-            3 => Some(Self::TtyWrite),
-            4 => Some(Self::Sbrk),
+            1 => Some(Self::GetFramebuffer),
+            2 => Some(Self::FramebufferInfo),
+            3 => Some(Self::Print),
+            4 => Some(Self::TtyWrite),
+            5 => Some(Self::Sbrk),
             _ => None,
         }
     }
@@ -41,6 +45,7 @@ impl SyscallHandler {
     pub fn handle(&self, syscall_number: u64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
         match Syscall::from_u64(syscall_number) {
             Some(Syscall::PlotPoint)       => self.plot_point(arg1, arg2, arg3),
+            Some(Syscall::GetFramebuffer)  => self.handle_get_framebuffer(),
             Some(Syscall::FramebufferInfo) => self.framebuffer_info(arg1),
             Some(Syscall::Print)           => self.print(arg1, arg2),
             Some(Syscall::TtyWrite)        => self.tty_write(arg1, arg2),
@@ -52,6 +57,35 @@ impl SyscallHandler {
     fn get_framebuffer(&self) -> Option<&'static limine::framebuffer::Framebuffer> {
         unsafe { FRAMEBUFFER_REQUEST.response() }?
             .framebuffers().first().copied()
+    }
+
+    fn handle_get_framebuffer(&self) -> i64 {
+        let fb = match self.get_framebuffer() {
+            Some(fb) => fb,
+            None     => return 0,
+        };
+    
+        let fb_virt  = fb.address() as u64;
+        let fb_phys  = fb_virt - HHDM_OFFSET;
+        let fb_size  = (fb.pitch as usize) * (fb.height as usize);
+    
+        let mapper = VMM::get_mapper();
+        let pml4 = Mapper::get_current_page_table();
+    
+        let flags = PageTableEntry::PRESENT
+                  | PageTableEntry::WRITABLE
+                  | PageTableEntry::USER;
+    
+        match mapper.map_range(
+            pml4,
+            VirtAddr::new(USER_FB_VA),
+            PhysAddr::new(fb_phys),
+            fb_size,
+            flags,
+        ) {
+            Some(_) => USER_FB_VA as i64,
+            None    => 0,
+        }
     }
 
     fn plot_point(&self, x: i64, y: i64, color: i64) -> i64 {

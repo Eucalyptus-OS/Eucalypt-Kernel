@@ -149,8 +149,8 @@ extern "C" fn kmain() -> ! {
         vfs_mount("ram", Box::new(ramfs::RamFs::new())).expect("Failed to mount empty ramfs");
     }
 
-    //tty::tty_init();
-    //tty::tty_write_str("eucalyptOS\n\n> ");
+    tty::tty_init();
+    tty::tty_write_str("eucalyptOS\n\n> ");
 
     // Load the init ELF before enabling the scheduler so no preemption can
     // occur between the CR3 switch and the iretq into userspace.
