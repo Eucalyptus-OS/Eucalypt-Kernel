@@ -40,7 +40,6 @@ pub struct Tss {
     iopb_offset: u16,
 }
 
-// 10 entries: null, kernel CS, kernel DS, user CS, user DS, TSS low, TSS high, + 3 spare
 const GDT_ENTRIES: usize = 10;
 
 static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry {
@@ -52,43 +51,25 @@ static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry {
     base_high: 0,
 }; GDT_ENTRIES];
 
-static mut GDT_POINTER: GdtPtr = GdtPtr {
-    limit: 0,
-    base: 0,
-};
+static mut GDT_POINTER: GdtPtr = GdtPtr { limit: 0, base: 0 };
 
 static mut KERNEL_TSS: Tss = Tss {
-    reserved0: 0,
-    rsp0: 0,
-    rsp1: 0,
-    rsp2: 0,
+    reserved0: 0, rsp0: 0, rsp1: 0, rsp2: 0,
     reserved1: 0,
-    ist1: 0,
-    ist2: 0,
-    ist3: 0,
-    ist4: 0,
-    ist5: 0,
-    ist6: 0,
-    ist7: 0,
-    reserved2: 0,
-    reserved3: 0,
-    iopb_offset: 0,
+    ist1: 0, ist2: 0, ist3: 0, ist4: 0, ist5: 0, ist6: 0, ist7: 0,
+    reserved2: 0, reserved3: 0, iopb_offset: 0,
 };
 
-#[repr(align(16))]
-struct KernelStack([u8; 4096 * 4]);
+#[repr(align(16))] struct KernelStack([u8; 4096 * 4]);
+#[repr(align(16))] struct IstStack([u8; 4096 * 4]);
 
-#[repr(align(16))]
-struct IstStack([u8; 4096 * 4]);
+static mut KERNEL_STACK:          KernelStack = KernelStack([0; 4096 * 4]);
+static mut DOUBLE_FAULT_IST_STACK: IstStack   = IstStack([0; 4096 * 4]);
+static mut PAGE_FAULT_IST_STACK:   IstStack   = IstStack([0; 4096 * 4]);
 
-static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * 4]);
-static mut DOUBLE_FAULT_IST_STACK: IstStack = IstStack([0; 4096 * 4]);
-
-/// Struct pointed to by KERNEL_GS_BASE.
-/// syscall_entry reads kernel_rsp0 at offset 0 and uses user_rsp_scratch at offset 8.
 #[repr(C)]
 pub struct KernelGsData {
-    pub kernel_rsp0: u64,
+    pub kernel_rsp0:      u64,
     pub user_rsp_scratch: u64,
 }
 
@@ -118,15 +99,12 @@ unsafe fn gdt_set_tss(index: usize, base: u64, limit: u32, access: u8, granulari
     desc_low |= (((base >> 24) & 0xFF) as u64) << 56;
     desc_low |= (access as u64) << 40;
     desc_low |= (((granularity >> 4) & 0x0F) as u64) << 52;
-
     let desc_high: u64 = (base >> 32) & 0xFFFFFFFF;
 
     unsafe {
-        let dst = addr_of_mut!(GDT) as *mut u8;
-        let dst = dst.add(index * core::mem::size_of::<GdtEntry>());
-        let vals = [desc_low, desc_high];
-        for k in 0..2 {
-            let mut v = vals[k];
+        let dst = (addr_of_mut!(GDT) as *mut u8).add(index * core::mem::size_of::<GdtEntry>());
+        for (k, &val) in [desc_low, desc_high].iter().enumerate() {
+            let mut v = val;
             for i in 0..8 {
                 *dst.add(k * 8 + i) = (v & 0xFF) as u8;
                 v >>= 8;
@@ -136,13 +114,11 @@ unsafe fn gdt_set_tss(index: usize, base: u64, limit: u32, access: u8, granulari
 }
 
 pub fn write_tss_rsp0(rsp0: u64) {
-    unsafe {
-        KERNEL_TSS.rsp0 = rsp0;
-    }
+    unsafe { KERNEL_TSS.rsp0 = rsp0; }
 }
 
 pub fn get_kernel_gs_data_ptr() -> u64 {
-    unsafe { addr_of!(KERNEL_GS_DATA) as u64 }
+    addr_of!(KERNEL_GS_DATA) as u64
 }
 
 pub fn gdt_init() {
@@ -161,23 +137,16 @@ pub fn gdt_init() {
             *tss_ptr.add(i) = 0;
         }
 
-        KERNEL_TSS.rsp0        = addr_of!(KERNEL_STACK.0) as u64 + 4096 * 4;
+        KERNEL_TSS.rsp0        = addr_of!(KERNEL_STACK.0)           as u64 + 4096 * 4;
         KERNEL_TSS.ist1        = addr_of!(DOUBLE_FAULT_IST_STACK.0) as u64 + 4096 * 4;
+        KERNEL_TSS.ist2        = addr_of!(PAGE_FAULT_IST_STACK.0)   as u64 + 4096 * 4;
         KERNEL_TSS.iopb_offset = core::mem::size_of::<Tss>() as u16;
 
-        // Initialise the KERNEL_GS_DATA struct so syscall_entry can find the kernel stack
         KERNEL_GS_DATA.kernel_rsp0    = KERNEL_TSS.rsp0;
         KERNEL_GS_DATA.user_rsp_scratch = 0;
 
-        let tss_addr = addr_of!(KERNEL_TSS) as u64;
-
-        gdt_set_tss(
-            5,
-            tss_addr,
-            (core::mem::size_of::<Tss>() - 1) as u32,
-            0x89,
-            0x00,
-        );
+        gdt_set_tss(5, addr_of!(KERNEL_TSS) as u64,
+                    (core::mem::size_of::<Tss>() - 1) as u32, 0x89, 0x00);
 
         gdt_load();
     }
@@ -188,11 +157,7 @@ unsafe fn gdt_load() {
         core::arch::asm!(
             "lgdt [{}]",
             "mov ax, 0x10",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            "mov ss, ax",
+            "mov ds, ax", "mov es, ax", "mov fs, ax", "mov gs, ax", "mov ss, ax",
             "push 0x08",
             "lea rax, [rip + 2f]",
             "push rax",
@@ -203,9 +168,6 @@ unsafe fn gdt_load() {
             options(nostack)
         );
 
-        core::arch::asm!(
-            "ltr {0:x}",
-            in(reg) 0x28u16,
-        );
+        core::arch::asm!("ltr {0:x}", in(reg) 0x28u16);
     }
 }

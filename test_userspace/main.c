@@ -11,8 +11,11 @@ static uint64_t syscall(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg
     return ret;
 }
 
+static inline void plot_point(uint64_t x, uint64_t y) {
+    syscall(0, x, y, 0xFFFFFF);
+}
+
 void _start(void) {
-    char *msg = "Hello, World!\n";
-    syscall(3, (uint64_t)msg, 14, 0);
+    plot_point(700, 700);
     while (1) {}
 }

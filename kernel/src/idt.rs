@@ -14,6 +14,9 @@ const IDE_PRIMARY_IRQ: u8 = 14;
 const IDE_SECONDARY_IRQ: u8 = 15;
 const KB_IRQ: u8 = 1;
 
+const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+const PAGE_FAULT_IST_INDEX:   u16 = 1;
+
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 
@@ -75,12 +78,12 @@ pub fn idt_init() {
     unsafe {
         idt.double_fault
             .set_handler_fn(double_fault_handler)
-            .set_stack_index(0);
-    }
+            .set_stack_index(DOUBLE_FAULT_IST_INDEX);
 
-    idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.page_fault
+            .set_handler_fn(page_fault_handler)
+            .set_stack_index(PAGE_FAULT_IST_INDEX);
 
-    unsafe {
         idt[APIC_TIMER_VECTOR]
             .set_handler_addr(x86_64::VirtAddr::new(apic_timer_handler as *const () as u64));
     }
@@ -88,7 +91,9 @@ pub fn idt_init() {
     idt[IDE_PRIMARY_VECTOR].set_handler_fn(ide_primary_handler);
     idt[IDE_SECONDARY_VECTOR].set_handler_fn(ide_secondary_handler);
     idt[KB_VECTOR].set_handler_fn(keyboard_handler);
-    idt[0x80].set_handler_fn(syscall_128).set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+    idt[0x80]
+        .set_handler_fn(syscall_128)
+        .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
 
     idt.load();
 
@@ -106,16 +111,15 @@ extern "x86-interrupt" fn apic_timer_handler(_sf: InterruptStackFrame) {
     core::arch::naked_asm!(
         "push rax", "push rbx", "push rcx", "push rdx",
         "push rsi", "push rdi", "push rbp", "push r8",
-        "push r9", "push r10", "push r11", "push r12",
+        "push r9",  "push r10", "push r11", "push r12",
         "push r13", "push r14", "push r15",
 
         "mov rdi, rsp",
         "call {handler}",
-
         "mov rsp, rax",
 
         "pop r15", "pop r14", "pop r13", "pop r12",
-        "pop r11", "pop r10", "pop r9", "pop r8",
+        "pop r11", "pop r10", "pop r9",  "pop r8",
         "pop rbp", "pop rdi", "pop rsi", "pop rdx",
         "pop rcx", "pop rbx", "pop rax",
 
@@ -143,7 +147,7 @@ extern "x86-interrupt" fn page_fault_handler(
         "EXCEPTION: PAGE FAULT\nAccessed Address: {:?}\nError Code: {:?}\n{:#?}",
         Cr2::read(),
         error_code,
-        stack_frame
+        stack_frame,
     );
 }
 
@@ -174,10 +178,10 @@ extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {
         "push r14",
         "push r15",
 
-        "mov rcx, rdx",   // arg3: rdx -> rcx
-        "mov rdx, rsi",   // arg2: rsi -> rdx
-        "mov rsi, rdi",   // arg1: rdi -> rsi
-        "mov rdi, rax",   // syscall num: rax -> rdi
+        "mov rcx, rdx",
+        "mov rdx, rsi",
+        "mov rsi, rdi",
+        "mov rdi, rax",
 
         "call {handler}",
 
