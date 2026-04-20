@@ -34,37 +34,7 @@ run-x86_64: edk2-ovmf $(IMAGE_NAME).iso
 		-device ahci,id=ahci \
 		-device ide-hd,drive=ahci0,bus=ahci.0 \
 		-smp 4 \
-		-m 512M \
-		-d int,cpu_reset \
-		-s -S 
-
-.PHONY: run-hdd-x86_64
-run-hdd-x86_64: edk2-ovmf $(IMAGE_NAME).hdd
-	qemu-system-$(KARCH) \
-		-M q35 \
-		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-hda $(IMAGE_NAME).hdd \
-		$(QEMUFLAGS)
-
-.PHONY: run-aarch64 run-riscv64 run-loongarch64
-run-aarch64 run-riscv64 run-loongarch64: edk2-ovmf $(IMAGE_NAME).iso
-	qemu-system-$(KARCH) \
-		-M virt \
-		$(if $(filter aarch64,$(KARCH)),-cpu cortex-a72,$(if $(filter riscv64,$(KARCH)),-cpu rv64,-cpu la464)) \
-		-device ramfb -device qemu-xhci -device usb-kbd -device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-cdrom $(IMAGE_NAME).iso \
-		$(QEMUFLAGS)
-
-.PHONY: run-hdd-aarch64 run-hdd-riscv64 run-hdd-loongarch64
-run-hdd-aarch64 run-hdd-riscv64 run-hdd-loongarch64: edk2-ovmf $(IMAGE_NAME).hdd
-	qemu-system-$(KARCH) \
-		-M virt \
-		$(if $(filter aarch64,$(KARCH)),-cpu cortex-a72,$(if $(filter riscv64,$(KARCH)),-cpu rv64,-cpu la464)) \
-		-device ramfb -device qemu-xhci -device usb-kbd -device usb-mouse \
-		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-$(KARCH).fd,readonly=on \
-		-hda $(IMAGE_NAME).hdd \
-		$(QEMUFLAGS)
+		-m 2G \
 
 .PHONY: run-bios
 run-bios: $(IMAGE_NAME).iso

@@ -102,8 +102,8 @@ pub fn init_usb() {
     let _ = inner_mapper.map_range(memory::vmm::VMM::get_page_table(), memory::addr::VirtAddr::new(evt_virt as u64), memory::addr::PhysAddr::new(evt_phys.as_u64()), PAGE_SIZE, memory::paging::PageTableEntry::WRITABLE);
     
 
-    println!("Command ring phys=0x{:x} virt=0x{:x}", cmd_phys.as_u64(), cmd_virt);
-    println!("Event ring phys=0x{:x} virt=0x{:x}", evt_phys.as_u64(), evt_virt);
+    println!("Command ring phys=0x{:X} virt=0x{:X}", cmd_phys.as_u64(), cmd_virt);
+    println!("Event ring phys=0x{:X} virt=0x{:X}", evt_phys.as_u64(), evt_virt);
 
     xhci_operational_regs.usbcmd.update_volatile(|u| {
         u.set_run_stop();

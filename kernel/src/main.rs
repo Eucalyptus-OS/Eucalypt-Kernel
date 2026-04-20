@@ -22,6 +22,7 @@ use bare_x86_64::cpu::apic::{
 
 use gdt::gdt_init;
 
+use memory::hhdm::hhdm_init;
 use memory::{
     allocator::init_allocator,
     mmio::{map_mmio, mmio_map_range},
@@ -97,6 +98,7 @@ extern "C" fn kmain() -> ! {
     println!("eucalyptOS Starting...");
 
     let memmap_response = MEMMAP_REQUEST.response().expect("No memory map available");
+    hhdm_init();
     let _vmm = VMM::init(memmap_response);
     init_allocator(memmap_response);
 
@@ -187,39 +189,8 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
     use process::scheduler::disable_scheduler;
     disable_scheduler();
 
-    fn lookup_symbol(addr: u64) -> Option<(&'static str, u64)> {
-        static SYMBOL_MAP: &str = include_str!("../kernel.map");
-        let mut best_name = None;
-        let mut best_addr = 0u64;
-        for line in SYMBOL_MAP.lines() {
-            let mut parts = line.split_whitespace();
-            let sym_addr = u64::from_str_radix(parts.next()?, 16).ok()?;
-            let kind = parts.next()?;
-            let name = parts.next()?;
-            if kind == "T" || kind == "t" {
-                if sym_addr <= addr && sym_addr > best_addr {
-                    best_addr = sym_addr;
-                    best_name = Some(name);
-                }
-            }
-        }
-        best_name.map(|n| (n, addr - best_addr))
-    }
-
     use core::arch::asm;
     use framebuffer::{color, fill_screen, kprintln};
-
-    let mut rbp: u64;
-    let rip: u64;
-
-    unsafe {
-        asm!(
-            "mov {}, rbp",
-            "lea {}, [rip]",
-            out(reg) rbp,
-            out(reg) rip,
-        );
-    }
 
     fill_screen(color::DARK_BLUE);
     framebuffer::RENDERER.with(|r| r.set_colors(color::WHITE, color::DARK_BLUE));
@@ -229,29 +200,6 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
 
     kprintln!("panic: {}", info.message());
     kprintln!("at {}:{}", file, line);
-
-    unsafe {
-        let mut depth = 0;
-        while rbp != 0 && depth < 16 {
-            let ret_addr = *((rbp + 8) as *const u64);
-            if ret_addr == 0 {
-                break;
-            }
-            if let Some((name, offset)) = lookup_symbol(ret_addr) {
-                kprintln!("#{} {}+0x{:x}", depth, name, offset);
-            } else {
-                kprintln!("#{} 0x{:016x}", depth, ret_addr);
-            }
-            rbp = *(rbp as *const u64);
-            depth += 1;
-        }
-    }
-
-    if let Some((name, offset)) = lookup_symbol(rip) {
-        kprintln!("rip {}+0x{:x}", name, offset);
-    } else {
-        kprintln!("rip 0x{:016x}", rip);
-    }
 
     loop {
         unsafe {

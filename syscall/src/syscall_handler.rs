@@ -1,6 +1,12 @@
 use limine::request::FramebufferRequest;
 use framebuffer::println;
-use memory::{addr::{PhysAddr, VirtAddr}, allocator::sbrk, paging::PageTableEntry, vmm::{Mapper, VMM}};
+use memory::{
+    addr::{PhysAddr, VirtAddr},
+    allocator::sbrk,
+    hhdm::virt_to_phys,
+    paging::PageTableEntry,
+    vmm::{Mapper, VMM},
+};
 
 unsafe extern "C" {
     static FRAMEBUFFER_REQUEST: FramebufferRequest;
@@ -8,8 +14,9 @@ unsafe extern "C" {
 
 const ENOSYS: i64 = -38;
 const EINVAL: i64 = -22;
-const HHDM_OFFSET: u64 = 0xFFFF800000000000;
-const USER_FB_VA:  u64 = 0x0000_7000_0000_0000;
+const EFAULT: i64 = -14;
+const USER_FB_VA: u64 = 0x0000_7000_0000_0000;
+const PAGE_SIZE: usize = 4096;
 
 #[repr(u64)]
 pub enum Syscall {
@@ -38,9 +45,7 @@ impl Syscall {
 pub struct SyscallHandler;
 
 impl SyscallHandler {
-    pub fn new() -> Self {
-        Self
-    }
+    pub fn new() -> Self { Self }
 
     pub fn handle(&self, syscall_number: u64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
         match Syscall::from_u64(syscall_number) {
@@ -56,76 +61,88 @@ impl SyscallHandler {
 
     fn get_framebuffer(&self) -> Option<&'static limine::framebuffer::Framebuffer> {
         unsafe { FRAMEBUFFER_REQUEST.response() }?
-            .framebuffers().first().copied()
+            .framebuffers()
+            .first()
+            .copied()
     }
 
     fn handle_get_framebuffer(&self) -> i64 {
         let fb = match self.get_framebuffer() {
             Some(fb) => fb,
-            None     => return 0,
+            None     => return EFAULT,
         };
-    
-        let fb_virt  = fb.address() as u64;
-        let fb_phys  = fb_virt - HHDM_OFFSET;
-        let fb_size  = (fb.pitch as usize) * (fb.height as usize);
-    
+
+        let fb_virt = fb.address() as usize;
+        let fb_size = fb.pitch as usize * fb.height as usize;
+        let page_count = fb_size.div_ceil(PAGE_SIZE);
+
         let mapper = VMM::get_mapper();
-        let pml4 = Mapper::get_current_page_table();
-    
+        let pml4   = Mapper::get_current_page_table();
+
         let flags = PageTableEntry::PRESENT
                   | PageTableEntry::WRITABLE
                   | PageTableEntry::USER;
-    
-        match mapper.map_range(
-            pml4,
-            VirtAddr::new(USER_FB_VA),
-            PhysAddr::new(fb_phys),
-            fb_size,
-            flags,
-        ) {
-            Some(_) => USER_FB_VA as i64,
-            None    => 0,
+
+        for i in 0..page_count {
+            let offset     = i * PAGE_SIZE;
+            let page_phys  = PhysAddr::new(virt_to_phys(fb_virt + offset) as u64);
+            let page_virt  = VirtAddr::new(USER_FB_VA + offset as u64);
+
+            if mapper.map_page(pml4, page_virt, page_phys, flags).is_none() {
+                return EFAULT;
+            }
         }
+
+        USER_FB_VA as i64
     }
 
     fn plot_point(&self, x: i64, y: i64, color: i64) -> i64 {
-        if let Some(fb) = self.get_framebuffer() {
-            if x < 0 || y < 0 || x >= fb.width as i64 || y >= fb.height as i64 {
-                return EINVAL;
-            }
-            let offset = (y * fb.pitch as i64 + x * 4) as usize;
-            unsafe {
-                (fb.address() as *mut u8)
-                    .add(offset)
-                    .cast::<u32>()
-                    .write(color as u32);
-            }
+        let fb = match self.get_framebuffer() {
+            Some(fb) => fb,
+            None     => return EFAULT,
+        };
+
+        if x < 0 || y < 0 || x >= fb.width as i64 || y >= fb.height as i64 {
+            return EINVAL;
         }
+
+        let bpp    = fb.bpp as usize / 8;
+        let offset = y as usize * fb.pitch as usize + x as usize * bpp;
+
+        unsafe {
+            (fb.address() as *mut u8)
+                .add(offset)
+                .cast::<u32>()
+                .write_volatile(color as u32);
+        }
+
         0
     }
 
     fn framebuffer_info(&self, query: i64) -> i64 {
-        if let Some(fb) = self.get_framebuffer() {
-            match query {
-                0 => fb.width as i64,
-                1 => fb.height as i64,
-                2 => fb.pitch as i64,
-                3 => fb.bpp as i64,
-                _ => 0,
-            }
-        } else {
-            0
+        let fb = match self.get_framebuffer() {
+            Some(fb) => fb,
+            None     => return EFAULT,
+        };
+
+        match query {
+            0 => fb.width  as i64,
+            1 => fb.height as i64,
+            2 => fb.pitch  as i64,
+            3 => fb.bpp    as i64,
+            _ => EINVAL,
         }
     }
 
     fn print(&self, ptr: i64, len: i64) -> i64 {
-        if !( ptr == 0 || len <= 0) {
-            let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
-            if let Ok(s) = core::str::from_utf8(slice) {
-                println!("{}", s);
-            }
+        if ptr == 0 || len <= 0 || len > 65536 {
+            return EINVAL;
         }
-        0
+        let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        match core::str::from_utf8(slice) {
+            Ok(s)  => { println!("{}", s); 0 }
+            Err(_) => EINVAL,
+        }
     }
 
     fn tty_write(&self, ptr: i64, len: i64) -> i64 {

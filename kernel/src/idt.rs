@@ -63,16 +63,19 @@ pub fn idt_init() {
         bound_range_exceeded     : bound_range_handler,             "BOUND RANGE EXCEEDED";
         invalid_opcode           : invalid_opcode_handler,          "INVALID OPCODE";
         device_not_available     : device_not_available_handler,    "DEVICE NOT AVAILABLE";
-        invalid_tss              : invalid_tss_handler,             "INVALID TSS",              error;
-        segment_not_present      : segment_not_present_handler,     "SEGMENT NOT PRESENT",      error;
-        stack_segment_fault      : stack_segment_fault_handler,     "STACK SEGMENT FAULT",      error;
-        general_protection_fault : gpf_handler,                     "GENERAL PROTECTION FAULT", error;
+        invalid_tss              : invalid_tss_handler,             "INVALID TSS",                  error;
+        segment_not_present      : segment_not_present_handler,     "SEGMENT NOT PRESENT",          error;
+        stack_segment_fault      : stack_segment_fault_handler,     "STACK SEGMENT FAULT",          error;
+        general_protection_fault : gpf_handler,                     "GENERAL PROTECTION FAULT",     error;
         x87_floating_point       : x87_handler,                     "x87 FLOATING POINT";
-        alignment_check          : alignment_check_handler,         "ALIGNMENT CHECK",          error;
-        machine_check            : machine_check_handler,           "MACHINE CHECK",            diverging_no_error;
+        alignment_check          : alignment_check_handler,         "ALIGNMENT CHECK",              error;
+        machine_check            : machine_check_handler,           "MACHINE CHECK",                diverging_no_error;
         simd_floating_point      : simd_handler,                    "SIMD FLOATING POINT";
         virtualization           : virtualization_handler,          "VIRTUALIZATION";
-        security_exception       : security_exception_handler,      "SECURITY EXCEPTION",       error;
+        cp_protection_exception  : cp_protection_handler,           "CONTROL PROTECTION",           error;
+        hv_injection_exception   : hv_injection_handler,            "HV INJECTION";
+        vmm_communication_exception : vmm_communication_handler,   "VMM COMMUNICATION",            error;
+        security_exception       : security_exception_handler,      "SECURITY EXCEPTION",           error;
     );
 
     unsafe {
