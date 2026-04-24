@@ -34,7 +34,7 @@ run-x86_64: edk2-ovmf $(IMAGE_NAME).iso
 		-device ahci,id=ahci \
 		-device ide-hd,drive=ahci0,bus=ahci.0 \
 		-smp 4 \
-		-m 2G \
+		-m 10G \
 
 .PHONY: run-bios
 run-bios: $(IMAGE_NAME).iso

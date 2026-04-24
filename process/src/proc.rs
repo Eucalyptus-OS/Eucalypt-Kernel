@@ -102,3 +102,13 @@ pub fn reap_process(pid: u64) {
 pub fn collect_dead_processes() {
     PROCESS_LIST.lock().retain(|p| p.state != ProcessState::Dead);
 }
+
+/// Reaps the threads along with removing then and then destroys the process.
+pub fn destroy_process(pid: u64) {
+    reap_process(pid);
+    let thread_ids: Vec<ThreadId> = with_process(pid, |pcb| pcb.threads.clone())
+        .unwrap_or_default();
+    for tid in thread_ids {
+        remove_thread_from_process(pid, tid);
+    }
+}

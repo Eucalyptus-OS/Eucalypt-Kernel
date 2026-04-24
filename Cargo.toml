@@ -1,5 +1,22 @@
 [workspace]
-members = ["ahci","framebuffer", "eucalypt_fs", "ide", "pci", "kernel", "bare_x86_64", "syscall", "process", "memory", "usb", "fat12", "vfs", "ramfs", "gdt", "tty", "nvme"]
+members = [
+    "ahci",
+    "framebuffer",
+    "eucalypt_fs",
+    "ide",
+    "pci",
+    "kernel",
+    "bare_x86_64",
+    "syscall",
+    "process",
+    "memory",
+    "usb",
+    "fat12",
+    "vfs",
+    "ramfs",
+    "gdt",
+    "tty",
+]
 resolver = "2"
 
 [profile.dev]
@@ -21,18 +38,18 @@ spin = "0.10.0"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
 # Eucalypt crates
-ahci =        { path = "./ahci" }
+ahci = { path = "./ahci" }
 framebuffer = { path = "./framebuffer" }
-ide =         { path = "./ide" }
-pci =         { path = "./pci" }
+ide = { path = "./ide" }
+pci = { path = "./pci" }
 bare_x86_64 = { path = "./bare_x86_64" }
 eucalypt_fs = { path = "./eucalypt_fs" }
-process =     { path = "./process" }
-memory =      { path = "./memory" }
-usb =         { path = "./usb" }
-syscall =     { path = "./syscall" }
-fat12 =       { path = "./fat12" }
-vfs =         { path = "./vfs" }
-ramfs =       { path = "./ramfs" }
-gdt =         { path = "./gdt" }
-tty =         { path = "./tty" }
+process = { path = "./process" }
+memory = { path = "./memory" }
+usb = { path = "./usb" }
+syscall = { path = "./syscall" }
+fat12 = { path = "./fat12" }
+vfs = { path = "./vfs" }
+ramfs = { path = "./ramfs" }
+gdt = { path = "./gdt" }
+tty = { path = "./tty" }

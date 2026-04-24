@@ -2,11 +2,12 @@ use limine::request::FramebufferRequest;
 use framebuffer::println;
 use memory::{
     addr::{PhysAddr, VirtAddr},
-    allocator::sbrk,
     hhdm::virt_to_phys,
     paging::PageTableEntry,
     vmm::{Mapper, VMM},
 };
+use process::proc::{destroy_process, get_process_count, new_process};
+use vfs::VfsNode;
 
 unsafe extern "C" {
     static FRAMEBUFFER_REQUEST: FramebufferRequest;
@@ -25,7 +26,8 @@ pub enum Syscall {
     FramebufferInfo = 2,
     Print           = 3,
     TtyWrite        = 4,
-    Sbrk            = 5,
+    ProcCreate      = 5,
+    ProcDestroy     = 6,
 }
 
 impl Syscall {
@@ -36,7 +38,8 @@ impl Syscall {
             2 => Some(Self::FramebufferInfo),
             3 => Some(Self::Print),
             4 => Some(Self::TtyWrite),
-            5 => Some(Self::Sbrk),
+            5 => Some(Self::ProcCreate),
+            6 => Some(Self::ProcDestroy),
             _ => None,
         }
     }
@@ -54,7 +57,15 @@ impl SyscallHandler {
             Some(Syscall::FramebufferInfo) => self.framebuffer_info(arg1),
             Some(Syscall::Print)           => self.print(arg1, arg2),
             Some(Syscall::TtyWrite)        => self.tty_write(arg1, arg2),
-            Some(Syscall::Sbrk)            => self.sbrk(arg1),
+            Some(Syscall::ProcCreate)      => {
+                if arg1 == 0 {
+                    return EFAULT;
+                }
+                let node = unsafe { (arg1 as *const VfsNode).read() };
+                let parent = if arg2 == 0 { None } else { Some(arg2 as u64) };
+                self.proc_create(node, parent)
+            },
+            Some(Syscall::ProcDestroy)     => self.proc_destroy(arg1 as u64),
             None                           => ENOSYS,
         }
     }
@@ -154,9 +165,23 @@ impl SyscallHandler {
         len
     }
 
-    fn sbrk(&self, increment: i64) -> i64 {
-        let ptr = sbrk(increment as isize);
-        if ptr.is_null() { -1 } else { ptr as i64 }
+    fn proc_create(&self, file: VfsNode, parent: Option<u64>) -> i64 {
+        if file.stat().unwrap().size == 0 {
+            return EINVAL;
+        }
+        let pid = match new_process(parent) {
+            Some(pid) => pid,
+            None      => return EINVAL,
+        };
+        pid as i64
+    }
+
+    fn proc_destroy(&self, pid: u64) -> i64 {
+        if pid > get_process_count() as u64 {
+            return 1;
+        }
+        destroy_process(pid);
+        0
     }
 }
 
