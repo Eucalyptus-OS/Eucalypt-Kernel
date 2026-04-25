@@ -34,7 +34,7 @@ run-x86_64: edk2-ovmf $(IMAGE_NAME).iso
 		-device ahci,id=ahci \
 		-device ide-hd,drive=ahci0,bus=ahci.0 \
 		-smp 4 \
-		-m 10G \
+		-m 2G \
 
 .PHONY: run-bios
 run-bios: $(IMAGE_NAME).iso
@@ -56,26 +56,19 @@ limine/limine:
 kernel:
 	$(MAKE) -C kernel
 
-.PHONY: userspace
-userspace: test_userspace/INIT
-
-test_userspace/INIT: test_userspace/main.c test_userspace/user.ld
-	$(CC) -ffreestanding -nostdlib -static -m64 -T test_userspace/user.ld -o $@ $< -lgcc
-
 .PHONY: disks
-disks: userspace
+disks:
 	mkdir -p disks
-	mkdir -p z_files_to_copy
-	cp test_userspace/INIT z_files_to_copy/INIT
 	# Create 4MB ram.img
 	rm -f disks/ram.img
-	mkfs.fat -C disks/ram.img 4096
-	mmd -i disks/ram.img ::/bin
-	mcopy -i disks/ram.img z_files_to_copy/INIT ::/INIT
+	mkfs.fat -F 12 -C disks/ram.img 4096
+	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ram.img $(f) ::/$(notdir $(f));)
 	# Create 32MB disk images
 	rm -f disks/ide_disk.img disks/ahci_disk.img
-	mkfs.fat -C disks/ide_disk.img 32768
-	mkfs.fat -C disks/ahci_disk.img 32768
+	mkfs.fat -F 12 -C disks/ide_disk.img 32768
+	mkfs.fat -F 12 -C disks/ahci_disk.img 32768
+	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ide_disk.img $(f) ::/$(notdir $(f));)
+	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ahci_disk.img $(f) ::/$(notdir $(f));)
 
 $(IMAGE_NAME).iso: limine/limine kernel disks
 	rm -rf iso_root
@@ -128,8 +121,8 @@ endif
 .PHONY: clean distclean
 clean:
 	$(MAKE) -C kernel clean
-	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd test_userspace/INIT z_files_to_copy disks/*.img
+	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd disks
 
 distclean: clean
 	$(MAKE) -C kernel distclean
-	rm -rf limine edk2-ovmf disks
+	rm -rf limine edk2-ovmf

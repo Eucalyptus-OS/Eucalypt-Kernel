@@ -183,7 +183,7 @@ extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {
 
         "mov rcx, rdx",
         "mov rdx, rsi",
-        "mov rsi, rdi",
+        "mov rsi, rdi", 
         "mov rdi, rax",
 
         "call {handler}",
@@ -196,7 +196,6 @@ extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {
         "pop rbx",
         "pop rcx",
         "pop r11",
-
         "iretq",
         handler = sym syscall_handler,
     );

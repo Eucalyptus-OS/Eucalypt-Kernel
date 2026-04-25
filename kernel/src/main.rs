@@ -156,7 +156,7 @@ extern "C" fn kmain() -> ! {
 
     // Load the init ELF before enabling the scheduler so no preemption can
     // occur between the CR3 switch and the iretq into userspace.
-    let (entry, pml4_phys) = load_elf("ram/INIT").expect("Failed to load INIT");
+    let (entry, pml4_phys) = load_elf("ram/USER").expect("Failed to load USER");
     let pml4_ptr = pml4_phys as *mut memory::paging::PageTable;
     let user_rsp = alloc_user_stack(pml4_ptr).expect("Failed to allocate user stack");
 
