@@ -1,12 +1,9 @@
-use core::panic;
-
 use limine::request::FramebufferRequest;
 use framebuffer::println;
 use memory::{
     addr::{PhysAddr, VirtAddr},
-    hhdm::virt_to_phys,
     paging::PageTableEntry,
-    vmm::VMM,
+    vmm::{Mapper, VMM},
 };
 use process::proc::{destroy_process, get_process_count, new_process};
 use vfs::VfsNode;
@@ -79,70 +76,55 @@ impl SyscallHandler {
             .copied()
     }
 
-fn handle_get_framebuffer(&self) -> i64 {
-    let fb = match self.get_framebuffer() {
-        Some(fb) => fb,
-        None => {
-            println!("handle_get_framebuffer: no framebuffer");
-            return EFAULT;
+    fn handle_get_framebuffer(&self) -> i64 {
+        let fb = match self.get_framebuffer() {
+            Some(fb) => fb,
+            None     => return EFAULT,
+        };
+    
+        let fb_phys = fb.address() as u64 - 0xFFFF800000000000;
+        let fb_size = fb.pitch as usize * fb.height as usize;
+        let page_count = fb_size.div_ceil(PAGE_SIZE);
+    
+        let mapper = VMM::get_mapper();
+        let pml4   = Mapper::get_current_page_table();
+    
+        let flags = PageTableEntry::PRESENT
+                  | PageTableEntry::WRITABLE
+                  | PageTableEntry::USER;
+    
+        for i in 0..page_count {
+            let offset    = (i * PAGE_SIZE) as u64;
+            let page_phys = PhysAddr::new(fb_phys + offset);
+            let page_virt = VirtAddr::new(USER_FB_VA + offset);
+        
+            if mapper.map_page(pml4, page_virt, page_phys, flags).is_none() {
+                return EFAULT;
+            }
         }
-    };
-
-    let fb_virt = fb.address() as usize;
-    let fb_size = fb.pitch as usize * fb.height as usize;
-    let page_count = fb_size.div_ceil(PAGE_SIZE);
-
-    println!("handle_get_framebuffer: fb_virt={:#x} size={} pages={}", fb_virt, fb_size, page_count);
-
-    let mapper = VMM::get_kernel_mapper();
-    let pml4: *mut memory::paging::PageTable;
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) pml4);
+    
+        USER_FB_VA as i64
     }
-
-    println!("handle_get_framebuffer: pml4={:#x}", pml4 as u64);
-
-    let flags = PageTableEntry::PRESENT
-              | PageTableEntry::WRITABLE
-              | PageTableEntry::USER
-              | PageTableEntry::NO_CACHE;
-
-    for i in 0..page_count {
-        let offset    = (i * PAGE_SIZE) as u64;
-        let page_phys = PhysAddr::new(fb_virt as u64 - 0xFFFF800000000000u64 + offset);
-        let page_virt = VirtAddr::new(USER_FB_VA + offset);
-
-        if mapper.map_page(pml4, page_virt, page_phys, flags).is_none() {
-            println!("handle_get_framebuffer: map_page failed at page {}", i);
-            panic!("Fuh Page: {}, pml4={:#x}", i, pml4 as u64);
-            return EFAULT;
-        }
-    }
-
-    println!("handle_get_framebuffer: success, returning {:#x}", USER_FB_VA);
-    USER_FB_VA as i64
-}
 
     fn plot_point(&self, x: i64, y: i64, color: i64) -> i64 {
         let fb = match self.get_framebuffer() {
             Some(fb) => fb,
             None     => return EFAULT,
         };
-
+    
         if x < 0 || y < 0 || x >= fb.width as i64 || y >= fb.height as i64 {
             return EINVAL;
         }
-
+    
         let bpp    = fb.bpp as usize / 8;
         let offset = y as usize * fb.pitch as usize + x as usize * bpp;
-
+    
         unsafe {
             (fb.address() as *mut u8)
                 .add(offset)
                 .cast::<u32>()
                 .write_volatile(color as u32);
         }
-
         0
     }
 

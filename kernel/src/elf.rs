@@ -1,5 +1,3 @@
-use core::panic;
-
 use framebuffer::println;
 use elf_parser::elf64::Elf64;
 use vfs::{vfs_read, vfs_stat};
@@ -138,10 +136,6 @@ pub unsafe fn jump_to_usermode(entry: u64, user_rsp: u64) -> ! {
     const USER_SS: u64 = 0x23;
     const RFLAGS_IF: u64 = 0x202;
 
-    if entry == 0 {
-        panic!("Entry point is 0, cannot jump to user mode.");
-    }
-
     unsafe {
         core::arch::asm!(
             "mov ds, {ss:x}",
@@ -152,7 +146,6 @@ pub unsafe fn jump_to_usermode(entry: u64, user_rsp: u64) -> ! {
             "push {rfl}",
             "push {cs}",
             "push {rip}",
-            "swapgs",
             "iretq",
             ss  = in(reg) USER_SS,
             rsp = in(reg) user_rsp,

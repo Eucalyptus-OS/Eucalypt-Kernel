@@ -173,7 +173,13 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {
     core::arch::naked_asm!(
         "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
         "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
         "push rbx",
         "push rbp",
         "push r12",
@@ -181,9 +187,6 @@ extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {
         "push r14",
         "push r15",
 
-        "mov rcx, rdx",
-        "mov rdx, rsi",
-        "mov rsi, rdi", 
         "mov rdi, rax",
 
         "call {handler}",
@@ -194,8 +197,15 @@ extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {
         "pop r12",
         "pop rbp",
         "pop rbx",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
         "pop rcx",
+        "pop r8",
+        "pop r9",
+        "pop r10",
         "pop r11",
+
         "iretq",
         handler = sym syscall_handler,
     );
