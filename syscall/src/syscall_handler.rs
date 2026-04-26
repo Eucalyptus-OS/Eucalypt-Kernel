@@ -4,6 +4,7 @@ use memory::{
     addr::{PhysAddr, VirtAddr},
     paging::PageTableEntry,
     vmm::{Mapper, VMM},
+    allocator::sbrk,
 };
 use process::proc::{destroy_process, get_process_count, new_process};
 use vfs::VfsNode;
@@ -12,6 +13,7 @@ unsafe extern "C" {
     static FRAMEBUFFER_REQUEST: FramebufferRequest;
 }
 
+const ENOMEM: i64 = -12;
 const ENOSYS: i64 = -38;
 const EINVAL: i64 = -22;
 const EFAULT: i64 = -14;
@@ -27,6 +29,7 @@ pub enum Syscall {
     TtyWrite        = 4,
     ProcCreate      = 5,
     ProcDestroy     = 6,
+    Sbrk            = 7,
 }
 
 impl Syscall {
@@ -39,6 +42,7 @@ impl Syscall {
             4 => Some(Self::TtyWrite),
             5 => Some(Self::ProcCreate),
             6 => Some(Self::ProcDestroy),
+            7 => Some(Self::Sbrk),
             _ => None,
         }
     }
@@ -65,6 +69,7 @@ impl SyscallHandler {
                 self.proc_create(node, parent)
             },
             Some(Syscall::ProcDestroy)     => self.proc_destroy(arg1 as u64),
+            Some(Syscall::Sbrk)            => self.sbrk(arg1),
             None                           => ENOSYS,
         }
     }
@@ -180,6 +185,14 @@ impl SyscallHandler {
         }
         destroy_process(pid);
         0
+    }
+    
+    fn sbrk(&self, increment: i64) -> i64 {
+        let old_brk = sbrk(increment as isize);
+        if old_brk.is_null() {
+            return ENOMEM;
+        }
+        old_brk as i64
     }
 }
 
