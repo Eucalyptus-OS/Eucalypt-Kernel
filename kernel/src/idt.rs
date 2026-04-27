@@ -165,7 +165,9 @@ extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFram
 }
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
-    crate::keyboard::keyboard_irq_handler();
+    let mut kb = ps_2_devices::KEYBOARD.lock();
+    let scan_code = kb.irq();
+    kb.handle_scan_code(scan_code);
     apic::apic_eoi();
 }
 

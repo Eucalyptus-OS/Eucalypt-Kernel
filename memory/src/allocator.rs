@@ -46,27 +46,6 @@ impl LinkedList {
         }
     }
 
-    // removes and returns the block at the head of the list
-    unsafe fn pop_front(&mut self) -> *mut LinkedListBlock {
-        unsafe {
-            if self.head.is_null() {
-                return null_mut();
-            }
-
-            let front = self.head;
-            self.head = (*front).next;
-
-            if !self.head.is_null() {
-                (*self.head).prev = null_mut();
-            } else {
-                self.tail = null_mut();
-            }
-
-            self.count -= 1;
-            front
-        }
-    }
-
     // unlinks an arbitrary block from the list
     unsafe fn remove(&mut self, block: *mut LinkedListBlock) {
         unsafe {
@@ -84,10 +63,6 @@ impl LinkedList {
 
             self.count -= 1;
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.head.is_null()
     }
 }
 

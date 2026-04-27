@@ -53,10 +53,10 @@ static SHIFTED: [u8; 58] = [
     b' ',
 ];
 
-pub fn keyboard_irq_handler() {
+pub fn read_scan_code() -> Option<u8> {
     // Only read if the controller actually has data
     if inb!(KB_STATUS) & 0x01 == 0 {
-        return;
+        return None;
     }
 
     let scancode = inb!(KB_DATA);
@@ -66,28 +66,28 @@ pub fn keyboard_irq_handler() {
     match code {
         0x2A | 0x36 => {
             SHIFT_DOWN.store(!released, Ordering::Release);
-            return;
+            return None;
         }
         0x3A => {
             if !released {
                 let prev = CAPS_LOCK.load(Ordering::Acquire);
                 CAPS_LOCK.store(!prev, Ordering::Release);
             }
-            return;
+            return None;
         }
         _ => {}
     }
 
-    if released { return; }
+    if released { return None; }
 
     let code = code as usize;
-    if code >= NORMAL.len() { return; }
+    if code >= NORMAL.len() { return None; }
 
     let shift = SHIFT_DOWN.load(Ordering::Acquire);
     let caps  = CAPS_LOCK.load(Ordering::Acquire);
 
     let ch = if shift { SHIFTED[code] } else { NORMAL[code] };
-    if ch == 0 { return; }
+    if ch == 0 { return None; }
 
     let ch = if caps && ch.is_ascii_alphabetic() {
         if shift { ch.to_ascii_lowercase() } else { ch.to_ascii_uppercase() }
@@ -95,5 +95,5 @@ pub fn keyboard_irq_handler() {
         ch
     };
 
-    tty::tty_handle_char(ch);
+    Some(ch)
 }

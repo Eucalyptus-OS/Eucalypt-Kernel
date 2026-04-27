@@ -165,6 +165,7 @@ extern "C" fn kmain() -> ! {
         vfs_mount("ram", Box::new(ramfs::RamFs::new())).expect("Failed to mount empty ramfs");
     }
 
+    ps_2_devices::Keyboard::new();
     tty::tty_init();
     tty::tty_write_str("eucalyptOS\n\n> ");
 

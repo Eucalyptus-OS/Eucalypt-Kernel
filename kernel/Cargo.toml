@@ -22,6 +22,7 @@ vfs = { workspace = true }
 ramfs = { workspace = true }
 gdt = { workspace = true }
 tty = { workspace = true }
+ps_2_devices = { workspace = true }
 
 pic8259 = "0.11.0"
 elf_parser ="0.1.1"

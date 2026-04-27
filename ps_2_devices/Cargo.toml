@@ -1,0 +1,9 @@
+[package]
+name = "ps_2_devices"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+spin = { workspace = true }
+bare_x86_64 = { workspace = true }
+tty = { workspace = true }

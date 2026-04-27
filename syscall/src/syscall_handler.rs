@@ -218,6 +218,16 @@ impl SyscallHandler {
             old_brk as i64
         }).unwrap_or(EINVAL)
     }
+    
+    pub fn get_kb_cur_input() -> u8 {
+        let kb = ps_2_devices::KEYBOARD.lock();
+        kb.get_current_scan_code()
+    }
+    
+    pub fn get_kb_prev_input() -> u8 {
+        let kb = ps_2_devices::KEYBOARD.lock();
+        kb.get_prev_scan_code()
+    }
 }
 
 pub extern "C" fn syscall_handler(syscall_number: u64, arg1: i64, arg2: i64, arg3: i64) -> i64 {

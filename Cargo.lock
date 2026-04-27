@@ -121,6 +121,7 @@ dependencies = [
  "pci",
  "pic8259",
  "process",
+ "ps_2_devices",
  "ramfs",
  "spin",
  "syscall",
@@ -301,6 +302,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps_2_devices"
+version = "0.1.0"
+dependencies = [
+ "bare_x86_64",
+ "spin",
+ "tty",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -377,6 +387,7 @@ dependencies = [
  "limine",
  "memory",
  "process",
+ "ps_2_devices",
  "tty",
  "vfs",
 ]
