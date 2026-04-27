@@ -1,10 +1,10 @@
+use bare_x86_64::cpu::apic;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU64, Ordering};
-use bare_x86_64::cpu::apic;
 use ide::{ide_primary_irq_handler, ide_secondary_irq_handler};
+use syscall::syscall_handler::syscall_handler;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use syscall::syscall_handler::syscall_handler;
 
 const APIC_TIMER_VECTOR: u8 = 32;
 const IDE_PRIMARY_VECTOR: u8 = 33;
@@ -13,9 +13,11 @@ const KB_VECTOR: u8 = 35;
 const IDE_PRIMARY_IRQ: u8 = 14;
 const IDE_SECONDARY_IRQ: u8 = 15;
 const KB_IRQ: u8 = 1;
+const MOUSE_VECTOR: u8 = 36;
+const MOUSE_IRQ: u8 = 12;
 
 const DOUBLE_FAULT_IST_INDEX: u16 = 0;
-const PAGE_FAULT_IST_INDEX:   u16 = 1;
+const PAGE_FAULT_IST_INDEX: u16 = 1;
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -87,22 +89,25 @@ pub fn idt_init() {
             .set_handler_fn(page_fault_handler)
             .set_stack_index(PAGE_FAULT_IST_INDEX);
 
-        idt[APIC_TIMER_VECTOR]
-            .set_handler_addr(x86_64::VirtAddr::new(apic_timer_handler as *const () as u64));
+        idt[APIC_TIMER_VECTOR].set_handler_addr(x86_64::VirtAddr::new(
+            apic_timer_handler as *const () as u64,
+        ));
     }
 
     idt[IDE_PRIMARY_VECTOR].set_handler_fn(ide_primary_handler);
     idt[IDE_SECONDARY_VECTOR].set_handler_fn(ide_secondary_handler);
     idt[KB_VECTOR].set_handler_fn(keyboard_handler);
+    idt[MOUSE_VECTOR].set_handler_fn(mouse_handler);
     idt[0x80]
         .set_handler_fn(syscall_128)
         .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
 
     idt.load();
 
-    apic::ioapic_set_irq(IDE_PRIMARY_IRQ,   IDE_PRIMARY_VECTOR,   0, false, false);
+    apic::ioapic_set_irq(IDE_PRIMARY_IRQ, IDE_PRIMARY_VECTOR, 0, false, false);
     apic::ioapic_set_irq(IDE_SECONDARY_IRQ, IDE_SECONDARY_VECTOR, 0, false, false);
-    apic::ioapic_set_irq(KB_IRQ,            KB_VECTOR,            0, false, false);
+    apic::ioapic_set_irq(KB_IRQ, KB_VECTOR, 0, false, false);
+    apic::ioapic_set_irq(MOUSE_IRQ, MOUSE_VECTOR, 0, false, false);
 }
 
 extern "x86-interrupt" fn double_fault_handler(sf: InterruptStackFrame, ec: u64) -> ! {
@@ -165,11 +170,28 @@ extern "x86-interrupt" fn ide_secondary_handler(_stack_frame: InterruptStackFram
 }
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
-    let mut kb = ps_2_devices::KEYBOARD.lock();
-    let scan_code = kb.irq();
-    kb.handle_scan_code(scan_code);
+    use devices::event::{EventKind, InputEvent};
+
+    let ke = devices::KEYBOARD.lock().read_and_update();
+    if let Some(ke) = ke {
+        let kind = if ke.released {
+            EventKind::KeyRelease
+        } else {
+            EventKind::KeyPress
+        };
+        devices::EVENT_QUEUE.push(InputEvent::key(kind, ke.ch, ke.scancode, ke.modifiers));
+    }
     apic::apic_eoi();
 }
+
+// Accumulate PS/2 mouse bytes; push a MouseMove event once a full packet arrives.
+extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
+    if let Some(me) = devices::MOUSE.lock().handle_irq() {
+        devices::EVENT_QUEUE.push(devices::event::InputEvent::mouse(me.dx, me.dy, me.buttons));
+    }
+    apic::apic_eoi();
+}
+
 
 #[unsafe(naked)]
 extern "x86-interrupt" fn syscall_128(_sf: InterruptStackFrame) {

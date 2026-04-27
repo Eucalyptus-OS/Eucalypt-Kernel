@@ -88,6 +88,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f8a2ca5ac02d09563609681103aada9e1777d54fc57a5acd7a41404f9c93b6e"
 
 [[package]]
+name = "devices"
+version = "0.1.0"
+dependencies = [
+ "bare_x86_64",
+ "limine",
+ "spin",
+ "tty",
+]
+
+[[package]]
 name = "elf_parser"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -109,6 +119,7 @@ dependencies = [
  "ahci",
  "bare_x86_64",
  "cc",
+ "devices",
  "elf_parser",
  "eucalypt_fs",
  "fat12",
@@ -121,7 +132,6 @@ dependencies = [
  "pci",
  "pic8259",
  "process",
- "ps_2_devices",
  "ramfs",
  "spin",
  "syscall",
@@ -302,15 +312,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ps_2_devices"
-version = "0.1.0"
-dependencies = [
- "bare_x86_64",
- "spin",
- "tty",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -383,11 +384,11 @@ dependencies = [
 name = "syscall"
 version = "0.1.0"
 dependencies = [
+ "devices",
  "framebuffer",
  "limine",
  "memory",
  "process",
- "ps_2_devices",
  "tty",
  "vfs",
 ]

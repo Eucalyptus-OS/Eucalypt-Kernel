@@ -35,6 +35,7 @@ use pci::check_all_buses;
 use process::proc::new_process;
 use process::scheduler::enable_scheduler;
 use process::thread::TCB;
+use devices::init_devices;
 use ramfs::mount_ramdisk;
 use usb::init_usb;
 
@@ -140,6 +141,7 @@ extern "C" fn kmain() -> ! {
 
     let initial_count = calibrate_apic_timer(1000);
     init_apic_timer(32, initial_count);
+    init_devices();
 
     ide_init(0, 0, 0, 0, 0);
     check_all_buses();
@@ -165,7 +167,6 @@ extern "C" fn kmain() -> ! {
         vfs_mount("ram", Box::new(ramfs::RamFs::new())).expect("Failed to mount empty ramfs");
     }
 
-    ps_2_devices::Keyboard::new();
     tty::tty_init();
     tty::tty_write_str("eucalyptOS\n\n> ");
 
@@ -187,8 +188,7 @@ extern "C" fn kmain() -> ! {
             .expect("init TCB missing");
         process::scheduler::set_current_thread(tcb_ptr);
     }
-
-    // idle process as before
+    
     let idle_pid = new_process(None).expect("Failed to create idle process");
     let idle_cr3 = VMM::get_page_table() as u64;
     TCB::create_thread(0x4000, idle as *const () as u64, idle_pid, idle_cr3)
