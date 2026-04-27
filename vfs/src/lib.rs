@@ -64,7 +64,6 @@ pub struct FD {
 }
 
 impl FD {
-    /// Creates a stdio-style FD (no real VfsNode path) with the given `fd_num` as offset and `flags` as the device constant.
     pub fn new(fd_num: u64, flags: u32) -> Self {
         FD {
             node: VfsNode {
@@ -74,6 +73,18 @@ impl FD {
             },
             offset: fd_num,
             flags,
+        }
+    }
+
+    // closes the fd by clearing its slot in the global table, no-ops for stdio
+    pub fn close(&self) {
+        let fd_num = self.offset as u32;
+        if fd_num < 3 {
+            return;
+        }
+        let mut table = FD_TABLE.lock();
+        if let Some(slot) = table.get_mut(fd_num as usize) {
+            *slot = None;
         }
     }
 }

@@ -2,11 +2,14 @@ use limine::request::FramebufferRequest;
 use framebuffer::println;
 use memory::{
     addr::{PhysAddr, VirtAddr},
-    paging::PageTableEntry,
-    vmm::{Mapper, VMM},
-    allocator::sbrk,
+    paging::{PageTable, PageTableEntry},
+    vmm::VMM,
+    frame_allocator::FrameAllocator,
 };
-use process::proc::{destroy_process, get_process_count, new_process};
+use process::{
+    proc::{destroy_process, with_process, with_process_mut, ProcessState},
+    scheduler::get_current_pid,
+};
 use vfs::VfsNode;
 
 unsafe extern "C" {
@@ -18,7 +21,7 @@ const ENOSYS: i64 = -38;
 const EINVAL: i64 = -22;
 const EFAULT: i64 = -14;
 const USER_FB_VA: u64 = 0x0000_7000_0000_0000;
-const PAGE_SIZE: usize = 4096;
+const PAGE_SIZE:  u64 = 4096;
 
 #[repr(u64)]
 pub enum Syscall {
@@ -61,16 +64,22 @@ impl SyscallHandler {
             Some(Syscall::Print)           => self.print(arg1, arg2),
             Some(Syscall::TtyWrite)        => self.tty_write(arg1, arg2),
             Some(Syscall::ProcCreate)      => {
-                if arg1 == 0 {
-                    return EFAULT;
-                }
-                let node = unsafe { (arg1 as *const VfsNode).read() };
+                if arg1 == 0 { return EFAULT; }
+                let node   = unsafe { (arg1 as *const VfsNode).read() };
                 let parent = if arg2 == 0 { None } else { Some(arg2 as u64) };
                 self.proc_create(node, parent)
             },
-            Some(Syscall::ProcDestroy)     => self.proc_destroy(arg1 as u64),
-            Some(Syscall::Sbrk)            => self.sbrk(arg1),
-            None                           => ENOSYS,
+            Some(Syscall::ProcDestroy) => {
+                let pid = arg1 as u64;
+                match with_process(pid, |p| p.state) {
+                    None
+                    | Some(ProcessState::Dead)
+                    | Some(ProcessState::Zombie) => EINVAL,
+                    _ => { destroy_process(pid); 0 }
+                }
+            },
+            Some(Syscall::Sbrk) => self.sbrk(arg1),
+            None                => ENOSYS,
         }
     }
 
@@ -86,28 +95,23 @@ impl SyscallHandler {
             Some(fb) => fb,
             None     => return EFAULT,
         };
-    
-        let fb_phys = fb.address() as u64 - 0xFFFF800000000000;
-        let fb_size = fb.pitch as usize * fb.height as usize;
-        let page_count = fb_size.div_ceil(PAGE_SIZE);
-    
-        let mapper = VMM::get_mapper();
-        let pml4   = Mapper::get_current_page_table();
-    
-        let flags = PageTableEntry::PRESENT
-                  | PageTableEntry::WRITABLE
-                  | PageTableEntry::USER;
-    
+
+        let fb_phys    = fb.address() as u64 - 0xFFFF800000000000;
+        let fb_size    = fb.pitch as usize * fb.height as usize;
+        let page_count = (fb_size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+        let mapper     = VMM::get_kernel_mapper();
+        let pml4       = memory::vmm::Mapper::get_current_page_table();
+        let flags      = PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::USER;
+
         for i in 0..page_count {
-            let offset    = (i * PAGE_SIZE) as u64;
+            let offset    = (i as u64) * PAGE_SIZE;
             let page_phys = PhysAddr::new(fb_phys + offset);
             let page_virt = VirtAddr::new(USER_FB_VA + offset);
-        
             if mapper.map_page(pml4, page_virt, page_phys, flags).is_none() {
                 return EFAULT;
             }
         }
-    
+
         USER_FB_VA as i64
     }
 
@@ -116,14 +120,13 @@ impl SyscallHandler {
             Some(fb) => fb,
             None     => return EFAULT,
         };
-    
+
         if x < 0 || y < 0 || x >= fb.width as i64 || y >= fb.height as i64 {
             return EINVAL;
         }
-    
+
         let bpp    = fb.bpp as usize / 8;
         let offset = y as usize * fb.pitch as usize + x as usize * bpp;
-    
         unsafe {
             (fb.address() as *mut u8)
                 .add(offset)
@@ -138,7 +141,6 @@ impl SyscallHandler {
             Some(fb) => fb,
             None     => return EFAULT,
         };
-
         match query {
             0 => fb.width  as i64,
             1 => fb.height as i64,
@@ -149,9 +151,7 @@ impl SyscallHandler {
     }
 
     fn print(&self, ptr: i64, len: i64) -> i64 {
-        if ptr == 0 || len <= 0 || len > 65536 {
-            return EINVAL;
-        }
+        if ptr == 0 || len <= 0 || len > 65536 { return EINVAL; }
         let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
         match core::str::from_utf8(slice) {
             Ok(s)  => { println!("{}", s); 0 }
@@ -160,39 +160,63 @@ impl SyscallHandler {
     }
 
     fn tty_write(&self, ptr: i64, len: i64) -> i64 {
-        if ptr == 0 || len <= 0 || len > 65536 {
-            return EINVAL;
-        }
+        if ptr == 0 || len <= 0 || len > 65536 { return EINVAL; }
         let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
         tty::tty_write(slice);
         len
     }
 
     fn proc_create(&self, file: VfsNode, parent: Option<u64>) -> i64 {
-        if file.stat().unwrap().size == 0 {
-            return EINVAL;
+        match file.stat() {
+            Ok(s) if s.size == 0 => return EINVAL,
+            Err(_)               => return EINVAL,
+            _                    => {}
         }
-        let pid = match new_process(parent) {
-            Some(pid) => pid,
-            None      => return EINVAL,
-        };
-        pid as i64
+        match process::proc::new_process(parent) {
+            Some(pid) => pid as i64,
+            None      => ENOMEM,
+        }
     }
 
-    fn proc_destroy(&self, pid: u64) -> i64 {
-        if pid > get_process_count() as u64 {
-            return 1;
-        }
-        destroy_process(pid);
-        0
-    }
-    
+    // grows the calling process's heap by increment bytes, mapping new physical frames with USER bit
     fn sbrk(&self, increment: i64) -> i64 {
-        let old_brk = sbrk(increment as isize);
-        if old_brk.is_null() {
-            return ENOMEM;
-        }
-        old_brk as i64
+        let pid = get_current_pid();
+        if pid == 0 { return EINVAL; }
+
+        with_process_mut(pid, |pcb| {
+            let old_brk = pcb.heap_end;
+            let new_brk = match (old_brk as i64).checked_add(increment) {
+                Some(b) if b >= pcb.heap_start as i64 => b as u64,
+                _ => return ENOMEM,
+            };
+
+            if new_brk > old_brk {
+                let mapper = VMM::get_kernel_mapper();
+                let pml4   = pcb.cr3 as *mut PageTable;
+                let flags  = PageTableEntry::PRESENT
+                           | PageTableEntry::WRITABLE
+                           | PageTableEntry::USER;
+
+                let first_page = (old_brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let last_page  = (new_brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let mut virt   = first_page;
+
+                while virt < last_page {
+                    let phys = match FrameAllocator::alloc_frame() {
+                        Some(p) => p,
+                        None    => return ENOMEM,
+                    };
+                    if mapper.map_page(pml4, VirtAddr::new(virt), phys, flags).is_none() {
+                        FrameAllocator::free_frame(phys);
+                        return ENOMEM;
+                    }
+                    virt += PAGE_SIZE;
+                }
+            }
+
+            pcb.heap_end = new_brk;
+            old_brk as i64
+        }).unwrap_or(EINVAL)
     }
 }
 

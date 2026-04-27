@@ -41,6 +41,8 @@ use usb::init_usb;
 use framebuffer::ScrollingTextRenderer;
 use vfs::*;
 
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
+
 static FONT: &[u8] = include_bytes!("../../framebuffer/font/altc-8x16.psf");
 
 #[used]
@@ -94,6 +96,18 @@ extern "C" fn kmain() -> ! {
         FONT,
     );
     assert!(BASE_REVISION.is_supported());
+    
+    unsafe {
+        let mut cr0 = Cr0::read();
+        cr0.remove(Cr0Flags::EMULATE_COPROCESSOR);
+        cr0.insert(Cr0Flags::MONITOR_COPROCESSOR);
+        Cr0::write(cr0);
+
+        let mut cr4 = Cr4::read();
+        cr4.insert(Cr4Flags::OSFXSR);
+        cr4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
+        Cr4::write(cr4);
+    }
 
     println!("eucalyptOS Starting...");
 
@@ -154,14 +168,26 @@ extern "C" fn kmain() -> ! {
     tty::tty_init();
     tty::tty_write_str("eucalyptOS\n\n> ");
 
-    // Load the init ELF before enabling the scheduler so no preemption can
-    // occur between the CR3 switch and the iretq into userspace.
     let (entry, pml4_phys) = load_elf("ram/USER").expect("Failed to load USER");
     let pml4_ptr = pml4_phys as *mut memory::paging::PageTable;
     let user_rsp = alloc_user_stack(pml4_ptr).expect("Failed to allocate user stack");
 
-    // Create an idle process/thread so the scheduler always has something to
-    // run if it ever gets switched away from the init thread.
+    let init_pid = new_process(None).expect("Failed to create user process");
+
+    process::proc::with_process_mut(init_pid, |pcb| {
+        pcb.cr3 = pml4_phys;
+    });
+
+    let init_tid = TCB::create_thread(0, entry, init_pid, pml4_phys)
+        .expect("Failed to create init thread");
+
+    {
+        let tcb_ptr = process::thread::get_tcb_by_tid(init_tid)
+            .expect("init TCB missing");
+        process::scheduler::set_current_thread(tcb_ptr);
+    }
+
+    // idle process as before
     let idle_pid = new_process(None).expect("Failed to create idle process");
     let idle_cr3 = VMM::get_page_table() as u64;
     TCB::create_thread(0x4000, idle as *const () as u64, idle_pid, idle_cr3)
