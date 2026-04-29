@@ -449,3 +449,20 @@ pub fn fd_write(fd: u32, data: &[u8]) -> Result<usize, VfsError> {
 
     Ok(data.len())
 }
+
+pub fn errno_from_vfs(err: VfsError) -> i64 {
+    match err {
+        VfsError::NotFound        => -2,  // ENOENT
+        VfsError::AlreadyExists   => -17, // EEXIST
+        VfsError::NotAFile        => -21, // EISDIR
+        VfsError::NotADir         => -20, // ENOTDIR
+        VfsError::NotEmpty        => -39, // ENOTEMPTY
+        VfsError::PermissionDenied => -13,// EACCES
+        VfsError::InvalidPath     => -22, // EINVAL
+        VfsError::NotSupported    => -38, // ENOSYS
+        VfsError::NoSpace         => -28, // ENOSPC
+        VfsError::NotMounted      => -2,  // ENOENT
+        VfsError::FdNotFound      => -9,  // EBADF
+        VfsError::IoError         => -5,  // EIO
+    }
+}

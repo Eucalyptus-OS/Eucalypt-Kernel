@@ -10,7 +10,7 @@ use process::{
     proc::{ProcessState, destroy_process, with_process, with_process_mut},
     scheduler::get_current_pid,
 };
-use vfs::VfsNode;
+use vfs::{VfsNode, fd_open, fd_close, errno_from_vfs};
 
 unsafe extern "C" {
     static FRAMEBUFFER_REQUEST: FramebufferRequest;
@@ -34,6 +34,8 @@ pub enum Syscall {
     ProcDestroy = 6,
     Sbrk = 7,
     ReadEvent = 8,
+    Open = 9,
+    Close = 10,
 }
 
 impl Syscall {
@@ -48,6 +50,8 @@ impl Syscall {
             6 => Some(Self::ProcDestroy),
             7 => Some(Self::Sbrk),
             8 => Some(Self::ReadEvent),
+            9 => Some(Self::Open),
+            10 => Some(Self::Close),
             _ => None,
         }
     }
@@ -87,6 +91,9 @@ impl SyscallHandler {
             }
             Some(Syscall::Sbrk) => self.sbrk(arg1),
             Some(Syscall::ReadEvent) => self.read_event(arg1),
+            Some(Syscall::Open) => self.open(arg1, arg2, arg3),
+            Some(Syscall::Close) => self.close(arg1),
+            
             None => ENOSYS,
         }
     }
@@ -253,6 +260,31 @@ impl SyscallHandler {
                 1
             }
             None => 0,
+        }
+    }
+    
+    /// Opens a file at the given path with the specified flags and mode, returning a pointer to the file node.
+    fn open(&self, path: i64, flags: i64, mode: i64) -> i64 {
+        if path == 0 {
+            return EFAULT;
+        }
+    
+        let path = unsafe { core::ffi::CStr::from_ptr(path as *const i8) }.to_string_lossy();
+    
+        match fd_open(path.as_ref(), flags as u32, mode as u32) {
+            Ok(fd) => fd as i64,
+            Err(err) => errno_from_vfs(err),
+        }
+    }
+    
+    /// Closes the file node at the given pointer, freeing its resources.
+    fn close(&self, fd: i64) -> i64 {
+        if fd < 3 {
+            return EINVAL; // refuse to close stdio
+        }
+        match fd_close(fd as u32) {
+            Ok(()) => 0,
+            Err(err) => errno_from_vfs(err),
         }
     }
 }
