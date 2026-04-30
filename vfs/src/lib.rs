@@ -7,22 +7,38 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use spin::Mutex;
 
+/// Open flags for a file.
 pub const O_RDONLY: u32 = 0x0000;
+/// Write-only flag.
 pub const O_WRONLY: u32 = 0x0001;
+/// Read-write flag.
 pub const O_RDWR:   u32 = 0x0002;
+/// Create flag.
 pub const O_CREAT:  u32 = 0x0040;
+/// Truncate flag.
 pub const O_TRUNC:  u32 = 0x0200;
+/// Append flag.
 pub const O_APPEND: u32 = 0x0400;
+/// Exclusive flag.
 pub const O_EXCL:   u32 = 0x0800;
 
+/// Permissions for a file or directory.
 pub const S_IRUSR: u32 = 0o400;
+/// Write permission for the owner.
 pub const S_IWUSR: u32 = 0o200;
+/// Execute permission for the owner.
 pub const S_IXUSR: u32 = 0o100;
+/// Read permission for the group.
 pub const S_IRGRP: u32 = 0o040;
+/// Write permission for the group.
 pub const S_IWGRP: u32 = 0o020;
+/// Read permission for others.
 pub const S_IROTH: u32 = 0o004;
+/// Regular file.
 pub const S_IFREG: u32 = 0o100000;
+/// Directory.
 pub const S_IFDIR: u32 = 0o040000;
+/// Mask for the file mode.
 pub const S_IMODE: u32 = 0o777;
 
 pub const D_STDIN:  u32 = 0;

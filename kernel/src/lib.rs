@@ -5,7 +5,6 @@ extern crate alloc;
 
 // Modules
 pub mod idt;
-pub mod elf;
 pub mod mp;
 
 // C functions go here

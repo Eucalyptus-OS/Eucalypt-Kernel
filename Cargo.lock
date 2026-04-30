@@ -98,6 +98,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "elf"
+version = "0.1.0"
+dependencies = [
+ "elf_parser",
+ "memory",
+ "vfs",
+]
+
+[[package]]
 name = "elf_parser"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -120,7 +129,7 @@ dependencies = [
  "bare_x86_64",
  "cc",
  "devices",
- "elf_parser",
+ "elf",
  "eucalypt_fs",
  "fat12",
  "framebuffer",
@@ -385,6 +394,7 @@ name = "syscall"
 version = "0.1.0"
 dependencies = [
  "devices",
+ "elf",
  "framebuffer",
  "limine",
  "memory",

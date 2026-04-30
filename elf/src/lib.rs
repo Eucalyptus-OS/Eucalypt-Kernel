@@ -1,6 +1,9 @@
-use framebuffer::println;
+#![no_std]
+
+extern crate alloc;
+
 use elf_parser::elf64::Elf64;
-use vfs::{vfs_read, vfs_stat};
+use vfs::{VfsNode, vfs_read};
 use memory::vmm::VMM;
 use memory::paging::{PageTable, PageTableEntry};
 use memory::addr::VirtAddr;
@@ -10,32 +13,21 @@ const PAGE_SIZE: usize = 0x1000;
 const HHDM_OFFSET: u64 = 0xFFFF800000000000;
 const PT_LOAD: u32 = 1;
 
-pub fn load_elf(filename: &str) -> Option<(u64, u64)> {
-    match vfs_stat(filename) {
-        Ok(s) => s,
-        Err(_) => {
-            println!("File does not exist: {}", filename);
-            return None;
-        }
-    };
-
-    let contents = match vfs_read(filename) {
+pub fn load_elf(file: &VfsNode) -> Option<(u64, u64)> {
+    let contents = match vfs_read(file.path().as_str()) {
         Ok(data) => data,
-        Err(e) => {
-            println!("Failed to read {}: {:?}", filename, e);
+        Err(_) => {
             return None;
         }
     };
 
     if contents.len() < 4 || &contents[0..4] != b"\x7fELF" {
-        println!("{} is not a valid ELF file.", filename);
         return None;
     }
 
     let elf = match Elf64::from_bytes(&contents) {
         Ok(e) => e,
-        Err(e) => {
-            println!("Failed to parse ELF {}: {:?}", filename, e);
+        Err(_) => {
             return None;
         }
     };
@@ -55,7 +47,6 @@ pub fn load_elf(filename: &str) -> Option<(u64, u64)> {
         let offset = ph.p_offset as usize;
 
         if offset + filesz > contents.len() {
-            println!("Segment at {:#x} exceeds file bounds.", offset);
             return None;
         }
 
@@ -123,36 +114,4 @@ pub fn alloc_user_stack(pml4: *mut PageTable) -> Option<u64> {
         mapper.map_page(pml4, virt, frame, flags)?;
     }
     Some(STACK_BASE + (STACK_PAGES * PAGE_SIZE) as u64)
-}
-
-/// Switches the CPU to ring-3 and jumps to `entry` with `user_rsp` as the
-/// stack pointer. Never returns.
-///
-/// # Safety
-/// `entry` must be a valid user-mode virtual address mapped in the current
-/// address space. Caller must have loaded the correct CR3 beforehand.
-pub unsafe fn jump_to_usermode(entry: u64, user_rsp: u64) -> ! {
-    const USER_CS: u64 = 0x1B;
-    const USER_SS: u64 = 0x23;
-    const RFLAGS_IF: u64 = 0x202;
-
-    unsafe {
-        core::arch::asm!(
-            "mov ds, {ss:x}",
-            "mov es, {ss:x}",
-            "mov fs, {ss:x}",
-            "push {ss}",
-            "push {rsp}",
-            "push {rfl}",
-            "push {cs}",
-            "push {rip}",
-            "iretq",
-            ss  = in(reg) USER_SS,
-            rsp = in(reg) user_rsp,
-            rfl = in(reg) RFLAGS_IF,
-            cs  = in(reg) USER_CS,
-            rip = in(reg) entry,
-            options(noreturn),
-        );
-    }
 }

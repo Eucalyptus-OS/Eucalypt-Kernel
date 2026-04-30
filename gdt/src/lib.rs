@@ -171,3 +171,35 @@ unsafe fn gdt_load() {
         core::arch::asm!("ltr {0:x}", in(reg) 0x28u16);
     }
 }
+
+/// Switches the CPU to ring-3 and jumps to `entry` with `user_rsp` as the
+/// stack pointer. Never returns.
+///
+/// # Safety
+/// `entry` must be a valid user-mode virtual address mapped in the current
+/// address space. Caller must have loaded the correct CR3 beforehand.
+pub unsafe fn jump_to_usermode(entry: u64, user_rsp: u64) -> ! {
+    const USER_CS: u64 = 0x1B;
+    const USER_SS: u64 = 0x23;
+    const RFLAGS_IF: u64 = 0x202;
+
+    unsafe {
+        core::arch::asm!(
+            "mov ds, {ss:x}",
+            "mov es, {ss:x}",
+            "mov fs, {ss:x}",
+            "push {ss}",
+            "push {rsp}",
+            "push {rfl}",
+            "push {cs}",
+            "push {rip}",
+            "iretq",
+            ss  = in(reg) USER_SS,
+            rsp = in(reg) user_rsp,
+            rfl = in(reg) RFLAGS_IF,
+            cs  = in(reg) USER_CS,
+            rip = in(reg) entry,
+            options(noreturn),
+        );
+    }
+}

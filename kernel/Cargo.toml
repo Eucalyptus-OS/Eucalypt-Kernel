@@ -23,9 +23,9 @@ ramfs = { workspace = true }
 gdt = { workspace = true }
 tty = { workspace = true }
 devices = { workspace = true }
+elf = { workspace = true }
 
 pic8259 = "0.11.0"
-elf_parser ="0.1.1"
 spin = { workspace = true }
 
 [build-dependencies]

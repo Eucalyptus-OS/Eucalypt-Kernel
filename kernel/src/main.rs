@@ -3,10 +3,13 @@
 
 extern crate alloc;
 
+use core::panic;
+
 use alloc::boxed::Box;
-use eucalypt_os::elf::{jump_to_usermode, load_elf, alloc_user_stack};
 use eucalypt_os::idt::idt_init;
 use eucalypt_os::mp::init_mp;
+
+use elf::{load_elf, alloc_user_stack};
 
 use limine::BaseRevision;
 use limine::{
@@ -170,7 +173,11 @@ extern "C" fn kmain() -> ! {
     tty::tty_init();
     tty::tty_write_str("eucalyptOS\n\n> ");
 
-    let (entry, pml4_phys) = load_elf("ram/USER").expect("Failed to load USER");
+    let file = match vfs_open_node("ram/USER", O_RDONLY, 0) {
+        Ok(file) => file,
+        Err(e) => panic!("Failed to open USER {}", e),
+    };
+    let (entry, pml4_phys) = load_elf(&file).expect("Failed to load USER");
     let pml4_ptr = pml4_phys as *mut memory::paging::PageTable;
     let user_rsp = alloc_user_stack(pml4_ptr).expect("Failed to allocate user stack");
 
@@ -198,7 +205,7 @@ extern "C" fn kmain() -> ! {
 
     unsafe {
         core::arch::asm!("mov cr3, {}", in(reg) pml4_phys);
-        jump_to_usermode(entry, user_rsp)
+        gdt::jump_to_usermode(entry, user_rsp)
     }
 }
 

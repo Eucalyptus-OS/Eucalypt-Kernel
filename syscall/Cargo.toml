@@ -11,3 +11,4 @@ vfs = { workspace = true }
 process = { workspace = true }
 tty = { workspace = true }
 devices = { workspace = true }
+elf = { workspace = true }

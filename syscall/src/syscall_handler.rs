@@ -8,7 +8,7 @@ use memory::{
 };
 use process::{
     proc::{ProcessState, destroy_process, with_process, with_process_mut},
-    scheduler::get_current_pid,
+    scheduler::get_current_pid, thread,
 };
 use vfs::{VfsNode, fd_open, fd_close, errno_from_vfs};
 
@@ -194,8 +194,16 @@ impl SyscallHandler {
             Err(_) => return EINVAL,
             _ => {}
         }
+        
         match process::proc::new_process(parent) {
-            Some(pid) => pid as i64,
+            Some(pid) => {
+                let (entry, cr3) = match elf::load_elf(&file) {
+                    Some((e, cr3)) => (e, cr3),
+                    None => return ENOMEM,
+                };
+                let _tid = thread::TCB::create_thread(0x800000, entry, pid, cr3);
+                pid as i64
+            },
             None => ENOMEM,
         }
     }

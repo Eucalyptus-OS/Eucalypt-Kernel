@@ -15,7 +15,7 @@ members = [
     "vfs",
     "ramfs",
     "gdt",
-    "tty", "devices",
+    "tty", "devices", "elf",
 ]
 resolver = "2"
 
@@ -54,3 +54,4 @@ ramfs = { path = "./ramfs" }
 gdt = { path = "./gdt" }
 tty = { path = "./tty" }
 devices = { path = "./devices" }
+elf = { path = "./elf" }
