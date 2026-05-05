@@ -7,49 +7,33 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use spin::Mutex;
 
-/// Open flags for a file.
 pub const O_RDONLY: u32 = 0x0000;
-/// Write-only flag.
 pub const O_WRONLY: u32 = 0x0001;
-/// Read-write flag.
 pub const O_RDWR:   u32 = 0x0002;
-/// Create flag.
 pub const O_CREAT:  u32 = 0x0040;
-/// Truncate flag.
 pub const O_TRUNC:  u32 = 0x0200;
-/// Append flag.
 pub const O_APPEND: u32 = 0x0400;
-/// Exclusive flag.
 pub const O_EXCL:   u32 = 0x0800;
 
-/// Permissions for a file or directory.
 pub const S_IRUSR: u32 = 0o400;
-/// Write permission for the owner.
 pub const S_IWUSR: u32 = 0o200;
-/// Execute permission for the owner.
 pub const S_IXUSR: u32 = 0o100;
-/// Read permission for the group.
 pub const S_IRGRP: u32 = 0o040;
-/// Write permission for the group.
 pub const S_IWGRP: u32 = 0o020;
-/// Read permission for others.
 pub const S_IROTH: u32 = 0o004;
-/// Regular file.
 pub const S_IFREG: u32 = 0o100000;
-/// Directory.
 pub const S_IFDIR: u32 = 0o040000;
-/// Mask for the file mode.
 pub const S_IMODE: u32 = 0o777;
 
 pub const D_STDIN:  u32 = 0;
 pub const D_STDOUT: u32 = 1;
 pub const D_STDERR: u32 = 2;
 
+// A: is always the ramdisk, B: onwards are physical drives
+pub const RAMDISK_DRIVE: char = 'A';
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NodeKind {
-    File,
-    Dir,
-}
+pub enum NodeKind { File, Dir }
 
 #[derive(Clone, Debug)]
 pub struct DirEntry {
@@ -80,10 +64,11 @@ pub struct FD {
 }
 
 impl FD {
+    // create a placeholder fd for stdin/stdout/stderr slots
     pub fn new(fd_num: u64, flags: u32) -> Self {
         FD {
             node: VfsNode {
-                point: String::new(),
+                drive: RAMDISK_DRIVE,
                 rel:   String::new(),
                 flags,
             },
@@ -92,12 +77,10 @@ impl FD {
         }
     }
 
-    // closes the fd by clearing its slot in the global table, no-ops for stdio
+    // clear this fd's slot in the global table
     pub fn close(&self) {
         let fd_num = self.offset as u32;
-        if fd_num < 3 {
-            return;
-        }
+        if fd_num < 3 { return; }
         let mut table = FD_TABLE.lock();
         if let Some(slot) = table.get_mut(fd_num as usize) {
             *slot = None;
@@ -148,7 +131,7 @@ impl VfsError {
             VfsError::IoError          => "I/O error",
             VfsError::NoSpace          => "no space left",
             VfsError::NotMounted       => "not mounted",
-            VfsError::FdNotFound       => "file descriptor not found",
+            VfsError::FdNotFound       => "fd not found",
         }
     }
 }
@@ -159,52 +142,58 @@ impl core::fmt::Display for VfsError {
     }
 }
 
-struct MountEntry {
-    point: String,
-    fs:    Box<dyn FileSystem>,
+struct DriveEntry {
+    letter: char,
+    fs:     Box<dyn FileSystem>,
 }
 
 struct Vfs {
-    mounts: Vec<MountEntry>,
+    drives: Vec<DriveEntry>,
 }
 
 impl Vfs {
-    const fn new_uninit() -> Self {
-        Vfs { mounts: Vec::new() }
+    const fn new() -> Self {
+        Vfs { drives: Vec::new() }
     }
 
-    /// Returns the index and a reference to the mount whose point equals `point`, if any.
-    fn find_mount(&self, point: &str) -> Option<(usize, &MountEntry)> {
-        self.mounts.iter().enumerate().find(|(_, e)| e.point == point)
+    // find a mounted drive by letter, case-insensitive
+    fn find_drive(&self, letter: char) -> Option<&DriveEntry> {
+        let letter = letter.to_ascii_uppercase();
+        self.drives.iter().find(|d| d.letter == letter)
     }
-}
 
-// Single mutex guards both the mount table and all path operations; no
-// secondary VFS_LOCK spinlock is needed — that was a double-lock bug.
-static VFS: Mutex<Vfs> = Mutex::new(Vfs::new_uninit());
-static FD_TABLE: Mutex<Vec<Option<FD>>> = Mutex::new(Vec::new());
-
-/// Splits `path` into a (mount_point, relative_path) pair, returning `InvalidPath` if either part is empty.
-fn split_path(path: &str) -> Result<(&str, &str), VfsError> {
-    let path = path.trim_start_matches('/');
-    if path.is_empty() {
-        return Err(VfsError::InvalidPath);
-    }
-    match path.find('/') {
-        Some(i) => {
-            let point = &path[..i];
-            let rel   = &path[i + 1..];
-            if point.is_empty() || rel.is_empty() {
-                Err(VfsError::InvalidPath)
-            } else {
-                Ok((point, rel))
+    // find the next free drive letter starting from B:
+    fn next_free_letter(&self) -> Option<char> {
+        for c in 'B'..='Z' {
+            if self.find_drive(c).is_none() {
+                return Some(c);
             }
         }
-        None => Err(VfsError::InvalidPath),
+        None
     }
 }
 
-/// Pre-populates the global FD table with 256 empty slots (indices 0–255).
+static VFS:      Mutex<Vfs>             = Mutex::new(Vfs::new());
+static FD_TABLE: Mutex<Vec<Option<FD>>> = Mutex::new(Vec::new());
+
+// parse "C:path/to/file" into ('C', "path/to/file")
+fn split_drive_path(path: &str) -> Result<(char, &str), VfsError> {
+    let mut chars = path.chars();
+    let letter = chars.next().ok_or(VfsError::InvalidPath)?;
+    if !letter.is_ascii_alphabetic() {
+        return Err(VfsError::InvalidPath);
+    }
+    if chars.next() != Some(':') {
+        return Err(VfsError::InvalidPath);
+    }
+    let rel = path[2..].trim_start_matches('/');
+    if rel.is_empty() {
+        return Err(VfsError::InvalidPath);
+    }
+    Ok((letter.to_ascii_uppercase(), rel))
+}
+
+// initialise the fd table with 256 slots, 0/1/2 reserved for stdin/stdout/stderr
 pub fn vfs_init() {
     let mut table = FD_TABLE.lock();
     for _ in 0..256 {
@@ -212,178 +201,157 @@ pub fn vfs_init() {
     }
 }
 
-/// Mounts `fs` at the given `point`, failing if that point is already mounted.
-pub fn vfs_mount(point: &str, fs: Box<dyn FileSystem>) -> Result<(), VfsError> {
+// mount a filesystem at a specific drive letter
+pub fn vfs_mount(letter: char, fs: Box<dyn FileSystem>) -> Result<(), VfsError> {
+    let letter = letter.to_ascii_uppercase();
     let mut v = VFS.lock();
-    if v.find_mount(point).is_some() {
+    if v.find_drive(letter).is_some() {
         return Err(VfsError::AlreadyExists);
     }
-    v.mounts.push(MountEntry { point: String::from(point), fs });
+    v.drives.push(DriveEntry { letter, fs });
     Ok(())
 }
 
-/// Removes the filesystem mounted at `point`, returning `NotMounted` if it was not found.
-pub fn vfs_unmount(point: &str) -> Result<(), VfsError> {
+// mount a filesystem at the next free drive letter and return the letter assigned
+pub fn vfs_automount(fs: Box<dyn FileSystem>) -> Result<char, VfsError> {
     let mut v = VFS.lock();
-    let before = v.mounts.len();
-    v.mounts.retain(|e| e.point != point);
-    if v.mounts.len() == before {
-        Err(VfsError::NotMounted)
-    } else {
-        Ok(())
-    }
+    let letter = v.next_free_letter().ok_or(VfsError::NoSpace)?;
+    v.drives.push(DriveEntry { letter, fs });
+    Ok(letter)
+}
+
+// unmount the drive at the given letter
+pub fn vfs_unmount(letter: char) -> Result<(), VfsError> {
+    let letter = letter.to_ascii_uppercase();
+    let mut v = VFS.lock();
+    let before = v.drives.len();
+    v.drives.retain(|d| d.letter != letter);
+    if v.drives.len() == before { Err(VfsError::NotMounted) } else { Ok(()) }
+}
+
+// return true if a drive letter has a filesystem mounted
+pub fn vfs_is_mounted(letter: char) -> bool {
+    VFS.lock().find_drive(letter).is_some()
 }
 
 #[derive(Clone, Debug)]
 pub struct VfsNode {
-    point: String,
-    rel:   String,
-    flags: u32,
+    pub drive: char,
+    pub rel:   String,
+    pub flags: u32,
 }
 
 impl VfsNode {
-    /// Reads the full contents of this node's file.
+    // read the full contents of the file this node points to
     pub fn read(&self) -> Result<Vec<u8>, VfsError> {
-        let path = format!("{}/{}", self.point, self.rel);
-        vfs_read(&path)
+        let v = VFS.lock();
+        let entry = v.find_drive(self.drive).ok_or(VfsError::NotMounted)?;
+        entry.fs.read(&self.rel)
     }
 
-    /// Writes `data` to this node's file using the flags it was opened with.
+    // write data to the file this node points to
     pub fn write(&self, data: &[u8]) -> Result<(), VfsError> {
-        let path = format!("{}/{}", self.point, self.rel);
-        vfs_write(&path, data, self.flags, 0)
+        let v = VFS.lock();
+        let entry = v.find_drive(self.drive).ok_or(VfsError::NotMounted)?;
+        entry.fs.write(&self.rel, data)
     }
 
-    /// Returns metadata for this node's file.
+    // stat the file this node points to
     pub fn stat(&self) -> Result<FileStat, VfsError> {
-        let path = format!("{}/{}", self.point, self.rel);
-        vfs_stat(&path)
+        let v = VFS.lock();
+        let entry = v.find_drive(self.drive).ok_or(VfsError::NotMounted)?;
+        entry.fs.stat(&self.rel)
     }
 
-    /// Returns the absolute path string for this node.
+    // return the full drive-letter path e.g. "A:font.psf"
     pub fn path(&self) -> String {
-        format!("{}/{}", self.point, self.rel)
+        format!("{}:{}", self.drive, self.rel)
     }
 }
 
-/// Opens (and optionally creates) the file at `path`, returning a `VfsNode` for it.
+// open a VfsNode for a drive-letter path like "A:font.psf"
 pub fn vfs_open_node(path: &str, flags: u32, mode: u32) -> Result<VfsNode, VfsError> {
-    let (point, rel) = split_path(path)?;
+    let (drive, rel) = split_drive_path(path)?;
     let v = VFS.lock();
-    let (_idx, entry) = v.find_mount(point).ok_or(VfsError::NotMounted)?;
+    let entry = v.find_drive(drive).ok_or(VfsError::NotMounted)?;
     let fs = entry.fs.as_ref();
-
     let exists = fs.stat(rel).is_ok();
-
     if flags & O_EXCL != 0 && flags & O_CREAT != 0 && exists {
         return Err(VfsError::AlreadyExists);
     }
-
     if flags & O_CREAT != 0 && !exists {
         fs.create(rel, &[], mode)?;
     } else if !exists {
         return Err(VfsError::NotFound);
     }
-
     if flags & O_TRUNC != 0 {
         fs.write(rel, &[])?;
     }
-
-    Ok(VfsNode {
-        point: point.to_string(),
-        rel:   rel.to_string(),
-        flags,
-    })
+    Ok(VfsNode { drive, rel: rel.to_string(), flags })
 }
 
-/// Creates a new file at `path` with the given initial `data` and permission `mode`.
-pub fn vfs_create(path: &str, data: &[u8], mode: u32) -> Result<(), VfsError> {
-    let (point, rel) = split_path(path)?;
+// stat a file by drive-letter path
+pub fn vfs_stat(path: &str) -> Result<FileStat, VfsError> {
+    let (drive, rel) = split_drive_path(path)?;
     let v = VFS.lock();
-    let (_idx, entry) = v.find_mount(point).ok_or(VfsError::NotMounted)?;
-    let fs = entry.fs.as_ref();
-
-    if fs.stat(rel).is_ok() {
-        return Err(VfsError::AlreadyExists);
-    }
-
-    fs.create(rel, data, mode)
+    let entry = v.find_drive(drive).ok_or(VfsError::NotMounted)?;
+    entry.fs.stat(rel)
 }
 
-/// Reads and returns the full contents of the file at `path`.
+// read a file by drive-letter path, returns full contents
 pub fn vfs_read(path: &str) -> Result<Vec<u8>, VfsError> {
-    let (point, rel) = split_path(path)?;
+    let (drive, rel) = split_drive_path(path)?;
     let v = VFS.lock();
-    let (_idx, entry) = v.find_mount(point).ok_or(VfsError::NotMounted)?;
+    let entry = v.find_drive(drive).ok_or(VfsError::NotMounted)?;
     entry.fs.read(rel)
 }
 
-/// Writes `data` to the file at `path`, honouring `O_CREAT`, `O_TRUNC`, `O_APPEND`, and `O_EXCL`.
+// write a file by drive-letter path respecting flags
 pub fn vfs_write(path: &str, data: &[u8], flags: u32, mode: u32) -> Result<(), VfsError> {
-    let (point, rel) = split_path(path)?;
+    let (drive, rel) = split_drive_path(path)?;
     let v = VFS.lock();
-    let (_idx, entry) = v.find_mount(point).ok_or(VfsError::NotMounted)?;
+    let entry = v.find_drive(drive).ok_or(VfsError::NotMounted)?;
     let fs = entry.fs.as_ref();
-
     let exists = fs.stat(rel).is_ok();
-
     if flags & O_EXCL != 0 && flags & O_CREAT != 0 && exists {
         return Err(VfsError::AlreadyExists);
     }
-
     if flags & O_CREAT != 0 && !exists {
         fs.create(rel, &[], mode)?;
     } else if !exists {
         return Err(VfsError::NotFound);
     }
-
     if (flags & 0x3) == O_RDONLY {
         return Err(VfsError::PermissionDenied);
     }
-
     let mut contents = if flags & O_APPEND != 0 && exists {
         fs.read(rel)?
     } else {
         Vec::new()
     };
-
-    if flags & O_TRUNC != 0 {
-        contents.clear();
-    }
-
+    if flags & O_TRUNC != 0 { contents.clear(); }
     if flags & O_APPEND != 0 {
         contents.extend_from_slice(data);
     } else {
         contents = data.to_vec();
     }
-
     fs.write(rel, &contents)
 }
 
-/// Returns metadata for the file at `path`.
-pub fn vfs_stat(path: &str) -> Result<FileStat, VfsError> {
-    let (point, rel) = split_path(path)?;
-    let v = VFS.lock();
-    v.find_mount(point)
-        .ok_or(VfsError::NotMounted)
-        .and_then(|(_, e)| e.fs.stat(rel))
-}
-
-/// Returns `true` if the file at `path` exists and can be stat'd.
+// return true if the path exists on its drive
 pub fn vfs_file_exists(path: &str) -> bool {
     vfs_stat(path).is_ok()
 }
 
-/// Returns the directory entries under `path`.
+// list directory entries for a drive-letter path
 pub fn vfs_readdir(path: &str) -> Result<Vec<DirEntry>, VfsError> {
-    let (point, rel) = split_path(path)?;
+    let (drive, rel) = split_drive_path(path)?;
     let v = VFS.lock();
-    v.find_mount(point)
-        .ok_or(VfsError::NotMounted)
-        .and_then(|(_, e)| e.fs.readdir(rel))
+    let entry = v.find_drive(drive).ok_or(VfsError::NotMounted)?;
+    entry.fs.readdir(rel)
 }
 
-/// Opens `path` and installs it into the global FD table, returning the assigned descriptor number.
+// open a path and allocate a file descriptor, returns the fd number
 pub fn fd_open(path: &str, flags: u32, mode: u32) -> Result<u32, VfsError> {
     let node = vfs_open_node(path, flags, mode)?;
     let fd = FD { node, offset: 0, flags };
@@ -395,11 +363,9 @@ pub fn fd_open(path: &str, flags: u32, mode: u32) -> Result<u32, VfsError> {
     Ok(idx as u32)
 }
 
-/// Closes the file descriptor `fd`, freeing its slot; refuses to close stdio descriptors 0–2.
+// release a file descriptor
 pub fn fd_close(fd: u32) -> Result<(), VfsError> {
-    if fd < 3 {
-        return Err(VfsError::PermissionDenied);
-    }
+    if fd < 3 { return Err(VfsError::PermissionDenied); }
     let mut table = FD_TABLE.lock();
     match table.get_mut(fd as usize) {
         Some(slot) if slot.is_some() => { *slot = None; Ok(()) }
@@ -407,7 +373,7 @@ pub fn fd_close(fd: u32) -> Result<(), VfsError> {
     }
 }
 
-/// Reads up to `buf.len()` bytes from `fd` at its current offset, advancing it by the number of bytes copied.
+// read up to buf.len() bytes from fd at its current offset, returns bytes copied
 pub fn fd_read(fd: u32, buf: &mut [u8]) -> Result<usize, VfsError> {
     let (node, offset) = {
         let table = FD_TABLE.lock();
@@ -419,24 +385,21 @@ pub fn fd_read(fd: u32, buf: &mut [u8]) -> Result<usize, VfsError> {
         }
         (entry.node.clone(), entry.offset)
     };
-
     let data = node.read()?;
-    let start = offset as usize;
+    let start     = offset as usize;
     let available = data.len().saturating_sub(start);
-    let to_copy = buf.len().min(available);
+    let to_copy   = buf.len().min(available);
     buf[..to_copy].copy_from_slice(&data[start..start + to_copy]);
-
     {
         let mut table = FD_TABLE.lock();
         if let Some(Some(entry)) = table.get_mut(fd as usize) {
             entry.offset += to_copy as u64;
         }
     }
-
     Ok(to_copy)
 }
 
-/// Writes `data` to `fd`, advancing the offset (or moving it to end-of-file for `O_APPEND`).
+// write data into fd at its current offset, returns bytes written
 pub fn fd_write(fd: u32, data: &[u8]) -> Result<usize, VfsError> {
     let (node, offset, flags) = {
         let table = FD_TABLE.lock();
@@ -448,9 +411,7 @@ pub fn fd_write(fd: u32, data: &[u8]) -> Result<usize, VfsError> {
         }
         (entry.node.clone(), entry.offset, entry.flags)
     };
-
     node.write(data)?;
-
     {
         let mut table = FD_TABLE.lock();
         if let Some(Some(entry)) = table.get_mut(fd as usize) {
@@ -462,23 +423,23 @@ pub fn fd_write(fd: u32, data: &[u8]) -> Result<usize, VfsError> {
             }
         }
     }
-
     Ok(data.len())
 }
 
+// convert a VfsError to a unix-style negative errno value
 pub fn errno_from_vfs(err: VfsError) -> i64 {
     match err {
-        VfsError::NotFound        => -2,  // ENOENT
-        VfsError::AlreadyExists   => -17, // EEXIST
-        VfsError::NotAFile        => -21, // EISDIR
-        VfsError::NotADir         => -20, // ENOTDIR
-        VfsError::NotEmpty        => -39, // ENOTEMPTY
-        VfsError::PermissionDenied => -13,// EACCES
-        VfsError::InvalidPath     => -22, // EINVAL
-        VfsError::NotSupported    => -38, // ENOSYS
-        VfsError::NoSpace         => -28, // ENOSPC
-        VfsError::NotMounted      => -2,  // ENOENT
-        VfsError::FdNotFound      => -9,  // EBADF
-        VfsError::IoError         => -5,  // EIO
+        VfsError::NotFound         => -2,
+        VfsError::AlreadyExists    => -17,
+        VfsError::NotAFile         => -21,
+        VfsError::NotADir          => -20,
+        VfsError::NotEmpty         => -39,
+        VfsError::PermissionDenied => -13,
+        VfsError::InvalidPath      => -22,
+        VfsError::NotSupported     => -38,
+        VfsError::NoSpace          => -28,
+        VfsError::NotMounted       => -2,
+        VfsError::FdNotFound       => -9,
+        VfsError::IoError          => -5,
     }
 }

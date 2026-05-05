@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 fat12 = { workspace = true }
-spin = {workspace = true }
+spin = { workspace = true }

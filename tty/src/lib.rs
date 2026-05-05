@@ -6,13 +6,11 @@ use framebuffer::{color, fill_screen, write_global};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-// --- editing buffer (filled by IRQ, mutated by backspace) ---
 struct LineBuf(UnsafeCell<[u8; 256]>);
 unsafe impl Sync for LineBuf {}
 static LINE_BUF: LineBuf = LineBuf(UnsafeCell::new([0u8; 256]));
 static LINE_LEN: AtomicUsize = AtomicUsize::new(0);
 
-// --- cooked buffer (one complete line waiting to be read) ---
 static COOKED_BUF: LineBuf = LineBuf(UnsafeCell::new([0u8; 256]));
 static COOKED_LEN: AtomicUsize = AtomicUsize::new(0);
 static LINE_READY: AtomicBool = AtomicBool::new(false);
@@ -33,8 +31,6 @@ pub fn tty_write_str(s: &str) {
     tty_write(s.as_bytes());
 }
 
-/// Called from the keyboard IRQ. Handles line editing and echoes to screen.
-/// On Enter, moves the editing buffer into the cooked buffer and sets LINE_READY.
 pub fn tty_handle_char(ch: u8) {
     if !INITIALIZED.load(Ordering::Acquire) {
         return;

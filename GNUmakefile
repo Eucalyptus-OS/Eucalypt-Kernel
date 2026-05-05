@@ -35,6 +35,7 @@ run-x86_64: edk2-ovmf $(IMAGE_NAME).iso
 		-device ide-hd,drive=ahci0,bus=ahci.0 \
 		-smp 4 \
 		-m 2G \
+		-d int
 
 .PHONY: run-bios
 run-bios: $(IMAGE_NAME).iso
@@ -62,14 +63,14 @@ disks:
 	# Create 4MB ram.img
 	rm -f disks/ram.img
 	mkfs.fat -F 12 -C disks/ram.img 4096
-	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ram.img $(f) ::/$(notdir $(f));)
+	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ram.img -B $(f) ::/$(notdir $(f));)
 	# Create 32MB disk images
 	rm -f disks/ide_disk.img disks/ahci_disk.img
 	mkfs.fat -F 12 -C disks/ide_disk.img 32768
 	mkfs.fat -F 12 -C disks/ahci_disk.img 32768
 	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ide_disk.img $(f) ::/$(notdir $(f));)
 	$(foreach f,$(wildcard z_files_to_copy/*),mcopy -i disks/ahci_disk.img $(f) ::/$(notdir $(f));)
-
+    
 $(IMAGE_NAME).iso: limine/limine kernel disks
 	rm -rf iso_root
 	mkdir -p iso_root/boot/limine iso_root/mod iso_root/EFI/BOOT
