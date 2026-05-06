@@ -1,51 +1,47 @@
 #include <stdint.h>
-#include <stddef.h>
 #include <limine.h>
-#include <mm/frame.h>
+#include <mm/hhdm.h>
 
 __attribute__((used, section(".limine_requests")))
-static volatile struct limine_memmap_request memmap_request = {
+volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
     .revision = 0
 };
 
-struct page_node {
-    struct page_node *next;
-};
-
-struct page_node *page_list;
+uint64_t page_list = 0;
 
 uint64_t frame_alloc() {
-    struct page_node *node = page_list;
-    if (!node) return 0;
-    page_list = node->next;
-    return (uint64_t)node;
-}
+    uint64_t page = page_list;
 
-void frame_free(uint64_t addr) {
-    if (!addr) return;
-    struct page_node *node = (struct page_node *)addr;
-    node->next = page_list;
-    page_list = node;
-}
-
-uint8_t frame_init() {
-    if (memmap_request.response == NULL) {
-        return 1;
+    if (page == 0) {
+        return 0;
     }
-    struct limine_memmap_response response = *memmap_request.response;
-    uint64_t entry_count = response.entry_count;
-    struct limine_memmap_entry **entries = response.entries;
 
-    for (uint64_t i = 0; i < entry_count; i++) {
-        if (entries[i]->type != LIMINE_MEMMAP_USABLE) {
+    uint64_t *next_ptr = (uint64_t *)phys_virt(page);
+    page_list = *next_ptr;
+    return page;
+}
+
+void frame_free(uint64_t ptr) {
+    uint64_t *next_ptr = (uint64_t *)phys_virt(ptr);
+
+    *next_ptr = page_list;
+
+    page_list = ptr;
+}
+
+void frame_init() {
+    struct limine_memmap_response *memmap = memmap_request.response;
+
+    for (uint64_t i = 0; i < memmap->entry_count; i++) {
+        struct limine_memmap_entry *entry = memmap->entries[i];
+
+        if (entry->type != LIMINE_MEMMAP_USABLE) {
             continue;
         }
-        for (uint64_t j = entries[i]->base;
-             j < entries[i]->base + entries[i]->length;
-             j += 0x1000) {
+
+        for (uint64_t j = entry->base; j < entry->base + entry->length; j += 4096) {
             frame_free(j);
         }
     }
-    return 0;
 }

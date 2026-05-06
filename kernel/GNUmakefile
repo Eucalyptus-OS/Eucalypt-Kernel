@@ -56,7 +56,7 @@ endif
 LDFLAGS :=
 
 # Ensure the dependencies have been obtained.
-ifneq ($(filter-out clean distclean,$(or $(MAKECMDGOALS),default)),)
+ifneq ($(filter-out clean distclean,$(MAKECMDGOALS)),)
     ifeq ($(wildcard .deps-obtained),)
         $(error Please run the ./get-deps script first)
     endif
@@ -69,7 +69,7 @@ override CC_IS_CLANG := $(shell ! $(CC) --version 2>/dev/null | grep -q '^Target
 override CFLAGS += \
     -Wall \
     -Wextra \
-    -std=gnu11 \
+    -std=gnu23 \
     -nostdinc \
     -ffreestanding \
     -fno-stack-protector \

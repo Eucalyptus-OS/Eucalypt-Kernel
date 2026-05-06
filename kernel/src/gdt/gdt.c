@@ -1,10 +1,13 @@
 #include <stdint.h>
+#include <gdt/gdt.h>
 
-uint8_t gdt[6][8];
+extern void reload();
+
+uint8_t gdt[7][8];
 
 struct [[gnu::packed]] gdtr {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 };
 
 typedef struct __attribute__((packed)) {
@@ -22,7 +25,7 @@ typedef struct __attribute__((packed)) {
     uint64_t ist7;             // 0x54 - 0x58
     uint64_t reserved2;        // 0x5C - 0x60
     uint16_t reserved3;        // 0x64
-    uint16_t iopb_offset;      // 0x64 (high 2 bytes)
+    uint16_t iopb_offset;      // 0x64
 } tss_t;
 
 tss_t tss = {0};
@@ -91,7 +94,7 @@ void encode_tss_descriptor(uint8_t index, tss_t *tss_ptr) {
 void gdt_init() {
     struct gdtr gdtr = {
         .limit = sizeof(gdt) - 1,
-        .base = (uint32_t)(uintptr_t)gdt,
+        .base = (uint64_t)(uintptr_t)gdt,
     };
     encode_gdt_entry(0, 0, 0x00000000, 0x00, 0x0);
     encode_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0xA);
@@ -101,5 +104,6 @@ void gdt_init() {
     encode_tss_descriptor(5, &tss);
 
     asm volatile ("lgdt %0" :: "m"(gdtr));
+    reload();
     asm volatile ("ltr %0" :: "r"((uint16_t)0x28));
 }
