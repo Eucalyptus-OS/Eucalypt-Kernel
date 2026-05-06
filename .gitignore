@@ -1,15 +1,4 @@
-/limine
+/limine-binary
 /edk2-ovmf
-/ovmf
-/target
-/iso_root
-/kernel/target
-/ports/newlib-build
-/ports/sysroot
-*.lock
 *.iso
 *.hdd
-*.img
-/.claude
-/.omc
-/Eucalypt-Kernel
