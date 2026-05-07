@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
 #include <limine.h>
 #include <logging/printk.h>
@@ -7,6 +6,8 @@
 #include <idt/idt.h>
 #include <mm/hhdm.h>
 #include <mm/frame.h>
+#include <mm/paging.h>
+#include <interrupts/apic.h>
 
 // Set the base revision to 6, this is recommended as this is the latest
 // base revision described by the Limine boot protocol specification.
@@ -47,18 +48,27 @@ void kmain(void) {
     }
     printk_init();
 
-    log_info("Initializing GDT\n");
+
     gdt_init();
     log_info("GDT initialized\n");
-    log_info("Initializng HHDM\n");
-    hhdm_init();
-    log_info("HHDM initialized\n");
-    log_info("Initializing frame allocator\n");
-    frame_init();
-    log_info("Frame allocator initialized\n");
-    log_info("Initializing IDT\n");
+
     idt_init();
     log_info("IDT initialized\n");
+
+    hhdm_init();
+    log_info("HHDM initialized\n");
+
+    frame_init();
+    log_info("Frame allocator initialized\n");
+
+    paging_init();
+    log_info("Paging initialized\n");
+
+    enable_apic(true);
+    log_info("APIC enabled\n");
+
+    apic_timer_init(1000);
+    log_info("APIC timer initialized at 1000 Hz\n");
 
     // We're done, just hang...
     hcf();

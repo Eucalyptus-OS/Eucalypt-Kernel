@@ -1,6 +1,9 @@
 #include <stdint.h>
+#include <stddef.h>
 #include <limine.h>
 #include <mm/hhdm.h>
+#include <mm/types.h>
+#include <mm/frame.h>
 
 __attribute__((used, section(".limine_requests")))
 volatile struct limine_memmap_request memmap_request = {
@@ -8,26 +11,26 @@ volatile struct limine_memmap_request memmap_request = {
     .revision = 0
 };
 
-uint64_t page_list = 0;
+typedef struct frame_node {
+    struct frame_node *next;
+} frame_node_t;
+
+frame_node_t *frame_free_list = NULL;
 
 uint64_t frame_alloc() {
-    uint64_t page = page_list;
-
-    if (page == 0) {
+    if (frame_free_list == NULL) {
         return 0;
     }
 
-    uint64_t *next_ptr = (uint64_t *)phys_virt(page);
-    page_list = *next_ptr;
-    return page;
+    frame_node_t *node = frame_free_list;
+    frame_free_list = node->next;
+    return virt_phys((vaddr)node);
 }
 
-void frame_free(uint64_t ptr) {
-    uint64_t *next_ptr = (uint64_t *)phys_virt(ptr);
-
-    *next_ptr = page_list;
-
-    page_list = ptr;
+void frame_free(paddr ptr) {
+    frame_node_t *node = (frame_node_t *)phys_virt(ptr);
+    node->next = frame_free_list;
+    frame_free_list = node;
 }
 
 void frame_init() {
