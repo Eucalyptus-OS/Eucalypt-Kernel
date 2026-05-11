@@ -4,6 +4,7 @@
 #include <logging/flanterm_backends/fb.h>
 #include <logging/format.h>
 #include <logging/printk.h>
+#include <sync/spinlock.h>
 
 static const char *level_prefix[] = {
     "[DEBUG] ",
@@ -30,11 +31,11 @@ volatile struct limine_framebuffer_request framebuffer_request = {
 };
 
 static struct flanterm_context *ft_ctx;
+static spinlock_t printk_lock = 0;
 
-void printk_init() {
+void printk_init(void) {
     struct limine_framebuffer_response *fb = framebuffer_request.response;
     if (!fb || fb->framebuffer_count == 0) return;
-
     ft_ctx = flanterm_fb_init(
         NULL,
         NULL,
@@ -63,33 +64,42 @@ static void print_str(const char *s) {
 }
 
 void printk(const char *fmt, ...) {
+    spinlock_acquire(&printk_lock);
+    __asm__ volatile ("cli");
     va_list list;
     va_start(list, fmt);
     print_char('\r');
     format(print_char, fmt, list);
     va_end(list);
+    __asm__ volatile ("sti");
+    spinlock_release(&printk_lock);
 }
 
 void printk_level(int level, const char *fmt, ...) {
     if (level < LOG_LEVEL) return;
     if (level < LOG_DEBUG || level > LOG_FATAL) level = LOG_DEBUG;
-
+    spinlock_acquire(&printk_lock);
+    __asm__ volatile ("cli");
     print_char('\r');
     print_str(level_color[level]);
     print_str(level_prefix[level]);
     print_str(ANSI_RESET);
-
     va_list list;
     va_start(list, fmt);
     format(print_char, fmt, list);
     va_end(list);
-
     print_char('\n');
+    __asm__ volatile ("sti");
+    spinlock_release(&printk_lock);
 }
 
 void vprintk(const char *fmt, va_list ap) {
+    spinlock_acquire(&printk_lock);
+    __asm__ volatile ("cli");
     print_char('\r');
     format(print_char, fmt, ap);
+    __asm__ volatile ("sti");
+    spinlock_release(&printk_lock);
 }
 
 static char fmt_buf[1024];
@@ -103,16 +113,15 @@ static void buf_write_char(char c) {
 void vprintk_level(int level, const char *fmt, va_list ap) {
     if (level < LOG_LEVEL) return;
     if (level < LOG_DEBUG || level > LOG_FATAL) level = LOG_DEBUG;
-
+    spinlock_acquire(&printk_lock);
+    __asm__ volatile ("cli");
     fmt_buf_pos = 0;
     format(buf_write_char, fmt, ap);
     fmt_buf[fmt_buf_pos] = '\0';
-
     print_char('\r');
     print_str(level_color[level]);
     print_str(level_prefix[level]);
     print_str(ANSI_RESET);
-
     for (size_t i = 0; i < fmt_buf_pos; i++) {
         if (fmt_buf[i] == '\n' && fmt_buf[i + 1] != '\0') {
             print_char('\n');
@@ -125,10 +134,6 @@ void vprintk_level(int level, const char *fmt, va_list ap) {
         }
     }
     print_char('\n');
+    __asm__ volatile ("sti");
+    spinlock_release(&printk_lock);
 }
-
-#define log_debug(fmt, ...) printk_level(LOG_DEBUG, fmt, ##__VA_ARGS__)
-#define log_info(fmt, ...)  printk_level(LOG_INFO,  fmt, ##__VA_ARGS__)
-#define log_warn(fmt, ...)  printk_level(LOG_WARN,  fmt, ##__VA_ARGS__)
-#define log_error(fmt, ...) printk_level(LOG_ERROR, fmt, ##__VA_ARGS__)
-#define log_fatal(fmt, ...) printk_level(LOG_FATAL, fmt, ##__VA_ARGS__)

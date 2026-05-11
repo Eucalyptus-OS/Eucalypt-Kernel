@@ -7,7 +7,10 @@
 #include <mm/hhdm.h>
 #include <mm/frame.h>
 #include <mm/paging.h>
+#include <mm/heap.h>
 #include <interrupts/apic.h>
+#include <multitasking/thread.h>
+#include <multitasking/sched.h>
 
 // Set the base revision to 6, this is recommended as this is the latest
 // base revision described by the Limine boot protocol specification.
@@ -38,38 +41,65 @@ static void hcf(void) {
     }
 }
 
+void idle_thread(void) {
+    while (1) __asm__ volatile("hlt");
+}
+
+void thread_a(void) {
+    while (1) {
+        log_info("Thread A running\n");
+        // busy loop to simulate work
+        for (volatile int i = 0; i < 1000000; i++);
+    }
+}
+
+void thread_b(void) {
+    while (1) {
+        log_info("Thread B running\n");
+        for (volatile int i = 0; i < 1000000; i++);
+    }
+}
+
 // The following will be our kernel's entry point.
 // If renaming kmain() to something else, make sure to change the
 // linker script accordingly.
 void kmain(void) {
-    // Ensure the bootloader actually understands our base revision (see spec).
-    if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false) {
+    if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false)
         hcf();
-    }
+
     printk_init();
-
-
     gdt_init();
     log_info("GDT initialized\n");
-
     idt_init();
     log_info("IDT initialized\n");
-
     hhdm_init();
     log_info("HHDM initialized\n");
-
     frame_init();
     log_info("Frame allocator initialized\n");
-
     paging_init();
     log_info("Paging initialized\n");
-
+    heap_init();
+    log_info("Heap initialized\n");
     enable_apic(true);
     log_info("APIC enabled\n");
+
+    scheduler_init();
+
+    create_thread(idle_thread, false);
+
+    for (int i = 0; i < 50; i++)
+        create_thread(thread_a, false);
+
+    for (int i = 0; i < 50; i++)
+        create_thread(thread_b, false);
+
+    log_info("Threads created count=%d\n", rq->count);
+
+    enable_sched();
+    log_info("Scheduler enabled\n");
 
     apic_timer_init(1000);
     log_info("APIC timer initialized at 1000 Hz\n");
 
-    // We're done, just hang...
     hcf();
 }

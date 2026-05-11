@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <portio.h>
-#include <mm/vm.h>
+#include <mm/paging.h>
 #include <assert.h>
 #include <interrupts/apic.h>
 
@@ -11,6 +11,8 @@
 #define APIC_BASE_MASK   0xFFFFFFFFFFFFF000ULL
 #define APIC_HEAP_BASE   0xFFFFFFFFC0000000ULL
 #define APIC_HEAP_SIZE   0x10000
+#define APIC_VIRT_BASE 0xFFFFFFFF80200000ULL
+#define IOAPIC_VIRT_BASE 0xFFFFFFFF80201000ULL
 
 #define IOAPIC_REG_SELECT 0x00
 #define IOAPIC_REG_WINDOW 0x10
@@ -23,7 +25,6 @@
 
 static volatile uint32_t *apic_virt   = NULL;
 static volatile uint32_t *ioapic_virt = NULL;
-static struct vm_space    *apic_space  = NULL;
 
 static void pit_set_oneshot(uint16_t divisor) {
     outb(PIT_COMMAND, 0x34);
@@ -147,8 +148,9 @@ void ioapic_unmask(uint8_t irq) {
 
 void ioapic_init(uint64_t phys_base) {
     ASSERT_NOT_NULL(apic_virt);
-    uint64_t vaddr = vm_map(apic_space, phys_base, 0x1000, VM_WRITE | VM_UNCACHED);
-    ioapic_virt    = (volatile uint32_t *)vaddr;
+    paging_map_page(kernel_pml4, IOAPIC_VIRT_BASE, phys_base, 0x1000,
+                    ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW | ENTRY_FLAG_NX);
+    ioapic_virt = (volatile uint32_t *)IOAPIC_VIRT_BASE;
 
     uint8_t max_irqs = (ioapic_read(IOAPIC_REG_VERSION) >> 16) & 0xFF;
     for (uint8_t i = 0; i <= max_irqs; i++)
@@ -162,11 +164,10 @@ void enable_apic(bool is_bsp) {
     if ((msr & APIC_BASE_ENABLE) == 0)
         cpu_set_apic_base(phys, is_bsp);
 
-    if (!apic_space)
-        apic_space = vm_space_create(APIC_HEAP_BASE, APIC_HEAP_SIZE);
-
-    uint64_t va = vm_map(apic_space, phys, 0x1000, VM_WRITE | VM_UNCACHED);
-    apic_virt   = (volatile uint32_t *)va;
+    // map directly into kernel page tables, not a separate vm_space
+    paging_map_page(kernel_pml4, APIC_VIRT_BASE, phys, 0x1000,
+                    ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW | ENTRY_FLAG_NX);
+    apic_virt = (volatile uint32_t *)APIC_VIRT_BASE;
 
     apic_write(APIC_REG_TPR,       0);
     apic_write(APIC_REG_LVT_LINT0, APIC_LVT_MASKED);

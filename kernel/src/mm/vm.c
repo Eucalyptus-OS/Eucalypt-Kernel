@@ -57,7 +57,7 @@ uint64_t vm_alloc(struct vm_space *space, size_t size, uint64_t flags) {
 
     for (size_t i = 0; i < size; i += 0x1000) {
         uint64_t phys = frame_alloc();
-        paging_map_page(space->pml4, vaddr + i, phys, 0x1000, flags);
+        paging_map_page(PML4_VIRT(space), vaddr + i, phys, 0x1000, flags);
     }
 
     struct vm_region *r = region_alloc(vaddr, size);
@@ -77,7 +77,7 @@ uint64_t vm_alloc_at(struct vm_space *space, uint64_t vaddr, size_t size, uint64
 
     for (size_t i = 0; i < size; i += 0x1000) {
         uint64_t phys = frame_alloc();
-        paging_map_page(space->pml4, vaddr + i, phys, 0x1000, flags);
+        paging_map_page(PML4_VIRT(space), vaddr + i, phys, 0x1000, flags);
     }
 
     struct vm_region *r = region_alloc(vaddr, size);
@@ -97,7 +97,7 @@ uint64_t vm_map(struct vm_space *space, uint64_t paddr, size_t size, uint64_t fl
 
     uint64_t vaddr = space->next_free;
 
-    paging_map_page(space->pml4, vaddr, paddr, size, flags);
+    paging_map_page(PML4_VIRT(space), vaddr, paddr, size, flags);
 
     struct vm_region *r = region_alloc(vaddr, size);
     region_insert(space, r);
@@ -115,7 +115,7 @@ uint64_t vm_map_at(struct vm_space *space, uint64_t vaddr, uint64_t paddr, size_
 
     size = (size + 0xFFF) & ~(size_t)0xFFF;
 
-    paging_map_page(space->pml4, vaddr, paddr, size, flags);
+    paging_map_page(PML4_VIRT(space), vaddr, paddr, size, flags);
 
     struct vm_region *r = region_alloc(vaddr, size);
     region_insert(space, r);
@@ -135,7 +135,7 @@ uint64_t vm_map_region(struct vm_space *space, struct vm_region *region, uint64_
 
     uint64_t vaddr = space->next_free;
 
-    paging_map_page(space->pml4, vaddr, region->base, size, flags);
+    paging_map_page(PML4_VIRT(space), vaddr, region->base, size, flags);
 
     region->size = size;
     region_insert(space, region);
@@ -153,12 +153,12 @@ void vm_free(struct vm_space *space, uint64_t vaddr, size_t size) {
     size = (size + 0xFFF) & ~(size_t)0xFFF;
 
     for (size_t i = 0; i < size; i += 0x1000) {
-        uint64_t entry = paging_get_entry(space->pml4, vaddr + i);
+        uint64_t entry = paging_get_entry(PML4_VIRT(space), vaddr + i);
         if (entry & ENTRY_FLAG_PRESENT)
             frame_free(entry & ENTRY_4K_ADDRESS_MASK);
     }
 
-    paging_unmap_page(space->pml4, vaddr, size);
+    paging_unmap_page(PML4_VIRT(space), vaddr, size);
 
     struct vm_region *r = region_remove(space, vaddr);
     if (r)
@@ -166,14 +166,12 @@ void vm_free(struct vm_space *space, uint64_t vaddr, size_t size) {
 }
 
 void vm_switch(struct vm_space *space) {
-    ASSERT_NOT_NULL(space);
-    uint64_t pml4_phys = (uint64_t)space->pml4 - offset;
-    __asm__ volatile("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
+    __asm__ volatile("mov %0, %%cr3" :: "r"(space->pml4) : "memory");
 }
 
 uint64_t vm_virt_to_phys(struct vm_space *space, uint64_t vaddr) {
     ASSERT_NOT_NULL(space);
-    uint64_t entry = paging_get_entry(space->pml4, vaddr);
+    uint64_t entry = paging_get_entry(PML4_VIRT(space), vaddr);
     ASSERT(entry & ENTRY_FLAG_PRESENT);
     return (entry & ENTRY_4K_ADDRESS_MASK) | (vaddr & 0xFFF);
 }

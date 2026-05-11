@@ -3,11 +3,14 @@
 #include <stdbool.h>
 #include <portio.h>
 #include <interrupts/apic.h>
-#include <logging/serial.h>
+#include <logging/printk.h>
 #include <panic.h>
+#include <multitasking/sched.h>
 #include <idt/idt.h>
 
 #define APIC_TIMER_VECTOR 0x20
+
+extern void apic_handler();
 
 typedef struct {
     uint16_t isr_low;
@@ -60,6 +63,8 @@ void idt_init(void) {
     for (uint16_t v = 0; v < 256; v++)
         idt_set_descriptor((uint8_t)v, isr_stub_table[v], 0x8E);
 
+    idt_set_descriptor(APIC_TIMER_VECTOR, apic_handler, 0x8E);
+
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
     __asm__ volatile ("lidt %0" :: "m"(idtr));
@@ -82,15 +87,13 @@ static void exception_handler(interrupt_frame_t *f) {
     }
 }
 
-static void apic_timer_handler(interrupt_frame_t *f) {
-    (void)f;
-    serial_write_fmt(".");
+uint64_t apic_interrupt(uint64_t rsp) {
     apic_eoi();
+    return schedule(rsp);
 }
 
-void isr_handler(interrupt_frame_t *f) {
-    switch (f->vector) {
-        case APIC_TIMER_VECTOR:  apic_timer_handler(f);  break;
-        default:                 exception_handler(f);   break;
-    }
+uintptr_t isr_handler(interrupt_frame_t *f) {
+    // All vectors here are exceptions — no IRQs
+    exception_handler(f);
+    return (uintptr_t)f;
 }

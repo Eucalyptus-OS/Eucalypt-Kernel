@@ -12,7 +12,6 @@
 extern struct limine_memmap_request memmap_request;
 
 #define ENTRY_4K_ADDRESS_MASK   ((uint64_t)0x000FFFFFFFFFF000)
-
 #define VADDR_TO_INDEX(VADDR, LEVEL) (((VADDR) >> (((LEVEL) - 1) * 9 + 12)) & 0x1FF)
 
 uint64_t *kernel_pml4 = NULL;
@@ -24,22 +23,22 @@ static void map_page(uint64_t *pml4, vaddr virt, paddr phys, uint64_t flags) {
         int index = VADDR_TO_INDEX(virt, level);
         uint64_t entry = __atomic_load_n(&current_table[index], __ATOMIC_SEQ_CST);
         if ((entry & ENTRY_FLAG_PRESENT) == 0) {
-            uint64_t phys = frame_alloc();
-            uint64_t *new_table = (uint64_t *)(offset + phys);
+            uint64_t new_phys = frame_alloc();
+            uint64_t *new_table = (uint64_t *)(offset + new_phys);
             memset(new_table, 0, 0x1000);
 
             uint64_t intermediate_flags = ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW;
             if (flags & ENTRY_FLAG_USER)
                 intermediate_flags |= ENTRY_FLAG_USER;
 
-            entry = intermediate_flags | (phys & ENTRY_4K_ADDRESS_MASK);
+            entry = intermediate_flags | (new_phys & ENTRY_4K_ADDRESS_MASK);
             __atomic_store(&current_table[index], &entry, __ATOMIC_SEQ_CST);
         }
         entry = __atomic_load_n(&current_table[index], __ATOMIC_SEQ_CST);
         current_table = (uint64_t *)(offset + (entry & ENTRY_4K_ADDRESS_MASK));
     }
 
-    int index = VADDR_TO_INDEX(phys, 1);
+    int index = VADDR_TO_INDEX(virt, 1);
     uint64_t entry = ENTRY_FLAG_PRESENT | (phys & ENTRY_4K_ADDRESS_MASK) | flags;
     __atomic_store(&current_table[index], &entry, __ATOMIC_SEQ_CST);
 }
@@ -91,7 +90,7 @@ uint64_t paging_get_entry(uint64_t *pml4, vaddr virt) {
     return __atomic_load_n(&current_table[VADDR_TO_INDEX(virt, 1)], __ATOMIC_SEQ_CST);
 }
 
-paddr *paging_create_pml4() {
+paddr paging_create_pml4() {
     paddr phys = frame_alloc();
     uint64_t *pml4 = (uint64_t *)(offset + phys);
     memset(pml4, 0, 0x1000);
@@ -99,12 +98,12 @@ paddr *paging_create_pml4() {
     for (int i = 256; i < 512; i++)
         pml4[i] = __atomic_load_n(&kernel_pml4[i], __ATOMIC_SEQ_CST);
 
-    return pml4;
+    return phys;
 }
 
 uint64_t *paging_get_current_pml4() {
     uint64_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
     return (uint64_t *)(offset + (cr3 & ENTRY_4K_ADDRESS_MASK));
 }
 
@@ -120,5 +119,5 @@ void paging_init() {
         map_page(pml4, addr, addr, ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
 
     __asm__ volatile("mov %%cr3, %0\n\t"
-                     "mov %0, %%cr3" : "=r"(cr3) : : "memory");
+                     "mov %0, %%cr3" : "=r"(cr3) :: "memory");
 }

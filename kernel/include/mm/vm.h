@@ -1,7 +1,11 @@
 #pragma once
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <mm/types.h>
+
+#define PML4_VIRT(space) ((uint64_t *)(offset + (space)->pml4))
 
 struct vm_region {
     uint64_t         base;
@@ -10,7 +14,7 @@ struct vm_region {
 };
 
 struct vm_space {
-    uint64_t         *pml4;
+    paddr          pml4;
     uint64_t          heap_base;
     uint64_t          heap_end;
     uint64_t          next_free;

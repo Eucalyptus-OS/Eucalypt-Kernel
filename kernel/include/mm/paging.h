@@ -21,6 +21,6 @@ extern uint64_t *kernel_pml4;
 void paging_map_page(uint64_t *pml4, vaddr virt, paddr phys, size_t length, uint64_t flags);
 void paging_unmap_page(uint64_t *pml4, vaddr virt, size_t length);
 uint64_t paging_get_entry(uint64_t *pml4, vaddr virt);
-paddr *paging_create_pml4();
+paddr paging_create_pml4();
 uint64_t *paging_get_current_pml4();
 void paging_init();
