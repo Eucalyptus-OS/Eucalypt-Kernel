@@ -96,6 +96,7 @@ struct tcb *create_thread(void *entry, bool user) {
 
     tcb->tid         = next_tid++;
     tcb->cr3         = current_cr3;
+    tcb->state       = ready;
     tcb->stack_base  = kstack.raw;
     tcb->ustack_base = ustack.raw;
     tcb->entry       = entry;
@@ -112,22 +113,22 @@ struct tcb *create_thread(void *entry, bool user) {
 }
 
 struct tcb *get_thread_copy(uint16_t tid) {
-    for (int i = 0; i < rq->count; i++) {
-        int idx = (rq->front + i) % MAX_THREADS;
+    for (int i = 0; i < tq->count; i++) {
+        int idx = (tq->front + i) % MAX_THREADS;
 
-        if (rq->threads[idx]->tid == tid)
-            return rq->threads[idx];
+        if (tq->threads[idx]->tid == tid)
+            return tq->threads[idx];
     }
 
     return NULL;
 }
 
 struct tcb **get_thread(uint16_t tid) {
-    for (int i = 0; i < rq->count; i++) {
-        int idx = (rq->front + i) % MAX_THREADS;
+    for (int i = 0; i < tq->count; i++) {
+        int idx = (tq->front + i) % MAX_THREADS;
 
-        if (rq->threads[idx]->tid == tid)
-            return &rq->threads[idx];
+        if (tq->threads[idx]->tid == tid)
+            return &tq->threads[idx];
     }
 
     return NULL;
@@ -136,10 +137,10 @@ struct tcb **get_thread(uint16_t tid) {
 void remove_thread(uint16_t tid) {
     int found_index = -1;
 
-    for (int i = 0; i < rq->count; i++) {
-        int idx = (rq->front + i) % MAX_THREADS;
+    for (int i = 0; i < tq->count; i++) {
+        int idx = (tq->front + i) % MAX_THREADS;
 
-        if (rq->threads[idx]->tid == tid) {
+        if (tq->threads[idx]->tid == tid) {
             found_index = idx;
             break;
         }
@@ -148,20 +149,20 @@ void remove_thread(uint16_t tid) {
     if (found_index == -1)
         return;
 
-    struct tcb *tcb_to_remove = rq->threads[found_index];
+    struct tcb *tcb_to_remove = tq->threads[found_index];
 
     int current = found_index;
 
-    for (int i = 0; i < rq->count - 1; i++) {
+    for (int i = 0; i < tq->count - 1; i++) {
         int next = (current + 1) % MAX_THREADS;
 
-        rq->threads[current] = rq->threads[next];
+        tq->threads[current] = tq->threads[next];
 
         current = next;
     }
 
-    rq->rear = (rq->rear - 1 + MAX_THREADS) % MAX_THREADS;
-    rq->count--;
+    tq->rear = (tq->rear - 1 + MAX_THREADS) % MAX_THREADS;
+    tq->count--;
 
     if (tcb_to_remove->ustack_base)
         kfree(tcb_to_remove->ustack_base);

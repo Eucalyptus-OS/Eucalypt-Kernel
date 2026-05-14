@@ -9,7 +9,7 @@ extern void context_switch(struct tcb *current, struct tcb *next);
 
 static threads_t ready_queue_data;
 
-threads_t *rq = &ready_queue_data;
+threads_t *tq = &ready_queue_data;
 
 static bool enabled = false;
 
@@ -22,35 +22,35 @@ void disable_sched() {
 }
 
 void scheduler_init() {
-    rq->front = 0;
-    rq->rear  = 0;
-    rq->count = 0;
+    tq->front = 0;
+    tq->rear  = 0;
+    tq->count = 0;
 
     disable_sched();
 }
 
 bool enqueue(struct tcb *thread) {
-    if (rq->count == MAX_THREADS)
+    if (tq->count == MAX_THREADS)
         return false;
 
-    rq->threads[rq->rear] = thread;
+    tq->threads[tq->rear] = thread;
 
-    rq->rear = (rq->rear + 1) % MAX_THREADS;
+    tq->rear = (tq->rear + 1) % MAX_THREADS;
 
-    rq->count++;
+    tq->count++;
 
     return true;
 }
 
 struct tcb *dequeue() {
-    if (rq->count == 0)
+    if (tq->count == 0)
         return NULL;
 
-    struct tcb *thread = rq->threads[rq->front];
+    struct tcb *thread = tq->threads[tq->front];
 
-    rq->front = (rq->front + 1) % MAX_THREADS;
+    tq->front = (tq->front + 1) % MAX_THREADS;
 
-    rq->count--;
+    tq->count--;
 
     return thread;
 }
@@ -59,7 +59,7 @@ uintptr_t schedule(uintptr_t rsp) {
     if (!__atomic_load_n(&enabled, __ATOMIC_ACQUIRE))
         return rsp;
 
-    if (rq->count < 2)
+    if (tq->count < 2)
         return rsp;
 
     struct tcb *current = dequeue();
@@ -68,7 +68,10 @@ uintptr_t schedule(uintptr_t rsp) {
 
     enqueue(current);
 
-    struct tcb *next = rq->threads[rq->front];
+    struct tcb *next = tq->threads[tq->front];
+
+    if (next->state != ready)
+        return rsp;
 
     tss.rsp0 = ((((uintptr_t)next->stack_base + 0xFFF) & ~0xFFFULL)
                + KERNEL_STACK_SIZE) & ~0xFULL;

@@ -11,6 +11,8 @@
 #include <interrupts/apic.h>
 #include <multitasking/thread.h>
 #include <multitasking/sched.h>
+#include <drivers/pci.h>
+#include <drivers/block/ahci.h>
 
 // Set the base revision to 6, this is recommended as this is the latest
 // base revision described by the Limine boot protocol specification.
@@ -82,6 +84,8 @@ void kmain(void) {
     log_info("Heap initialized\n");
     enable_apic(true);
     log_info("APIC enabled\n");
+    ahci_init();
+    log_info("AHCI initialized\n");
 
     scheduler_init();
 
@@ -93,7 +97,7 @@ void kmain(void) {
     for (int i = 0; i < 50; i++)
         create_thread(thread_b, false);
 
-    log_info("Threads created count=%d\n", rq->count);
+    log_info("Threads created count=%d\n", tq->count);
 
     enable_sched();
     log_info("Scheduler enabled\n");

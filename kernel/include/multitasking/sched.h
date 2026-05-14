@@ -11,7 +11,7 @@ typedef struct ready_queue {
     int count;
 } threads_t;
 
-extern threads_t *rq;
+extern threads_t *tq;
  
 void enable_sched();
 void disable_sched();
