@@ -12,10 +12,12 @@ typedef enum {
     running,
     sleeping,
     blocked,
+    dead,
 } state_t;
 
 typedef struct tcb {
     uint16_t  tid;
+    struct pcb *parent;
     uintptr_t rsp;
     paddr    cr3;
     state_t state;
@@ -24,7 +26,7 @@ typedef struct tcb {
     void     *entry;
 } tcb_t;
 
-static_assert(offsetof(tcb_t, rsp) == 8, "Unexpected TCB offset, correct in switch.asm");
+static_assert(offsetof(tcb_t, rsp) == 16, "Unexpected TCB offset, correct in switch.asm");
 
 struct tcb *create_thread(void *entry, bool user);
 struct tcb *get_thread_copy(uint16_t tid);

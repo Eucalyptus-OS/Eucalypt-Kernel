@@ -1,16 +1,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-
 #include <mm/types.h>
 #include <mm/heap.h>
 #include <mm/frame.h>
 #include <mm/paging.h>
 #include <mm/vm.h>
 #include <mm/hhdm.h>
-
 #include <gdt/gdt.h>
-
+#include <logging/printk.h>
 #include <multitasking/sched.h>
 #include <multitasking/thread.h>
 
@@ -19,7 +17,7 @@
 #define KERNEL_CS 0x08
 #define KERNEL_SS 0x10
 
-extern void thread_trampoline(void);
+extern void thread_trampoline();
 
 uint16_t next_tid = 0;
 
@@ -90,12 +88,13 @@ struct tcb *create_thread(void *entry, bool user) {
         return NULL;
     }
 
-    paddr current_cr3;
+    paddr new_cr3 = paging_create_pml4();
 
-    __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
+    log_debug("Thread %d cr3: %llX", next_tid, new_cr3);
 
     tcb->tid         = next_tid++;
-    tcb->cr3         = current_cr3;
+    tcb->parent      = NULL;
+    tcb->cr3         = new_cr3;
     tcb->state       = ready;
     tcb->stack_base  = kstack.raw;
     tcb->ustack_base = ustack.raw;
@@ -171,4 +170,12 @@ void remove_thread(uint16_t tid) {
         kfree(tcb_to_remove->stack_base);
 
     kfree(tcb_to_remove);
+}
+
+void handle_ret(long int code) {
+    __asm__ volatile("cli");
+    current_thread->state = dead;
+    log_info("Thread %d exited with code %ld", current_thread->tid, code);
+    __asm__ volatile("int $32");
+    __builtin_unreachable();
 }

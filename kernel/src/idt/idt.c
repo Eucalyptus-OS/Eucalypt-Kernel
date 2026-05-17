@@ -73,6 +73,7 @@ void idt_init(void) {
 
 __attribute__((noreturn))
 static void exception_handler(interrupt_frame_t *f) {
+    __asm__ volatile ("cli");
     uint64_t cr2 = 0, cr3 = 0;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
@@ -93,7 +94,6 @@ uint64_t apic_interrupt(uint64_t rsp) {
 }
 
 uintptr_t isr_handler(interrupt_frame_t *f) {
-    // All vectors here are exceptions — no IRQs
     exception_handler(f);
     return (uintptr_t)f;
 }

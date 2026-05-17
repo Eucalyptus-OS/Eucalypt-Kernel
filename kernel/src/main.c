@@ -43,22 +43,25 @@ static void hcf(void) {
     }
 }
 
+[[gnu::noreturn]]
 void idle_thread(void) {
     while (1) __asm__ volatile("hlt");
 }
 
-void thread_a(void) {
+int thread_a(void) {
     while (1) {
         log_info("Thread A running\n");
         // busy loop to simulate work
         for (volatile int i = 0; i < 1000000; i++);
+        return 0;
     }
 }
 
-void thread_b(void) {
+int thread_b(void) {
     while (1) {
         log_info("Thread B running\n");
         for (volatile int i = 0; i < 1000000; i++);
+        return 1;
     }
 }
 
@@ -84,18 +87,20 @@ void kmain(void) {
     log_info("Heap initialized\n");
     enable_apic(true);
     log_info("APIC enabled\n");
-    ahci_init();
+    //ahci_init();
     log_info("AHCI initialized\n");
 
     scheduler_init();
 
     create_thread(idle_thread, false);
 
-    for (int i = 0; i < 50; i++)
+    for (int i = 0; i < 100; i++)
         create_thread(thread_a, false);
 
-    for (int i = 0; i < 50; i++)
+    for (int i = 0; i < 100; i++)
         create_thread(thread_b, false);
+
+    create_thread(thread_b, false);
 
     log_info("Threads created count=%d\n", tq->count);
 
@@ -104,6 +109,4 @@ void kmain(void) {
 
     apic_timer_init(1000);
     log_info("APIC timer initialized at 1000 Hz\n");
-
-    hcf();
 }
