@@ -7,22 +7,20 @@
 #include <mm/hhdm.h>
 #include <mm/frame.h>
 #include <mm/paging.h>
+#include <mm/vm.h>
 #include <mm/heap.h>
+#include <mm/types.h>
+#include <binl/elf64.h>
 #include <interrupts/apic.h>
 #include <multitasking/thread.h>
 #include <multitasking/sched.h>
+#include <multitasking/proc.h>
 #include <drivers/pci.h>
 #include <drivers/block/ahci.h>
-
-// Set the base revision to 6, this is recommended as this is the latest
-// base revision described by the Limine boot protocol specification.
-// See specification for further info.
+#include <drivers/block/ramfs.h>
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(6);
-
-// Finally, define the start and end markers for the Limine requests.
-// These can also be moved anywhere, to any .c file, as seen fit.
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -30,7 +28,6 @@ static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
-// Halt and catch fire function.
 static void hcf(void) {
     for (;;) {
 #if defined (__x86_64__)
@@ -51,9 +48,8 @@ void idle_thread(void) {
 int thread_a(void) {
     while (1) {
         log_info("Thread A running\n");
-        // busy loop to simulate work
         for (volatile int i = 0; i < 1000000; i++);
-        return 0;
+        return -1;
     }
 }
 
@@ -65,9 +61,18 @@ int thread_b(void) {
     }
 }
 
-// The following will be our kernel's entry point.
-// If renaming kmain() to something else, make sure to change the
-// linker script accordingly.
+uint64_t alloc_user_stack(uint64_t *cr3) {
+    uint64_t user_stack_base = 0x70000000000;
+    uint64_t pages = 4;
+    uint64_t flags = ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW | ENTRY_FLAG_NX | ENTRY_FLAG_USER;
+    for (uint64_t i = 0; i < pages; i++) {
+        paddr frame = frame_alloc();
+        vaddr virt = user_stack_base + (i * 0x1000);
+        paging_map_page(cr3, virt, frame, 0x1000, flags);
+    }
+    return user_stack_base + (pages * 0x1000);
+}
+
 void kmain(void) {
     if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false)
         hcf();
@@ -87,26 +92,40 @@ void kmain(void) {
     log_info("Heap initialized\n");
     enable_apic(true);
     log_info("APIC enabled\n");
-    //ahci_init();
+    ahci_init();
     log_info("AHCI initialized\n");
+    ramfs_init();
+    log_info("Ramfs initialized\n");
 
     scheduler_init();
 
-    create_thread(idle_thread, false);
+    paddr idle_cr3 = paging_create_pml4();
+    create_thread(idle_thread, idle_cr3, false);
+    log_info("Idle thread created\n");
 
-    for (int i = 0; i < 100; i++)
-        create_thread(thread_a, false);
+    ramfs_file_t *app = ramfs_read(ramfs_addr, "main");
+    if (!app) {
+        log_error("Failed to find user application in ramfs\n");
+        hcf();
+    }
 
-    for (int i = 0; i < 100; i++)
-        create_thread(thread_b, false);
+    paddr user_cr3 = paging_create_pml4();
+    uint64_t *pml4 = (uint64_t *)(offset + user_cr3);
 
-    create_thread(thread_b, false);
+    uint64_t entry = elf64_parse(app->data, user_cr3);
+    if (entry == 0) {
+        log_error("Failed to parse user application\n");
+        hcf();
+    }
 
-    log_info("Threads created count=%d\n", tq->count);
+    uint64_t user_stack = alloc_user_stack(pml4);
+    log_info("Creating user thread: entry=%llx stack=%llx cr3=%llx\n", entry, user_stack, user_cr3);
+
+    create_user_thread(entry, user_cr3, user_stack);
 
     enable_sched();
-    log_info("Scheduler enabled\n");
-
     apic_timer_init(1000);
-    log_info("APIC timer initialized at 1000 Hz\n");
+
+    __asm__ volatile("sti");
+    for (;;) __asm__ volatile("hlt");
 }

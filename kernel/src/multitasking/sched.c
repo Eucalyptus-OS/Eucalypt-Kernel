@@ -62,31 +62,32 @@ uintptr_t schedule(uintptr_t rsp) {
     }
 
     if (current_thread == NULL) {
-        current_thread = tq->threads[tq->front];
+        current_thread = dequeue();
+        if (!current_thread) return rsp;
+        tss.rsp0 = (uintptr_t)current_thread->stack_base + KERNEL_STACK_SIZE;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(current_thread->cr3));
         return current_thread->rsp;
     }
 
-    struct tcb *current = dequeue();
-    if (current->state == dead) {
-        if (current->ustack_base) kfree(current->ustack_base);
-        to_reap = current;
-    } else if (rsp != 0) {
-        current->rsp = rsp;
-        enqueue(current);
+    if (rsp != 0)
+        current_thread->rsp = rsp;
+
+    if (current_thread->state == dead) {
+        if (current_thread->ustack_base) kfree(current_thread->ustack_base);
+        to_reap = current_thread;
+    } else {
+        enqueue(current_thread);
     }
 
-    if (tq->count == 0)
-        return 0;
+    if (tq->count == 0) return rsp;
 
-    struct tcb *next = tq->threads[tq->front];
-    current_thread = next;
-
-    tss.rsp0 = (uintptr_t)next->stack_base + KERNEL_STACK_SIZE;
+    current_thread = dequeue();
+    tss.rsp0 = (uintptr_t)current_thread->stack_base + KERNEL_STACK_SIZE;
 
     paddr current_cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
-    if (next->cr3 != current_cr3)
-        __asm__ volatile("mov %0, %%cr3" :: "r"(next->cr3));
+    if (current_thread->cr3 != current_cr3)
+        __asm__ volatile("mov %0, %%cr3" :: "r"(current_thread->cr3));
 
-    return next->rsp;
+    return current_thread->rsp;
 }

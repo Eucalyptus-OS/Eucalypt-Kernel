@@ -2,8 +2,6 @@
 
 #include <multitasking/thread.h>
 
-#define MAX_THREADS 1024
-
 typedef struct ready_queue {
     struct tcb *threads[MAX_THREADS];
     int front;

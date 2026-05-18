@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <mm/types.h>
 
+#define MAX_THREADS 1024
 #define KERNEL_STACK_SIZE 8192
 #define USER_STACK_SIZE   8192
 
@@ -28,7 +29,9 @@ typedef struct tcb {
 
 static_assert(offsetof(tcb_t, rsp) == 16, "Unexpected TCB offset, correct in switch.asm");
 
-struct tcb *create_thread(void *entry, bool user);
+struct tcb *create_thread(void *entry, paddr cr3, bool user);
+struct tcb *create_user_thread(uint64_t entry, paddr cr3, uint64_t user_stack);;
 struct tcb *get_thread_copy(uint16_t tid);
 struct tcb **get_thread(uint16_t tid);
-void remove_thread(uint16_t tid);
+void thread_destroy(struct tcb *thread);
+void jump_to_user(uint64_t cr3, uint64_t entry, uint64_t user_stack);

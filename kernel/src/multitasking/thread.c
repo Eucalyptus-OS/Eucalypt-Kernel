@@ -60,7 +60,43 @@ uint64_t setup_stack(uint8_t *stack_base, uint64_t stack_size, void *entry) {
     return (uint64_t)rsp;
 }
 
-struct tcb *create_thread(void *entry, bool user) {
+struct tcb *create_user_thread(uint64_t entry, paddr cr3, uint64_t user_stack) {
+    struct stack_alloc kstack = alloc_aligned_stack(KERNEL_STACK_SIZE);
+    if (!kstack.aligned)
+        return NULL;
+
+    struct tcb *tcb = kmalloc(sizeof(struct tcb));
+    if (!tcb) {
+        kfree(kstack.raw);
+        return NULL;
+    }
+
+    uint64_t *rsp = (uint64_t *)((uint8_t *)kstack.aligned + KERNEL_STACK_SIZE);
+
+    *--rsp = 0x1B;          // SS  (user data)
+    *--rsp = user_stack;    // RSP (user stack)
+    *--rsp = 0x202;         // RFLAGS
+    *--rsp = 0x23;          // CS  (user code)
+    *--rsp = entry;         // RIP
+
+    for (int i = 0; i < 15; i++)
+        *--rsp = 0;
+
+    log_debug("User thread %d cr3: %llX", next_tid, cr3);
+    tcb->tid         = next_tid++;
+    tcb->parent      = NULL;
+    tcb->cr3         = cr3;
+    tcb->state       = ready;
+    tcb->stack_base  = kstack.raw;
+    tcb->ustack_base = NULL;
+    tcb->entry       = (void *)entry;
+    tcb->rsp         = (uint64_t)rsp;
+
+    enqueue(tcb);
+    return tcb;
+}
+
+struct tcb *create_thread(void *entry, paddr cr3, bool user) {
     struct stack_alloc kstack = alloc_aligned_stack(KERNEL_STACK_SIZE);
 
     if (!kstack.aligned)
@@ -88,13 +124,11 @@ struct tcb *create_thread(void *entry, bool user) {
         return NULL;
     }
 
-    paddr new_cr3 = paging_create_pml4();
-
-    log_debug("Thread %d cr3: %llX", next_tid, new_cr3);
+    log_debug("Thread %d cr3: %llX", next_tid, cr3);
 
     tcb->tid         = next_tid++;
     tcb->parent      = NULL;
-    tcb->cr3         = new_cr3;
+    tcb->cr3         = cr3;
     tcb->state       = ready;
     tcb->stack_base  = kstack.raw;
     tcb->ustack_base = ustack.raw;
@@ -133,46 +167,19 @@ struct tcb **get_thread(uint16_t tid) {
     return NULL;
 }
 
-void remove_thread(uint16_t tid) {
-    int found_index = -1;
-
-    for (int i = 0; i < tq->count; i++) {
-        int idx = (tq->front + i) % MAX_THREADS;
-
-        if (tq->threads[idx]->tid == tid) {
-            found_index = idx;
-            break;
-        }
-    }
-
-    if (found_index == -1)
+void thread_destroy(struct tcb *thread) {
+    if (!thread)
         return;
 
-    struct tcb *tcb_to_remove = tq->threads[found_index];
+    log_info("Freeing thread %d", thread->tid);
 
-    int current = found_index;
-
-    for (int i = 0; i < tq->count - 1; i++) {
-        int next = (current + 1) % MAX_THREADS;
-
-        tq->threads[current] = tq->threads[next];
-
-        current = next;
-    }
-
-    tq->rear = (tq->rear - 1 + MAX_THREADS) % MAX_THREADS;
-    tq->count--;
-
-    if (tcb_to_remove->ustack_base)
-        kfree(tcb_to_remove->ustack_base);
-
-    if (tcb_to_remove->stack_base)
-        kfree(tcb_to_remove->stack_base);
-
-    kfree(tcb_to_remove);
+    kfree(thread->ustack_base);
+    kfree(thread->stack_base);
+    frame_free(thread->cr3);
+    kfree(thread);
 }
 
-void handle_ret(long int code) {
+void handle_ret(int64_t code) {
     __asm__ volatile("cli");
     current_thread->state = dead;
     log_info("Thread %d exited with code %ld", current_thread->tid, code);

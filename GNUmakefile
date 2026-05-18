@@ -5,9 +5,9 @@
 ARCH := x86_64
 
 # Default user QEMU flags. These are appended to the QEMU command calls.
-QEMUFLAGS := -m 2G -debugcon stdio
+QEMUFLAGS := -m 2G -debugcon stdio -d int
 
-override IMAGE_NAME := template-$(ARCH)
+override IMAGE_NAME := eucalypt-$(ARCH)
 
 # Toolchain for building the 'limine' executable for the host.
 HOST_CC := cc
@@ -15,6 +15,7 @@ HOST_CFLAGS := -g -O2 -pipe
 HOST_CPPFLAGS :=
 HOST_LDFLAGS :=
 HOST_LIBS :=
+ARCHIVE := ./archive
 
 .PHONY: all
 all: $(IMAGE_NAME).iso
@@ -138,6 +139,10 @@ run-hdd-bios: $(IMAGE_NAME).hdd
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
+.PHONY: create_archive
+create_archive:
+	tar --format=ustar -cf main_archive.tar -C archive main
+
 edk2-ovmf:
 	curl -L https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/edk2-ovmf.tar.gz | gunzip | tar -xf -
 
@@ -158,13 +163,15 @@ kernel/.deps-obtained:
 kernel: kernel/.deps-obtained
 	$(MAKE) -C kernel
 
-$(IMAGE_NAME).iso: limine-binary/limine kernel
+$(IMAGE_NAME).iso: create_archive limine-binary/limine kernel
 	rm -rf iso_root
 	mkdir -p iso_root/boot
 	cp -v kernel/bin-$(ARCH)/kernel iso_root/boot/
 	mkdir -p iso_root/boot/limine
 	cp -v limine.conf iso_root/boot/limine/
 	mkdir -p iso_root/EFI/BOOT
+	mkdir -p iso_root/archive
+	cp -v main_archive.tar iso_root/archive/
 ifeq ($(ARCH),x86_64)
 	cp -v limine-binary/limine-bios.sys limine-binary/limine-bios-cd.bin limine-binary/limine-uefi-cd.bin iso_root/boot/limine/
 	cp -v limine-binary/BOOTX64.EFI iso_root/EFI/BOOT/

@@ -30,7 +30,9 @@ thread_trampoline:
     sti
     call rbx
     cli
-    mov rdi, rax
+    test rax, 0xFFFFFFFF00000000
+    test eax, eax
+    movsxd rdi, eax
     call handle_ret
     ud2
 .hang:

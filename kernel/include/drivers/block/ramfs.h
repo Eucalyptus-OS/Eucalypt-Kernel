@@ -12,6 +12,9 @@ enum ramfs_type {
     RAMFS_NAMED_PIPE = 6,
 };
 
+extern void *ramfs_addr;
+extern uint64_t ramfs_size;
+
 typedef struct {
     uint64_t offset;
     uint64_t size;  
@@ -21,4 +24,9 @@ typedef struct {
 typedef struct {
     char *name;
     void *data;
+    uint64_t size;
 } ramfs_file_t;
+
+void ramfs_init();
+ramfs_file_t *ramfs_read(char *archive, char *filename);
+int ramfs_list(char *archive, char *directory, char **filenames, int max_files);
