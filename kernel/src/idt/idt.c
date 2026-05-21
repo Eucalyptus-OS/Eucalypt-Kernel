@@ -1,4 +1,3 @@
-
 #include <stdint.h>
 #include <stdbool.h>
 #include <portio.h>
@@ -9,8 +8,10 @@
 #include <idt/idt.h>
 
 #define APIC_TIMER_VECTOR 0x20
+#define SYSCALL_VECTOR    0x80
 
 extern void apic_handler();
+extern void int128_handler();
 
 typedef struct {
     uint16_t isr_low;
@@ -47,13 +48,13 @@ extern void *isr_stub_table[];
 
 void idt_set_descriptor(uint8_t vector, void *isr, uint8_t flags) {
     idt_entry_t *d = &idt[vector];
-    d->isr_low     = (uint64_t)isr & 0xFFFF;
-    d->kernel_cs   = 0x08;
-    d->ist         = 0;
-    d->attributes  = flags;
-    d->isr_mid     = ((uint64_t)isr >> 16) & 0xFFFF;
-    d->isr_high    = ((uint64_t)isr >> 32) & 0xFFFFFFFF;
-    d->reserved    = 0;
+    d->isr_low   = (uint64_t)isr & 0xFFFF;
+    d->kernel_cs = 0x08;
+    d->ist       = 0;
+    d->attributes = flags;
+    d->isr_mid   = ((uint64_t)isr >> 16) & 0xFFFF;
+    d->isr_high  = ((uint64_t)isr >> 32) & 0xFFFFFFFF;
+    d->reserved  = 0;
 }
 
 void idt_init(void) {
@@ -63,7 +64,8 @@ void idt_init(void) {
     for (uint16_t v = 0; v < 256; v++)
         idt_set_descriptor((uint8_t)v, isr_stub_table[v], 0x8E);
 
-    idt_set_descriptor(APIC_TIMER_VECTOR, apic_handler, 0x8E);
+    idt_set_descriptor(APIC_TIMER_VECTOR, apic_handler,   0x8E);
+    idt_set_descriptor(SYSCALL_VECTOR,    int128_handler, 0xEE);
 
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
@@ -83,9 +85,7 @@ static void exception_handler(interrupt_frame_t *f) {
           (unsigned long long)f->rip,
           (unsigned long long)cr2,
           (unsigned long long)cr3);
-    for (;;) {
-        __asm__ volatile ("cli\nhlt");
-    }
+    for (;;) __asm__ volatile ("cli\nhlt");
 }
 
 uint64_t apic_interrupt(uint64_t rsp) {

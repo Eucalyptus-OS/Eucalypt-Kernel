@@ -63,3 +63,12 @@ int strlen(const char *s) {
     while (s[len]) len++;
     return len;
 }
+
+int strcmp(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return *a - *b;
+        a++;
+        b++;
+    }
+    return *a - *b;
+}
