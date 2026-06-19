@@ -3,6 +3,8 @@
 #include <portio.h>
 #include <mm/paging.h>
 #include <assert.h>
+#include <logging/printk.h>
+#include <msr.h>
 #include <interrupts/apic.h>
 
 #define APIC_BASE_MSR    0x1B
@@ -24,8 +26,9 @@
 #define PIT_COMMAND    0x43
 #define PIT_BASE_HZ    1193182
 
-static volatile uint32_t *apic_virt   = NULL;
+static volatile uint32_t *apic_virt = NULL;
 static volatile uint32_t *ioapic_virt = NULL;
+static volatile int apic_mapped = 0;
 
 static void pit_set_oneshot(uint16_t divisor) {
     outb(PIT_COMMAND, 0x34);
@@ -109,6 +112,7 @@ static uint32_t apic_timer_calibrate(uint64_t hz) {
 
 void apic_timer_init(uint32_t hz) {
     uint32_t ticks_per_sec = apic_timer_calibrate(hz);
+    
     uint32_t interval      = ticks_per_sec / hz;
 
     apic_write(APIC_REG_TIMER_DCR, APIC_TIMER_DCR_1);
@@ -159,16 +163,24 @@ void ioapic_init() {
         ioapic_mask(i);
 }
 
-void enable_apic(bool is_bsp) {
+void enable_apic(uint8_t id, bool is_bsp) {
     uint64_t phys = cpu_get_apic_base();
     uint64_t msr  = cpu_read_apic_msr();
+    log_debug("Apic - AP: %d, phys = %X, msr = %X, virt = %X\n", id, phys, msr, apic_virt);
 
     if ((msr & APIC_BASE_ENABLE) == 0)
         cpu_set_apic_base(phys, is_bsp);
 
-    paging_map_page(kernel_pml4, APIC_VIRT_BASE, phys, 0x1000,
-                    ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW | ENTRY_FLAG_NX);
-    apic_virt = (volatile uint32_t *)APIC_VIRT_BASE;
+    if (is_bsp) {
+        paging_map_page(kernel_pml4, APIC_VIRT_BASE, phys, 0x1000,
+                        ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW | ENTRY_FLAG_NX);
+        apic_virt = (volatile uint32_t *)APIC_VIRT_BASE;
+        __atomic_store_n(&apic_mapped, 1, __ATOMIC_RELEASE);
+    } else {
+        while (!__atomic_load_n(&apic_mapped, __ATOMIC_ACQUIRE)) {
+            asm volatile ("pause");
+        }
+    }
 
     apic_write(APIC_REG_TPR,       0);
     apic_write(APIC_REG_LVT_LINT0, APIC_LVT_MASKED);

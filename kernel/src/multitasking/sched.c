@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdbool.h>
+#include <smp.h>
 #include <logging/printk.h>
 #include <gdt/gdt.h>
 #include <mm/heap.h>

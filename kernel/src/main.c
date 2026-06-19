@@ -102,7 +102,7 @@ void kmain(void) {
     log_info("Paging initialized\n");
     heap_init();
     log_info("Heap initialized\n");
-    enable_apic(true);
+    enable_apic(0, true);
     log_info("APIC enabled\n");
     ioapic_init();
     log_info("IOAPIC initalized\n");

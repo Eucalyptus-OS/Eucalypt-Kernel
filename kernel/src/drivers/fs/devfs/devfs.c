@@ -206,7 +206,7 @@ void devfs_init(void) {
 
     devfs_register("null",    null_read,    null_write,    NULL);
     devfs_register("zero",    zero_read,    zero_write,    NULL);
-    devfs_register("console", console_read, console_write, NULL);
+    devfs_register("tty",     console_read, console_write, NULL);
     devfs_register("stdin",   stdin_read,   stdin_write,   NULL);
     devfs_register("stdout",  stdout_read,  stdout_write,  NULL);
     devfs_register("stderr",  stderr_read,  stderr_write,  NULL);

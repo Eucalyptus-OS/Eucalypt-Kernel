@@ -10,6 +10,8 @@
 #include <drivers/fs/fat16/fat16.h>
 #include <drivers/fs/devfs/devfs.h>
 #include <drivers/fs/vfs/vfs.h>
+#include <multitasking/proc.h>
+#include <multitasking/sched.h>
 
 #define MAX_DRIVES  254
 #define MAX_FD      256
@@ -20,7 +22,7 @@ static vfs_mount_t  mount_table[MAX_DRIVES];
 static uint8_t      mount_count = 0;
 static uint8_t      vfs_ready   = 0;
 
-static vfs_file_t   fd_table[MAX_FD];
+static vfs_file_t  *kernel_fd_table[MAX_FD];
 static uint8_t      fd_ready = 0;
 
 static vfs_node_t  *vfs_root = NULL;
@@ -32,22 +34,73 @@ static uint32_t alloc_ino(void) {
     return next_ino++;
 }
 
-static void fd_table_init(void) {
-    for (int i = 0; i < MAX_FD; i++) {
-        fd_table[i].node   = NULL;
-        fd_table[i].offset = 0;
-        fd_table[i].flags  = 0;
-        fd_table[i].open   = 0;
-    }
-    fd_ready = 1;
+void vfs_fd_table_init(vfs_file_t **table, size_t count) {
+    if (!table) return;
+    for (size_t i = 0; i < count; i++)
+        table[i] = NULL;
 }
 
-static int fd_alloc(void) {
-    for (int i = 0; i < MAX_FD; i++) {
-        if (!fd_table[i].open) return i;
+static vfs_file_t **current_fd_table(size_t *count) {
+    struct tcb *thread = get_current_thread();
+    if (thread && thread->parent) {
+        if (count) *count = MAX_FDS;
+        return thread->parent->fd_table;
+    }
+
+    if (count) *count = MAX_FD;
+    return kernel_fd_table;
+}
+
+static vfs_file_t *fd_get(int fd) {
+    size_t count;
+    vfs_file_t **table = current_fd_table(&count);
+
+    if (fd < 0 || (size_t)fd >= count)
+        return NULL;
+
+    return table[fd];
+}
+
+static int fd_alloc(vfs_file_t **table, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (!table[i]) return (int)i;
     }
     errno = ENFILE;
     return -1;
+}
+
+static vfs_file_t *vfs_file_create(vfs_node_t *node, int flags) {
+    vfs_file_t *file = kmalloc(sizeof(vfs_file_t));
+    if (!file) {
+        errno = ENOSPC;
+        return NULL;
+    }
+
+    file->node      = node;
+    file->offset    = (flags & O_APPEND) ? (off_t)node->size : 0;
+    file->flags     = flags;
+    file->ref_count = 1;
+    node->ref_count++;
+    return file;
+}
+
+static void vfs_file_ref(vfs_file_t *file) {
+    if (file)
+        file->ref_count++;
+}
+
+static void vfs_file_unref(vfs_file_t *file) {
+    if (!file)
+        return;
+
+    if (file->ref_count > 0)
+        file->ref_count--;
+
+    if (file->ref_count == 0) {
+        if (file->node && file->node->ref_count > 0)
+            file->node->ref_count--;
+        kfree(file);
+    }
 }
 
 vfs_node_t *vfs_node_alloc(const char *name, uint32_t type) {
@@ -677,46 +730,48 @@ int open(const char *path, int flags, ...) {
             node->size = 0;
     }
 
-    int fd = fd_alloc();
+    size_t fd_count;
+    vfs_file_t **fd_table = current_fd_table(&fd_count);
+
+    int fd = fd_alloc(fd_table, fd_count);
     if (fd < 0) return -1;
 
-    fd_table[fd].node   = node;
-    fd_table[fd].offset = (flags & O_APPEND) ? (off_t)node->size : 0;
-    fd_table[fd].flags  = flags;
-    fd_table[fd].open   = 1;
-    node->ref_count++;
+    fd_table[fd] = vfs_file_create(node, flags);
+    if (!fd_table[fd])
+        return -1;
 
     return fd;
 }
 
 int close(int fd) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open) { errno = EBADF; return -1; }
-    fd_table[fd].node->ref_count--;
-    fd_table[fd].node   = NULL;
-    fd_table[fd].offset = 0;
-    fd_table[fd].flags  = 0;
-    fd_table[fd].open   = 0;
+    size_t fd_count;
+    vfs_file_t **fd_table = current_fd_table(&fd_count);
+
+    if (fd < 0 || (size_t)fd >= fd_count || !fd_table[fd]) { errno = EBADF; return -1; }
+    vfs_file_unref(fd_table[fd]);
+    fd_table[fd] = NULL;
     return 0;
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open) { errno = EBADF; return -1; }
+    vfs_file_t *file = fd_get(fd);
+    if (!file) { errno = EBADF; return -1; }
     if (!buf)    { errno = EINVAL; return -1; }
     if (!count)  return 0;
 
-    if ((fd_table[fd].flags & O_WRONLY) && !(fd_table[fd].flags & O_RDWR)) {
+    if ((file->flags & O_WRONLY) && !(file->flags & O_RDWR)) {
         errno = EACCES;
         return -1;
     }
 
-    vfs_node_t *node = fd_table[fd].node;
+    vfs_node_t *node = file->node;
     if (!node) { errno = EBADF; return -1; }
 
     if (node->type == VFS_NODE_DEV) {
         devfs_dev_t *ddev = (devfs_dev_t *)node->priv;
         if (ddev && ddev->read) {
             ssize_t n = ddev->read(ddev, buf, count);
-            if (n > 0) fd_table[fd].offset += n;
+            if (n > 0) file->offset += n;
             return n;
         }
         errno = EBADF;
@@ -724,30 +779,31 @@ ssize_t read(int fd, void *buf, size_t count) {
     }
 
     if (!node->ops || !node->ops->read) { errno = EBADF; return -1; }
-    ssize_t n = node->ops->read(node, buf, count, fd_table[fd].offset);
-    if (n > 0) fd_table[fd].offset += n;
+    ssize_t n = node->ops->read(node, buf, count, file->offset);
+    if (n > 0) file->offset += n;
     return n;
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open) { errno = EBADF; return -1; }
+    vfs_file_t *file = fd_get(fd);
+    if (!file) { errno = EBADF; return -1; }
     if (!buf)   { errno = EINVAL; return -1; }
     if (!count) return 0;
 
-    int acc = fd_table[fd].flags & O_RDWR;
+    int acc = file->flags & O_RDWR;
     if (acc == O_RDONLY) { errno = EACCES; return -1; }
 
-    vfs_node_t *node = fd_table[fd].node;
+    vfs_node_t *node = file->node;
     if (!node) { errno = EBADF; return -1; }
 
-    if (fd_table[fd].flags & O_APPEND)
-        fd_table[fd].offset = (off_t)node->size;
+    if (file->flags & O_APPEND)
+        file->offset = (off_t)node->size;
 
     if (node->type == VFS_NODE_DEV) {
         devfs_dev_t *ddev = (devfs_dev_t *)node->priv;
         if (ddev && ddev->write) {
             ssize_t n = ddev->write(ddev, buf, count);
-            if (n > 0) fd_table[fd].offset += n;
+            if (n > 0) file->offset += n;
             return n;
         }
         errno = EBADF;
@@ -755,26 +811,27 @@ ssize_t write(int fd, const void *buf, size_t count) {
     }
 
     if (!node->ops || !node->ops->write) { errno = EBADF; return -1; }
-    ssize_t n = node->ops->write(node, buf, count, fd_table[fd].offset);
-    if (n > 0) fd_table[fd].offset += n;
+    ssize_t n = node->ops->write(node, buf, count, file->offset);
+    if (n > 0) file->offset += n;
     return n;
 }
 
 off_t lseek(int fd, off_t offset, int whence) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open) { errno = EBADF; return -1; }
-    vfs_node_t *node = fd_table[fd].node;
+    vfs_file_t *file = fd_get(fd);
+    if (!file) { errno = EBADF; return -1; }
+    vfs_node_t *node = file->node;
     if (!node) { errno = EBADF; return -1; }
 
     off_t new_offset;
     switch (whence) {
         case SEEK_SET: new_offset = offset; break;
-        case SEEK_CUR: new_offset = fd_table[fd].offset + offset; break;
+        case SEEK_CUR: new_offset = file->offset + offset; break;
         case SEEK_END: new_offset = (off_t)node->size + offset; break;
         default: errno = EINVAL; return -1;
     }
 
     if (new_offset < 0) { errno = EINVAL; return -1; }
-    fd_table[fd].offset = new_offset;
+    file->offset = new_offset;
     return new_offset;
 }
 
@@ -822,8 +879,9 @@ int lstat(const char *path, vfs_stat_t *st) {
 }
 
 int fstat(int fd, vfs_stat_t *st) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open || !st) { errno = EBADF; return -1; }
-    vfs_node_t *node = fd_table[fd].node;
+    vfs_file_t *file = fd_get(fd);
+    if (!file || !st) { errno = EBADF; return -1; }
+    vfs_node_t *node = file->node;
     if (!node) { errno = EBADF; return -1; }
     node_to_stat(node, st);
     return 0;
@@ -938,9 +996,10 @@ int truncate(const char *path, off_t length) {
 }
 
 int ftruncate(int fd, off_t length) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open) { errno = EBADF; return -1; }
+    vfs_file_t *file = fd_get(fd);
+    if (!file) { errno = EBADF; return -1; }
     if (length < 0) { errno = EINVAL; return -1; }
-    vfs_node_t *node = fd_table[fd].node;
+    vfs_node_t *node = file->node;
     if (!node) { errno = EBADF; return -1; }
     if (node->type != VFS_NODE_FILE) { errno = EINVAL; return -1; }
     if (node->ops && node->ops->truncate) return node->ops->truncate(node, length);
@@ -1077,51 +1136,76 @@ void seekdir(vfs_dir_t *dir, long pos) {
 }
 
 int dup(int fd) {
-    if (fd < 0 || fd >= MAX_FD || !fd_table[fd].open) { errno = EBADF; return -1; }
-    int new_fd = fd_alloc();
+    size_t fd_count;
+    vfs_file_t **fd_table = current_fd_table(&fd_count);
+
+    if (fd < 0 || (size_t)fd >= fd_count || !fd_table[fd]) { errno = EBADF; return -1; }
+    int new_fd = fd_alloc(fd_table, fd_count);
     if (new_fd < 0) return -1;
     fd_table[new_fd] = fd_table[fd];
-    fd_table[new_fd].node->ref_count++;
+    vfs_file_ref(fd_table[new_fd]);
     return new_fd;
 }
 
 int dup2(int old_fd, int new_fd) {
-    if (old_fd < 0 || old_fd >= MAX_FD || !fd_table[old_fd].open) { errno = EBADF; return -1; }
-    if (new_fd < 0 || new_fd >= MAX_FD)                            { errno = EBADF; return -1; }
+    size_t fd_count;
+    vfs_file_t **fd_table = current_fd_table(&fd_count);
+
+    if (old_fd < 0 || (size_t)old_fd >= fd_count || !fd_table[old_fd]) { errno = EBADF; return -1; }
+    if (new_fd < 0 || (size_t)new_fd >= fd_count)                      { errno = EBADF; return -1; }
     if (old_fd == new_fd) return new_fd;
-    if (fd_table[new_fd].open) close(new_fd);
+    if (fd_table[new_fd]) close(new_fd);
     fd_table[new_fd] = fd_table[old_fd];
-    fd_table[new_fd].node->ref_count++;
+    vfs_file_ref(fd_table[new_fd]);
     return new_fd;
 }
 
-static void vfs_setup_stdio(void) {
+void vfs_fd_table_setup_stdio(vfs_file_t **table, size_t count) {
+    if (!table || count < 3)
+        return;
+
     vfs_node_t *stdin_node  = vfs_resolve_path("/dev/stdin");
     vfs_node_t *stdout_node = vfs_resolve_path("/dev/stdout");
     vfs_node_t *stderr_node = vfs_resolve_path("/dev/stderr");
 
     if (stdin_node) {
-        fd_table[STDIN_FILENO].node   = stdin_node;
-        fd_table[STDIN_FILENO].offset = 0;
-        fd_table[STDIN_FILENO].flags  = O_RDONLY;
-        fd_table[STDIN_FILENO].open   = 1;
-        stdin_node->ref_count++;
+        if (table[STDIN_FILENO])
+            vfs_file_unref(table[STDIN_FILENO]);
+        table[STDIN_FILENO] = vfs_file_create(stdin_node, O_RDONLY);
     }
 
     if (stdout_node) {
-        fd_table[STDOUT_FILENO].node   = stdout_node;
-        fd_table[STDOUT_FILENO].offset = 0;
-        fd_table[STDOUT_FILENO].flags  = O_WRONLY;
-        fd_table[STDOUT_FILENO].open   = 1;
-        stdout_node->ref_count++;
+        if (table[STDOUT_FILENO])
+            vfs_file_unref(table[STDOUT_FILENO]);
+        table[STDOUT_FILENO] = vfs_file_create(stdout_node, O_WRONLY);
     }
 
     if (stderr_node) {
-        fd_table[STDERR_FILENO].node   = stderr_node;
-        fd_table[STDERR_FILENO].offset = 0;
-        fd_table[STDERR_FILENO].flags  = O_WRONLY;
-        fd_table[STDERR_FILENO].open   = 1;
-        stderr_node->ref_count++;
+        if (table[STDERR_FILENO])
+            vfs_file_unref(table[STDERR_FILENO]);
+        table[STDERR_FILENO] = vfs_file_create(stderr_node, O_WRONLY);
+    }
+}
+
+void vfs_fd_table_clone(vfs_file_t **dst, vfs_file_t **src, size_t count) {
+    if (!dst || !src)
+        return;
+
+    for (size_t i = 0; i < count; i++) {
+        dst[i] = src[i];
+        vfs_file_ref(dst[i]);
+    }
+}
+
+void vfs_fd_table_close(vfs_file_t **table, size_t count) {
+    if (!table)
+        return;
+
+    for (size_t i = 0; i < count; i++) {
+        if (table[i]) {
+            vfs_file_unref(table[i]);
+            table[i] = NULL;
+        }
     }
 }
 
@@ -1133,11 +1217,13 @@ uint8_t vfs_init(void) {
 
     vfs_cwd = vfs_root;
 
-    fd_table_init();
+    vfs_fd_table_init(kernel_fd_table, MAX_FD);
+    fd_ready = 1;
     mount_count = 0;
     vfs_ready   = 1;
 
     devfs_init();
+    vfs_fd_table_setup_stdio(kernel_fd_table, MAX_FD);
 
     char letter = 'C';
     uint8_t ctrl_count = ahci_get_controller_count();
@@ -1179,7 +1265,6 @@ uint8_t vfs_init(void) {
         }
     }
 
-    vfs_setup_stdio();
     return VFS_OK;
 }
 

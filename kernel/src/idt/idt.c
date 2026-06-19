@@ -83,6 +83,10 @@ void idt_init(void) {
     __asm__ volatile ("sti");
 }
 
+void idt_init_per_cpu() {
+    
+}
+
 void exit_syscall(interrupt_frame_t *f) {
     struct pcb *proc = proc_get(get_current_pid());
     if (!proc) {

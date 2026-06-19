@@ -1,0 +1,16 @@
+#pragma once
+
+#include <stdint.h>
+#include <limine.h>
+
+extern volatile struct limine_mp_request mp_request;
+
+typedef struct cpu {
+    uint8_t cpu_id;
+    uint8_t lapic_id;
+    uint64_t reserved;
+} cpu_t;
+
+extern cpu_t cpus[100];
+
+uint8_t smp_init();

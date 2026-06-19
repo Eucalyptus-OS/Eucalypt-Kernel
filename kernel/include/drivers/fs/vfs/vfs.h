@@ -138,11 +138,11 @@ typedef struct {
     uint32_t st_blocks;
 } vfs_stat_t;
 
-typedef struct {
+typedef struct vfs_file {
     vfs_node_t *node;
     off_t       offset;
     int         flags;
-    uint8_t     open;
+    uint32_t    ref_count;
 } vfs_file_t;
 
 typedef struct {
@@ -191,6 +191,11 @@ ssize_t write(int fd, const void *buf, size_t count);
 off_t   lseek(int fd, off_t offset, int whence);
 int     dup(int fd);
 int     dup2(int old_fd, int new_fd);
+
+void    vfs_fd_table_init(vfs_file_t **table, size_t count);
+void    vfs_fd_table_setup_stdio(vfs_file_t **table, size_t count);
+void    vfs_fd_table_clone(vfs_file_t **dst, vfs_file_t **src, size_t count);
+void    vfs_fd_table_close(vfs_file_t **table, size_t count);
 
 int     stat(const char *path, vfs_stat_t *st);
 int     fstat(int fd, vfs_stat_t *st);

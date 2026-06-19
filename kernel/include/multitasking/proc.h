@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <ipc/signal.h>
 #include <multitasking/thread.h>
+#include <drivers/fs/vfs/vfs.h>
 
 #define MAX_FDS  64
 #define NSIG     32
@@ -32,12 +33,15 @@ struct pcb {
     void (*signal_handler[NSIG])(int);
     uint32_t signal_pending;
 
-    int fd_table[MAX_FDS];
+    vfs_file_t *fd_table[MAX_FDS];
 
     struct tcb *threads[MAX_THREADS];
 };
 
 struct pcb *proc_create(void *entry, bool user);
+struct pcb *proc_create_loaded_user(uintptr_t entry, uintptr_t cr3,
+                                    char **argv, char **envp,
+                                    const elf_load_info_t *info);
 struct pcb *proc_fork(void);
 int         proc_exec(const char *path, char **argv, char **envp);
 void        proc_exit(int code);

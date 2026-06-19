@@ -27,7 +27,7 @@
 #define IOAPIC_REG_VERSION    0x01
 #define IOAPIC_REG_REDTBL     0x10
 
-void enable_apic(bool is_bsp);
+void enable_apic(uint8_t id, bool is_bsp);
 void apic_eoi(void);
 uint32_t apic_read(uint32_t reg);
 void apic_write(uint32_t reg, uint32_t value);

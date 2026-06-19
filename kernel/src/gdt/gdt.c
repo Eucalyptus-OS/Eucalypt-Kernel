@@ -6,6 +6,7 @@ extern void reload();
 #define KERNEL_STACK_SIZE 65536
 
 uint8_t gdt[7][8];
+per_cpu_t *per_cpu_data[100];
 
 struct [[gnu::packed]] gdtr {
     uint16_t limit;
@@ -16,11 +17,11 @@ tss_t tss = {0};
 
 static uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 
-void encode_gdt_entry(uint8_t index, uint32_t base, uint32_t limit, uint8_t ab, uint8_t flags) {
+void encode_gdt_entry(uint8_t *gdt_table, uint8_t index, uint32_t base, uint32_t limit, uint8_t ab, uint8_t flags) {
     if (limit > 0xFFFFF) {
         return;
     }
-    uint8_t *target = gdt[index];
+    uint8_t *target = gdt_table + (index * 8);
 
     // Limit
     target[0] = limit & 0xFF;
@@ -39,12 +40,12 @@ void encode_gdt_entry(uint8_t index, uint32_t base, uint32_t limit, uint8_t ab, 
     target[6] |= (flags << 4);
 }
 
-void encode_tss_descriptor(uint8_t index, tss_t *tss_ptr) {
+void encode_tss_descriptor(uint8_t *gdt_table, uint8_t index, tss_t *tss_ptr) {
     uint64_t base  = (uint64_t)(uintptr_t)tss_ptr;
     uint32_t limit = sizeof(tss_t) - 1;
 
-    uint8_t *lo = gdt[index];
-    uint8_t *hi = gdt[index + 1];
+    uint8_t *lo = gdt_table + (index * 8);
+    uint8_t *hi = gdt_table + ((index + 1) * 8);
 
     // Limit
     lo[0] = limit & 0xFF;
@@ -83,12 +84,36 @@ void gdt_init() {
         .limit = sizeof(gdt) - 1,
         .base = (uint64_t)(uintptr_t)gdt,
     };
-    encode_gdt_entry(0, 0, 0x00000000, 0x00, 0x0);
-    encode_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0xA);
-    encode_gdt_entry(2, 0, 0xFFFFF, 0x92, 0xC);
-    encode_gdt_entry(3, 0, 0xFFFFF, 0xF2, 0xC);
-    encode_gdt_entry(4, 0, 0xFFFFF, 0xFA, 0xA);
-    encode_tss_descriptor(5, &tss);
+    encode_gdt_entry((uint8_t *)gdt, 0, 0, 0x00000000, 0x00, 0x0);
+    encode_gdt_entry((uint8_t *)gdt, 1, 0, 0xFFFFF, 0x9A, 0xA);
+    encode_gdt_entry((uint8_t *)gdt, 2, 0, 0xFFFFF, 0x92, 0xC);
+    encode_gdt_entry((uint8_t *)gdt, 3, 0, 0xFFFFF, 0xF2, 0xC);
+    encode_gdt_entry((uint8_t *)gdt, 4, 0, 0xFFFFF, 0xFA, 0xA);
+    encode_tss_descriptor((uint8_t *)gdt, 5, &tss);
+
+    asm volatile ("lgdt %0" :: "m"(gdtr));
+    reload();
+    asm volatile ("ltr %0" :: "r"((uint16_t)0x28));
+}
+
+void gdt_init_percpu(per_cpu_t *cpu_data) {
+    if (!cpu_data) {
+        return;
+    }
+
+    cpu_data->tss.rsp0 = (uint64_t)(cpu_data->stack + KERNEL_STACK_SIZE);
+    
+    struct gdtr gdtr = {
+        .limit = (7 * 8) - 1,
+        .base = (uint64_t)(uintptr_t)cpu_data->gdt,
+    };
+
+    encode_gdt_entry((uint8_t *)cpu_data->gdt, 0, 0, 0x00000000, 0x00, 0x0);
+    encode_gdt_entry((uint8_t *)cpu_data->gdt, 1, 0, 0xFFFFF, 0x9A, 0xA);
+    encode_gdt_entry((uint8_t *)cpu_data->gdt, 2, 0, 0xFFFFF, 0x92, 0xC);
+    encode_gdt_entry((uint8_t *)cpu_data->gdt, 3, 0, 0xFFFFF, 0xF2, 0xC);
+    encode_gdt_entry((uint8_t *)cpu_data->gdt, 4, 0, 0xFFFFF, 0xFA, 0xA);
+    encode_tss_descriptor((uint8_t *)cpu_data->gdt, 5, &cpu_data->tss);
 
     asm volatile ("lgdt %0" :: "m"(gdtr));
     reload();

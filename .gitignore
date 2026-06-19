@@ -1,5 +1,6 @@
 /limine-binary
 /edk2-ovmf
+/disks
 *.iso
 *.hdd
 *.tar
