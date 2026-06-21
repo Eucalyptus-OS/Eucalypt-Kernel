@@ -15,6 +15,7 @@ void printk(const char *fmt, ...);
 void printk_level(int level, const char *fmt, ...);
 void vprintk(const char *fmt, va_list ap);
 void vprintk_level(int level, const char *fmt, va_list ap);
+void printk_drain_tick();
 
 #define log_debug(fmt, ...) printk_level(LOG_DEBUG, fmt, ##__VA_ARGS__)
 #define log_info(fmt, ...)  printk_level(LOG_INFO,  fmt, ##__VA_ARGS__)

@@ -56,7 +56,6 @@ void idt_init(void) {
     outb(0xA1, 0xFF);
 
     __asm__ volatile ("lidt %0" :: "m"(idtr));
-    __asm__ volatile ("sti");
 }
 
 void idt_init_per_cpu() {
@@ -95,21 +94,6 @@ static void exception_handler(interrupt_frame_t *f) {
     uint64_t cr2 = 0, cr3 = 0;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    uint64_t *pml4 = (uint64_t *)cr3;
-
-    if (f->vector == 0xE) {
-        if (cr2 > 0xFFFFFFFF80000000) {
-            paging_map_page(pml4, cr2, frame_alloc(), 0x1000, ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
-            return;
-        } else {
-            struct pcb *proc = proc_get(get_current_pid());
-            if (!proc) {
-                return;
-            }
-            proc_destroy(proc);
-            return;
-        }
-    }
 
     panic("Exception %u, error %u, RIP=%#018llx, CR2=%#018llx, CR3=%#018llx",
           (unsigned)f->vector,

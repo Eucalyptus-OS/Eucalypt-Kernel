@@ -38,7 +38,11 @@ void scheduler_init(void) {
 }
 
 bool enqueue(struct tcb *thread) {
-    if (tq->count == MAX_THREADS) return false;
+    if (tq->count == MAX_THREADS) {
+        log_error("sched: enqueue FAILED, queue full (count=%d) tid=%d\n",
+                  tq->count, thread ? thread->tid : -1);
+        return false;
+    }
     tq->threads[tq->rear] = thread;
     tq->rear = (tq->rear + 1) % MAX_THREADS;
     tq->count++;
@@ -47,7 +51,9 @@ bool enqueue(struct tcb *thread) {
 }
 
 struct tcb *dequeue(void) {
-    if (tq->count == 0) return NULL;
+    if (tq->count == 0) {
+        return NULL;
+    }
     struct tcb *thread = tq->threads[tq->front];
     tq->front = (tq->front + 1) % MAX_THREADS;
     tq->count--;
@@ -83,6 +89,7 @@ uintptr_t schedule(uintptr_t rsp) {
         }
         current_thread->state = running;
         tss.rsp0 = (uintptr_t)current_thread->stack_base + KERNEL_STACK_SIZE;
+        
         __asm__ volatile("mov %0, %%cr3" :: "r"(current_thread->cr3));
         return current_thread->rsp;
     }
