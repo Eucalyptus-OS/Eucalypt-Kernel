@@ -611,7 +611,7 @@ void ramfs_init(void) {
     }
     ramfs_addr = response->modules[0]->address;
     ramfs_size = response->modules[0]->size;
-    log_info("Ramfs module found at %llx with size %lu\n",
+    log_info("Ramfs module found at %llX with size %lu\n",
              (void *)ramfs_addr, ramfs_size);
 }
 

@@ -116,7 +116,7 @@ void kfree(void *ptr) {
 
     block_t *blk = (block_t *)((uint8_t *)ptr - sizeof(block_t));
     if (blk->magic != HEAP_MAGIC) {
-        log_info("kfree: bad magic at %llx\n", (uint64_t)ptr);
+        log_info("kfree: bad magic at %llX\n", (uint64_t)ptr);
         return;
     }
 

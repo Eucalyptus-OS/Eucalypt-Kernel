@@ -123,8 +123,8 @@ void kmain(void) {
     log_info("RAMFS initialized\n");
     gpt_init();
     log_info("GPT initialized\n");
-    //smp_init();
-    //log_info("SMP initialized\n");    
+    // smp_init();
+    // log_info("SMP initialized\n");
 
     if (!ramfs_addr || ramfs_size == 0) {
         log_error("No ramfs module loaded\n");
@@ -168,15 +168,18 @@ void kmain(void) {
         log_error("Failed to load ELF64 binary\n");
         hcf();
     }
- 
+
     info.execfn = "/ram/build/USER";
-    
-    log_info("Creating user thread: entry=%llx cr3=%llx\n", entry, user_cr3);
-    
+
+    log_info("Creating user thread: entry=%llX cr3=%llX\n", entry, user_cr3);
+
     char *argv[] = { "/ram/build/USER", NULL };
     char *envp[] = { "PATH=/", NULL };
-    
-    create_user_thread_with_stack(entry, user_cr3, argv, envp, &info);
+
+    if (!proc_create_loaded_user(entry, user_cr3, argv, envp, &info)) {
+        log_error("Failed to create user process\n");
+        hcf();
+    }
 
     enable_sched();
     log_info("Scheduler enabled");

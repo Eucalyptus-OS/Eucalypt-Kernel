@@ -196,7 +196,7 @@ static void acpi_log_bgrt(const struct acpi_bgrt *bgrt) {
     log_info("ACPI: BGRT version %u status %u displayed %s orientation %s\n",
              bgrt->version, bgrt->status, displayed ? "yes" : "no",
              bgrt_orientation(bgrt->status));
-    log_info("ACPI: BGRT image type %u (%s) address %llx offset %u,%u\n",
+    log_info("ACPI: BGRT image type %u (%s) address %llX offset %u,%u\n",
              bgrt->image_type, bgrt_image_type(bgrt->image_type),
              (unsigned long long)bgrt->image_address,
              bgrt->image_offset_x, bgrt->image_offset_y);
@@ -212,7 +212,7 @@ static void acpi_log_table(uint64_t table_phys, bool *found_bgrt) {
     }
 
     acpi_sig_string(header->signature, signature);
-    log_info("ACPI: table %s at %llx length %u revision %u\n",
+    log_info("ACPI: table %s at %llX length %u revision %u\n",
              signature, (unsigned long long)table_phys,
              header->length, header->revision);
 
@@ -250,7 +250,7 @@ void acpi_log_tables(void) {
     memcpy(oem_id, rsdp->oem_id, 6);
     oem_id[6] = '\0';
 
-    log_info("ACPI: RSDP at %llx OEM %s revision %u\n",
+    log_info("ACPI: RSDP at %llX OEM %s revision %u\n",
              (unsigned long long)(uintptr_t)rsdp, oem_id, rsdp->revision);
 
     if (memcmp(rsdp->signature, "RSD PTR ", 8) != 0) {
@@ -284,7 +284,7 @@ void acpi_log_tables(void) {
     }
 
     uint32_t entry_count = (root->length - sizeof(*root)) / entry_size;
-    log_info("ACPI: using %s at %llx with %u entries\n",
+    log_info("ACPI: using %s at %llX with %u entries\n",
              use_xsdt ? "XSDT" : "RSDT",
              (unsigned long long)root_phys, entry_count);
 

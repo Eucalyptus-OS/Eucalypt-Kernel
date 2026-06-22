@@ -74,6 +74,7 @@ override CFLAGS += \
     -ffreestanding \
     -fno-stack-protector \
     -fno-stack-check \
+    -fno-omit-frame-pointer \
     -fno-lto \
     -fno-PIC \
     -ffunction-sections \

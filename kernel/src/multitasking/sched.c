@@ -22,6 +22,11 @@ struct tcb *current_thread = NULL;
 threads_t  *tq = &ready_queue_data;
 static bool enabled = false;
 
+static uintptr_t kernel_stack_top(struct tcb *thread) {
+    uintptr_t aligned = ((uintptr_t)thread->stack_base + 0xFFF) & ~0xFFFULL;
+    return aligned + KERNEL_STACK_SIZE;
+}
+
 void enable_sched(void) {
     __atomic_store_n(&enabled, true, __ATOMIC_RELEASE);
 }
@@ -88,7 +93,7 @@ uintptr_t schedule(uintptr_t rsp) {
             return rsp;
         }
         current_thread->state = running;
-        tss.rsp0 = (uintptr_t)current_thread->stack_base + KERNEL_STACK_SIZE;
+        tss.rsp0 = kernel_stack_top(current_thread);
         
         __asm__ volatile("mov %0, %%cr3" :: "r"(current_thread->cr3));
         return current_thread->rsp;
@@ -118,7 +123,7 @@ uintptr_t schedule(uintptr_t rsp) {
 
     current_thread = dequeue();
     current_thread->state = running;
-    tss.rsp0 = (uintptr_t)current_thread->stack_base + KERNEL_STACK_SIZE;
+    tss.rsp0 = kernel_stack_top(current_thread);
 
     paddr current_cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));

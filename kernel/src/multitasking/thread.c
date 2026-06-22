@@ -10,6 +10,7 @@
 #include <logging/printk.h>
 #include <multitasking/sched.h>
 #include <multitasking/thread.h>
+#include <syscalls/syscall.h>
 #include <auxv.h>
 
 #define KERNEL_CS 0x08
@@ -20,6 +21,8 @@
 #define USER_STACK_BASE  0x70000000000ULL
 #define USER_STACK_PAGES 4
 #define USER_STACK_SIZE  (USER_STACK_PAGES * 0x1000)
+#define USER_RETURN_TRAMPOLINE 0x70000010000ULL
+#define PAGE_MASK        0x000FFFFFFFFFF000ULL
 
 extern void      thread_trampoline();
 extern uintptr_t offset;
@@ -45,6 +48,67 @@ static struct stack_alloc alloc_aligned_stack(size_t size) {
     stack.raw     = (void *)raw;
     stack.aligned = (void *)aligned;
     return stack;
+}
+
+static bool write_user_u64(uint64_t *pml4, uint64_t uaddr, uint64_t val) {
+    uint64_t entry = paging_get_entry(pml4, uaddr & ~0xFFFULL);
+    if (!(entry & ENTRY_FLAG_PRESENT))
+        return false;
+
+    uint64_t *dst = (uint64_t *)(offset + (entry & PAGE_MASK) + (uaddr & 0xFFF));
+    *dst = val;
+    return true;
+}
+
+static bool install_user_return_trampoline(uint64_t *pml4) {
+    uint64_t entry = paging_get_entry(pml4, USER_RETURN_TRAMPOLINE);
+    paddr phys;
+
+    if (entry & ENTRY_FLAG_PRESENT) {
+        phys = entry & PAGE_MASK;
+    } else {
+        phys = frame_alloc();
+        if (!phys)
+            return false;
+        paging_map_page(pml4, USER_RETURN_TRAMPOLINE, phys, 0x1000,
+                        ENTRY_FLAG_PRESENT | ENTRY_FLAG_USER);
+    }
+
+    uint8_t *dst = (uint8_t *)(offset + phys);
+    memset(dst, 0xCC, 0x1000);
+
+    uint8_t code[] = {
+        0x48, 0x89, 0xC7,             // mov rdi, rax
+        0xB8, THREAD_REMOVE, 0, 0, 0, // mov eax, THREAD_REMOVE
+        0xCD, 0x80,                   // int 0x80
+        0xEB, 0xFE                    // jmp $
+    };
+
+    memcpy(dst, code, sizeof(code));
+    return true;
+}
+
+static int count_user_ptrs(char **items) {
+    int count = 0;
+    while (items && items[count])
+        count++;
+    return count;
+}
+
+static bool prepare_user_function_entry(uint64_t *pml4, uint64_t payload_rsp,
+                                        uint64_t *entry_rsp) {
+    if (!install_user_return_trampoline(pml4))
+        return false;
+
+    uint64_t rsp = payload_rsp;
+    if ((rsp & 0xF) != 8)
+        rsp -= 8;
+
+    if (!write_user_u64(pml4, rsp, USER_RETURN_TRAMPOLINE))
+        return false;
+
+    *entry_rsp = rsp;
+    return true;
 }
 
 static uint64_t alloc_user_stack(uint64_t *pml4) {
@@ -81,8 +145,8 @@ static void log_frame_check(struct tcb *tcb) {
 
     log_debug("  stack_base=%llX kstack_top_calc=%llX offset_of_rsp_from_top=%lld\n",
               tcb->stack_base,
-              (void *)((uint8_t *)tcb->stack_base + KERNEL_STACK_SIZE),
-              (int64_t)(((uint8_t *)tcb->stack_base + KERNEL_STACK_SIZE) - (uint8_t *)tcb->rsp));
+              (void *)((((uintptr_t)tcb->stack_base + 0xFFF) & ~0xFFFULL) + KERNEL_STACK_SIZE),
+              (int64_t)(((((uintptr_t)tcb->stack_base + 0xFFF) & ~0xFFFULL) + KERNEL_STACK_SIZE) - tcb->rsp));
 
     log_debug("  sizeof(struct tcb)=%lu tcb_addr=%llX tcb_end=%llX rsp_inside_tcb=%d\n",
               (unsigned long)sizeof(struct tcb), (void *)tcb, (void *)((uint8_t *)tcb + sizeof(struct tcb)),
@@ -114,6 +178,12 @@ uint64_t setup_stack(uint8_t *stack_base, uint64_t stack_size, void *entry) {
 struct tcb *create_user_thread(uint64_t entry, paddr cr3) {
     uint64_t *pml4      = (uint64_t *)(offset + cr3);
     uint64_t user_stack = alloc_user_stack(pml4);
+    uint64_t entry_rsp  = user_stack;
+
+    if (!prepare_user_function_entry(pml4, user_stack - 8, &entry_rsp)) {
+        log_error("create_user_thread: failed to prepare user return trampoline\n");
+        return NULL;
+    }
 
     struct stack_alloc kstack = alloc_aligned_stack(KERNEL_STACK_SIZE);
     if (!kstack.aligned) {
@@ -135,7 +205,7 @@ struct tcb *create_user_thread(uint64_t entry, paddr cr3) {
     uint64_t *rsp = (uint64_t *)((uint8_t *)kstack.aligned + KERNEL_STACK_SIZE);
 
     *--rsp = USER_SS;
-    *--rsp = user_stack;
+    *--rsp = entry_rsp;
     *--rsp = 0x202;
     *--rsp = USER_CS;
     *--rsp = entry;
@@ -144,7 +214,7 @@ struct tcb *create_user_thread(uint64_t entry, paddr cr3) {
         *--rsp = 0;
 
     log_debug("User thread %d cr3: %llX entry: %llX ustack: %llX\n",
-              next_tid, cr3, entry, user_stack);
+              next_tid, cr3, entry, entry_rsp);
 
     tcb->tid         = next_tid++;
     tcb->parent      = NULL;
@@ -167,6 +237,9 @@ struct tcb *create_user_thread_with_stack(uint64_t entry, paddr cr3,
     uint64_t *pml4      = (uint64_t *)(offset + cr3);
     uint64_t ustack_top = alloc_user_stack(pml4);
     uint64_t user_rsp   = ustack_top;
+    uint64_t argc       = 0;
+    uint64_t user_argv  = 0;
+    uint64_t user_envp  = 0;
 
     log_debug("create_user_thread_with_stack: ustack_top=%llX\n", ustack_top);
 
@@ -178,7 +251,16 @@ struct tcb *create_user_thread_with_stack(uint64_t entry, paddr cr3,
             return NULL;
         }
         user_rsp = (uint64_t)rsp;
+        argc = (uint64_t)count_user_ptrs(argv);
+        user_argv = user_rsp + 8;
+        user_envp = user_argv + ((argc + 1) * 8);
         log_debug("create_user_thread_with_stack: build_user_stack returned %llX\n", user_rsp);
+    }
+
+    uint64_t entry_rsp = user_rsp;
+    if (!prepare_user_function_entry(pml4, user_rsp, &entry_rsp)) {
+        log_error("create_user_thread_with_stack: failed to prepare user return trampoline\n");
+        return NULL;
     }
 
     struct stack_alloc kstack = alloc_aligned_stack(KERNEL_STACK_SIZE);
@@ -201,7 +283,7 @@ struct tcb *create_user_thread_with_stack(uint64_t entry, paddr cr3,
     uint64_t *rsp = (uint64_t *)((uint8_t *)kstack.aligned + KERNEL_STACK_SIZE);
 
     *--rsp = USER_SS;
-    *--rsp = user_rsp;
+    *--rsp = entry_rsp;
     *--rsp = 0x202;
     *--rsp = USER_CS;
     *--rsp = entry;
@@ -209,8 +291,12 @@ struct tcb *create_user_thread_with_stack(uint64_t entry, paddr cr3,
     for (int i = 0; i < 15; i++)
         *--rsp = 0;
 
+    rsp[9]  = argc;
+    rsp[10] = user_argv;
+    rsp[11] = user_envp;
+
     log_debug("User thread %d cr3: %llX entry: %llX ustack: %llX\n",
-              next_tid, cr3, entry, user_rsp);
+              next_tid, cr3, entry, entry_rsp);
 
     tcb->tid         = next_tid++;
     tcb->parent      = NULL;
