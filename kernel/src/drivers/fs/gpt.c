@@ -125,12 +125,12 @@ uint8_t gpt_write_partition(storage_device_t *dev, uint32_t slot, struct partiti
     uint8_t     ret = 1;
 
     if (gpt_read(dev, &gpt) != 0) {
-        log_error("gpt_write_partition: failed to read GPT\n");
+        log_warn("gpt_write_partition: failed to read GPT\n");
         return 1;
     }
 
     if (slot >= gpt->pth->partition_entries) {
-        log_error("gpt_write_partition: slot %u out of range (%u entries)\n", slot, gpt->pth->partition_entries);
+        log_warn("gpt_write_partition: slot %u out of range (%u entries)\n", slot, gpt->pth->partition_entries);
         goto cleanup;
     }
 
@@ -142,12 +142,12 @@ uint8_t gpt_write_partition(storage_device_t *dev, uint32_t slot, struct partiti
     uint32_t sectors_needed = (entries_size + 511) / 512;
 
     if (dev_write(dev, gpt->pth->partition_entry_lba, sectors_needed, gpt->partition_entries) != 0) {
-        log_error("gpt_write_partition: failed to write primary partition entries\n");
+        log_warn("gpt_write_partition: failed to write primary partition entries\n");
         goto cleanup;
     }
 
     if (dev_write(dev, gpt->pth->lba2, sectors_needed, gpt->partition_entries) != 0) {
-        log_error("gpt_write_partition: failed to write backup partition entries\n");
+        log_warn("gpt_write_partition: failed to write backup partition entries\n");
         goto cleanup;
     }
 
@@ -163,7 +163,7 @@ static uint8_t gpt_parse_device(storage_device_t *dev, uint8_t dev_index) {
     struct gpt *gpt = NULL;
 
     if (gpt_read(dev, &gpt) != 0) {
-        log_error("Device %u: failed to read GPT\n", dev_index);
+        log_warn("Device %u: failed to read GPT\n", dev_index);
         return 1;
     }
 
@@ -188,18 +188,18 @@ uint8_t gpt_init() {
     uint8_t total = get_total_drive_count();
 
     if (total == 0) {
-        log_error("gpt_init: no storage devices found\n");
+        log_warn("gpt_init: no storage devices found\n");
         return 1;
     }
 
     for (uint8_t i = 0; i < total; i++) {
         storage_device_t *dev = get_storage_device_by_index(i);
         if (!dev) {
-            log_error("gpt_init: failed to get device %u\n", i);
+            log_warn("gpt_init: failed to get device %u\n", i);
             continue;
         }
         if (gpt_parse_device(dev, i) != 0)
-            log_error("gpt_init: device %u is not GPT or failed to parse\n", i);
+            log_warn("gpt_init: device %u is not GPT or failed to parse\n", i);
     }
 
     return 0;

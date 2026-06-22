@@ -5,7 +5,7 @@
 #include <auxv.h>
 
 #define KERNEL_STACK_SIZE 0x4000
-#define MAX_THREADS       256
+#define MAX_THREADS       1024
 
 typedef enum {
     ready,

@@ -29,6 +29,11 @@
 static volatile uint32_t *apic_virt = NULL;
 static volatile uint32_t *ioapic_virt = NULL;
 static volatile int apic_mapped = 0;
+static volatile int ioapic_initialized = 0;
+
+static volatile uint32_t calibrated_ticks_per_sec = 0;
+static volatile int timer_calibrated = 0;
+static volatile int calibration_lock = 0;
 
 static void pit_set_oneshot(uint16_t divisor) {
     outb(PIT_COMMAND, 0x34);
@@ -97,7 +102,7 @@ uint8_t apic_id(void) {
     return (uint8_t)(apic_read(APIC_REG_ID) >> 24);
 }
 
-static uint32_t apic_timer_calibrate(uint64_t hz) {
+static uint32_t apic_timer_calibrate(void) {
     apic_write(APIC_REG_TIMER_DCR, APIC_TIMER_DCR_1);
     apic_write(APIC_REG_TIMER_ICR, 0xFFFFFFFF);
     apic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED);
@@ -107,13 +112,25 @@ static uint32_t apic_timer_calibrate(uint64_t hz) {
     uint32_t apic_end = apic_read(APIC_REG_TIMER_CCR);
 
     uint32_t ticks = apic_start - apic_end;
-    return (ticks * hz) / TSC_CALIBRATE_MS;
+
+    return (ticks * 1000) / TSC_CALIBRATE_MS;
 }
 
 void apic_timer_init(uint32_t hz) {
-    uint32_t ticks_per_sec = apic_timer_calibrate(hz);
-    
-    uint32_t interval      = ticks_per_sec / hz;
+    if (__atomic_load_n(&timer_calibrated, __ATOMIC_ACQUIRE) == 0) {
+        while (__atomic_exchange_n(&calibration_lock, 1, __ATOMIC_ACQUIRE)) {
+            asm volatile ("pause");
+        }
+        if (__atomic_load_n(&timer_calibrated, __ATOMIC_ACQUIRE) == 0) {
+            uint32_t result = apic_timer_calibrate();
+            __atomic_store_n(&calibrated_ticks_per_sec, result, __ATOMIC_RELEASE);
+            __atomic_store_n(&timer_calibrated, 1, __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&calibration_lock, 0, __ATOMIC_RELEASE);
+    }
+
+    uint32_t ticks_per_sec = __atomic_load_n(&calibrated_ticks_per_sec, __ATOMIC_ACQUIRE);
+    uint32_t interval = ticks_per_sec / hz;
 
     apic_write(APIC_REG_TIMER_DCR, APIC_TIMER_DCR_1);
     apic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR | APIC_TIMER_PERIODIC);
@@ -153,7 +170,11 @@ void ioapic_unmask(uint8_t irq) {
     ioapic_write(reg, low & ~(uint32_t)APIC_LVT_MASKED);
 }
 
-void ioapic_init() {
+void ioapic_init(void) {
+    if (__atomic_exchange_n(&ioapic_initialized, 1, __ATOMIC_ACQ_REL) != 0) {
+        return;
+    }
+
     paging_map_page(kernel_pml4, IOAPIC_VIRT_BASE, IOAPIC_PHYS_BASE, 0x1000,
                     ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW | ENTRY_FLAG_NX);
     ioapic_virt = (volatile uint32_t *)IOAPIC_VIRT_BASE;

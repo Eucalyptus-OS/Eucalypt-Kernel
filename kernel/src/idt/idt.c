@@ -251,7 +251,6 @@ void idt_init_per_cpu() {
         .limit = sizeof(idt_entry_t) * 256 - 1,
     };
     __asm__ volatile ("lidt %0" :: "m"(local_idtr));
-    __asm__ volatile ("sti");
 }
 
 void exit_syscall(interrupt_frame_t *f) {
@@ -284,7 +283,7 @@ static void exception_handler(interrupt_frame_t *f) {
 
     dump_exception_frame(f, cr2, cr3);
 
-    panic("Exception %u, error %u, RIP=%#018llx, CR2=%#018llx, CR3=%#018llx",
+    panic("Exception %u, error %u, RIP=%#018llx, CR2=%#018llx, CR3=%#018llx\n",
           (unsigned)f->vector,
           (unsigned)f->error_code,
           (unsigned long long)f->rip,

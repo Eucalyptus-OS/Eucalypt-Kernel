@@ -58,6 +58,10 @@ void idle_thread(void) {
     }
 }
 
+int test_thread() {
+    return 1;
+}
+
 uint64_t alloc_user_stack(uint64_t *cr3) {
     uint64_t user_stack_base = 0x70000000000;
     uint64_t pages = 4;
@@ -123,8 +127,6 @@ void kmain(void) {
     log_info("RAMFS initialized\n");
     gpt_init();
     log_info("GPT initialized\n");
-    // smp_init();
-    // log_info("SMP initialized\n");
 
     if (!ramfs_addr || ramfs_size == 0) {
         log_error("No ramfs module loaded\n");
@@ -138,52 +140,15 @@ void kmain(void) {
         log_info("Ramfs mounted\n");
     }
 
-    char *filenames[10];
-    ramfs_list(ramfs_addr, "/build/", filenames, 10);
-    for (int i = 0; i < 10; i++) {
-        if (filenames[i]) {
-            log_info("File: %s\n", filenames[i]);
-        }
-    }
-
     scheduler_init();
-
-    paddr idle_cr3 = paging_create_pml4();
-    create_thread(idle_thread, idle_cr3);
-    log_info("Idle thread created\n");
-
-    int fd = vfs_open("/ram/build/USER", VFS_O_RDONLY);
-    if (fd < 0) {
-        log_error("Failed to open /ram/build/USER: %d\n", fd);
-        hcf();
-    }
- 
-    paddr user_cr3 = paging_create_pml4();
- 
-    elf_load_info_t info = {0};
-    uint64_t entry = elf64_parse(fd, user_cr3, &info);
-    vfs_close(fd);
- 
-    if (!entry) {
-        log_error("Failed to load ELF64 binary\n");
-        hcf();
-    }
-
-    info.execfn = "/ram/build/USER";
-
-    log_info("Creating user thread: entry=%llX cr3=%llX\n", entry, user_cr3);
-
-    char *argv[] = { "/ram/build/USER", NULL };
-    char *envp[] = { "PATH=/", NULL };
-
-    if (!proc_create_loaded_user(entry, user_cr3, argv, envp, &info)) {
-        log_error("Failed to create user process\n");
-        hcf();
-    }
-
+    
     enable_sched();
     log_info("Scheduler enabled");
+
     asm volatile ("sti");
+
+    smp_init();
+    log_info("SMP initialized\n");
 
     for (;;) {
         __asm__ volatile("hlt");
