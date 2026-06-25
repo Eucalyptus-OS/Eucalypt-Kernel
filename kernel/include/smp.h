@@ -11,6 +11,8 @@ typedef struct cpu {
     uint64_t reserved;
 } cpu_t;
 
+extern uint8_t cpu_count;
+extern uint8_t bsp_lapic_id;
 extern cpu_t cpus[100];
 
 uint8_t smp_init();

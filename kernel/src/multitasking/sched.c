@@ -2,8 +2,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <sync/spinlock.h>
 #include <smp.h>
+#include <interrupts/apic.h>
+#include <sync/spinlock.h>
 #include <logging/printk.h>
 #include <gdt/gdt.h>
 #include <mm/heap.h>
@@ -11,15 +12,7 @@
 #include <multitasking/proc.h>
 #include <multitasking/sched.h>
 
-/* ------------------------------------------------------------------------ */
-/*  Constants                                                                */
-/* ------------------------------------------------------------------------ */
-
 #define MAX_CPUS 100
-
-/* ------------------------------------------------------------------------ */
-/*  Types                                                                    */
-/* ------------------------------------------------------------------------ */
 
 typedef struct {
     struct tcb *threads[MAX_THREADS];
@@ -34,35 +27,20 @@ typedef struct cpu_sched {
     spinlock_t  lock;
 } cpu_sched_t;
 
-/* ------------------------------------------------------------------------ */
-/*  External symbols                                                        */
-/* ------------------------------------------------------------------------ */
-
 extern void context_switch(struct tcb *current, struct tcb *next);
-
-/* ------------------------------------------------------------------------ */
-/*  Global state                                                            */
-/* ------------------------------------------------------------------------ */
 
 static threads_t  ready_queue_data;
 static bool       enabled = false;
-
-struct tcb       *current_thread = NULL;
-threads_t         *tq = &ready_queue_data;
+threads_t *tq = &ready_queue_data;
 struct cpu_sched   sched_cpus[MAX_CPUS];
 
-/* ------------------------------------------------------------------------ */
-/*  Internal helpers                                                        */
-/* ------------------------------------------------------------------------ */
+static uint8_t cpu_to_schedule = 1;
+static spinlock_t sched_lock;
 
 static uintptr_t kernel_stack_top(struct tcb *thread) {
     uintptr_t aligned = ((uintptr_t)thread->stack_base + 0xFFF) & ~0xFFFULL;
     return aligned + KERNEL_STACK_SIZE;
 }
-
-/* ------------------------------------------------------------------------ */
-/*  Scheduler enable / disable                                              */
-/* ------------------------------------------------------------------------ */
 
 void enable_sched(void) {
     __atomic_store_n(&enabled, true, __ATOMIC_RELEASE);
@@ -78,10 +56,6 @@ void scheduler_init(void) {
     tq->count = 0;
     disable_sched();
 }
-
-/* ------------------------------------------------------------------------ */
-/*  Ready queue (circular buffer)                                           */
-/* ------------------------------------------------------------------------ */
 
 bool enqueue(struct tcb *thread) {
     if (tq->count == MAX_THREADS) {
@@ -109,17 +83,13 @@ struct tcb *dequeue(void) {
     return thread;
 }
 
-/* ------------------------------------------------------------------------ */
-/*  Sleep / wake / yield                                                    */
-/* ------------------------------------------------------------------------ */
-
 void sched_yield(void) {
     __asm__ volatile("int $0x20");
 }
 
 void sched_sleep(struct tcb *t) {
     t->state = blocked;
-    if (t == current_thread) sched_yield();
+    if (t == get_current_thread()) sched_yield();
 }
 
 void sched_wake(struct tcb *t) {
@@ -131,87 +101,88 @@ void sched_wake(struct tcb *t) {
     enqueue(t);
 }
 
-/* ------------------------------------------------------------------------ */
-/*  Core scheduling logic                                                   */
-/* ------------------------------------------------------------------------ */
-
 uintptr_t schedule(uintptr_t rsp) {
     if (!__atomic_load_n(&enabled, __ATOMIC_ACQUIRE)) {
         return rsp;
     }
 
-    /* No thread currently running: pick one and switch straight in. */
-    if (current_thread == NULL) {
-        current_thread = dequeue();
-        if (!current_thread) {
+    uint32_t id = apic_id();
+
+    spinlock_acquire(&sched_lock);
+
+    struct tcb *prev = sched_cpus[id].current;
+
+    if (prev == NULL) {
+        struct tcb *next = dequeue();
+        if (!next) {
+            spinlock_release(&sched_lock);
             return rsp;
         }
+        next->state = running;
+        sched_cpus[id].current = next;
+        tss.rsp0 = kernel_stack_top(next);
+        spinlock_release(&sched_lock);
 
-        current_thread->state = running;
-        tss.rsp0 = kernel_stack_top(current_thread);
-
-        __asm__ volatile("mov %0, %%cr3" :: "r"(current_thread->cr3));
-        return current_thread->rsp;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(next->cr3));
+        return next->rsp;
     }
 
-    /* Save outgoing thread's stack pointer. */
     if (rsp != 0) {
-        current_thread->rsp = rsp;
+        prev->rsp = rsp;
     }
 
-    /* Retire or requeue the outgoing thread. */
-    if (current_thread->state == dead) {
-        if (current_thread->ustack_base) kfree(current_thread->ustack_base);
-        if (current_thread->stack_base)  kfree(current_thread->stack_base);
-        kfree(current_thread);
-        current_thread = NULL;
-    } else if (current_thread->state != blocked) {
-        current_thread->state = ready;
-        enqueue(current_thread);
+    if (prev->state == dead) {
+        spinlock_release(&sched_lock);
+        if (prev->ustack_base) kfree(prev->ustack_base);
+        if (prev->stack_base)  kfree(prev->stack_base);
+        kfree(prev);
+        spinlock_acquire(&sched_lock);
+        sched_cpus[id].current = NULL;
+    } else if (prev->state != blocked) {
+        prev->state = ready;
+        enqueue(prev);
     }
-    /* else: blocked threads are left off the run queue. */
 
-    /* Nothing left to run: idle until the next interrupt. */
     if (tq->count == 0) {
-        current_thread = NULL;
-        __asm__ volatile("sti; hlt");
+        sched_cpus[id].current = NULL;
+        spinlock_release(&sched_lock);
+        __asm__ volatile("sti\nhlt");
         return rsp;
     }
 
-    /* Switch in the next thread. */
-    current_thread = dequeue();
-    current_thread->state = running;
-    tss.rsp0 = kernel_stack_top(current_thread);
+    struct tcb *next = dequeue();
+    next->state = running;
+    sched_cpus[id].current = next;
+    tss.rsp0 = kernel_stack_top(next);
+
+    spinlock_release(&sched_lock);
 
     paddr current_cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
-    if (current_thread->cr3 != current_cr3) {
-        __asm__ volatile("mov %0, %%cr3" :: "r"(current_thread->cr3));
+    if (next->cr3 != current_cr3) {
+        __asm__ volatile("mov %0, %%cr3" :: "r"(next->cr3));
     }
-
-    return current_thread->rsp;
+    return next->rsp;
 }
 
-/* ------------------------------------------------------------------------ */
-/*  Process / thread accessors                                              */
-/* ------------------------------------------------------------------------ */
-
 int32_t get_current_pid(void) {
-    if (!current_thread || !current_thread->parent) return -1;
-    return current_thread->parent->pid;
+    struct tcb *t = get_current_thread();
+    if (!t || !t->parent) return -1;
+    return t->parent->pid;
 }
 
 int32_t get_current_ppid(void) {
-    if (!current_thread || !current_thread->parent) return -1;
+    struct tcb *t = get_current_thread();
+    if (!t || !t->parent) return -1;
 
-    struct pcb *proc = proc_get(current_thread->parent->pid);
+    struct pcb *proc = proc_get(t->parent->pid);
     if (!proc) return -1;
 
     return proc->parent_pid;
 }
 
 struct tcb *get_current_thread(void) {
-    return current_thread;
+    return sched_cpus[apic_id()].current;
 }
 
 struct tcb *get_thread_copy(uint16_t tid) {

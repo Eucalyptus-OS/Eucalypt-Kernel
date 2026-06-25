@@ -4,14 +4,12 @@
 #include <stdbool.h>
 #include <multitasking/thread.h>
 
-extern struct tcb  *current_thread;
-
 void        scheduler_init(void);
 void        enable_sched(void);
 void        disable_sched(void);
 bool        enqueue(struct tcb *thread);
 struct tcb *dequeue(void);
-uintptr_t   schedule(uintptr_t rsp);
+uintptr_t schedule(uintptr_t rsp);
 void        sched_yield(void);
 void        sched_sleep(struct tcb *t);
 void        sched_wake(struct tcb *t);

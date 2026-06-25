@@ -8,6 +8,7 @@ global apic_handler
 global ps2_keyboard_handler
 global ps2_mouse_handler
 global int128_handler
+global tlb_shootdown_handler
 
 struc iframe
     .r15:        resq 1
@@ -237,6 +238,9 @@ ps2_mouse_handler:
     pop rcx
     pop rbx
     pop rax
+    iretq
+
+tlb_shootdown_handler:
     iretq
 
 isr_stub     0

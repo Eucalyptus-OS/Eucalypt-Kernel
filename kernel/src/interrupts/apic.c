@@ -25,8 +25,17 @@
 #define PIT_CHANNEL0   0x40
 #define PIT_COMMAND    0x43
 #define PIT_BASE_HZ    1193182
+#define PIT_MODE0_LOHI 0x30
 
-static volatile uint32_t *apic_virt = NULL;
+#define APIC_REG_ICR_LOW  0x300
+#define APIC_REG_ICR_HIGH 0x310
+
+#define ICR_DELIVERY_FIXED   (0 << 8)
+#define ICR_DEST_PHYSICAL    (0 << 11)
+#define ICR_LEVEL_ASSERT     (1 << 14)
+#define ICR_DEST_NO_SHORTHAND (0 << 18)
+
+volatile uint32_t *apic_virt = NULL;
 static volatile uint32_t *ioapic_virt = NULL;
 static volatile int apic_mapped = 0;
 static volatile int ioapic_initialized = 0;
@@ -36,7 +45,7 @@ static volatile int timer_calibrated = 0;
 static volatile int calibration_lock = 0;
 
 static void pit_set_oneshot(uint16_t divisor) {
-    outb(PIT_COMMAND, 0x34);
+    outb(PIT_COMMAND, PIT_MODE0_LOHI);
     outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
     outb(PIT_CHANNEL0, (uint8_t)(divisor >> 8));
 }
@@ -104,8 +113,8 @@ uint8_t apic_id(void) {
 
 static uint32_t apic_timer_calibrate(void) {
     apic_write(APIC_REG_TIMER_DCR, APIC_TIMER_DCR_1);
-    apic_write(APIC_REG_TIMER_ICR, 0xFFFFFFFF);
     apic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED);
+    apic_write(APIC_REG_TIMER_ICR, 0xFFFFFFFF);
 
     uint32_t apic_start = apic_read(APIC_REG_TIMER_CCR);
     pit_wait_ms(TSC_CALIBRATE_MS);
@@ -116,7 +125,21 @@ static uint32_t apic_timer_calibrate(void) {
     return (ticks * 1000) / TSC_CALIBRATE_MS;
 }
 
+void apic_send_ipi(uint8_t apic_id, uint8_t vector) {
+    while (apic_read(APIC_REG_ICR_LOW) & (1 << 12)) {
+        asm volatile ("pause");
+    }
+    apic_write(APIC_REG_ICR_HIGH, (uint32_t)apic_id << 24);
+    apic_write(APIC_REG_ICR_LOW,
+               vector | ICR_DELIVERY_FIXED | ICR_DEST_PHYSICAL |
+               ICR_LEVEL_ASSERT | ICR_DEST_NO_SHORTHAND);    
+}
+
 void apic_timer_init(uint32_t hz) {
+    if (hz == 0) {
+        hz = 1000;
+    }
+
     if (__atomic_load_n(&timer_calibrated, __ATOMIC_ACQUIRE) == 0) {
         while (__atomic_exchange_n(&calibration_lock, 1, __ATOMIC_ACQUIRE)) {
             asm volatile ("pause");
@@ -131,6 +154,11 @@ void apic_timer_init(uint32_t hz) {
 
     uint32_t ticks_per_sec = __atomic_load_n(&calibrated_ticks_per_sec, __ATOMIC_ACQUIRE);
     uint32_t interval = ticks_per_sec / hz;
+    if (interval == 0) {
+        log_warn("apic: timer calibration returned %u ticks/sec for %u Hz; forcing interval 1\n",
+                 ticks_per_sec, hz);
+        interval = 1;
+    }
 
     apic_write(APIC_REG_TIMER_DCR, APIC_TIMER_DCR_1);
     apic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR | APIC_TIMER_PERIODIC);

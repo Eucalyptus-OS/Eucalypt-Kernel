@@ -8,6 +8,7 @@
 #include <idt/idt.h>
 #include <interrupts/apic.h>
 #include <portio.h>
+#include <logging/smp_console.h>
 #include <msr.h>
 #include <smp.h>
 
@@ -17,9 +18,65 @@ volatile struct limine_mp_request mp_request = {
     .revision = 0
 };
 
+uint8_t cpu_count = 0;
+uint8_t bsp_lapic_id = 0;
 cpu_t cpus[100];
 uint64_t ap_stack_tops[100];
 extern void smp_trampoline();
+
+static const uint32_t cpu_colors[24] = {
+    0xFFFFFFFF, // 0 white
+    0xFFFF0000, // 1 red
+    0xFF00FF00, // 2 green
+    0xFF0000FF, // 3 blue
+    0xFFFFFF00, // 4 yellow
+    0xFFFF00FF, // 5 magenta
+    0xFF00FFFF, // 6 cyan
+    0xFF808080, // 7 gray (was mislabeled "black" with wrong alpha before)
+    0xFFFF8000, // 8 orange
+    0xFF8000FF, // 9 purple
+    0xFF0080FF, // 10 sky blue
+    0xFF80FF00, // 11 lime
+    0xFFFF0080, // 12 pink
+    0xFF00FF80, // 13 mint
+    0xFF804000, // 14 brown
+    0xFFC0C0C0, // 15 light gray
+    0xFF400080, // 16 indigo
+    0xFF008040, // 17 teal-green
+    0xFFFF4040, // 18 light red
+    0xFF40FF40, // 19 light green
+    0xFF4040FF, // 20 light blue
+    0xFFFFC040, // 21 gold
+    0xFF40FFC0, // 22 aqua
+    0xFFC040FF, // 23 violet
+};
+
+static const uint8_t cpu_letters[24] = {
+    'A', // 0 white
+    'B', // 1 red
+    'C', // 2 green
+    'D', // 3 blue
+    'E', // 4 yellow
+    'F', // 5 magenta
+    'G', // 6 cyan
+    'H', // 7 gray (was mislabeled "black" with wrong alpha before)
+    'I', // 8 orange
+    'J', // 9 purple
+    'K', // 10 sky blue
+    'L', // 11 lime
+    'M', // 12 pink
+    'N', // 13 mint
+    'O', // 14 brown
+    'P', // 15 light gray
+    'Q', // 16 indigo
+    'R', // 17 teal-green
+    'S', // 18 light red
+    'T', // 19 light green
+    'U', // 20 light blue
+    'V', // 21 gold
+    'W', // 22 aqua
+    'X', // 23 violet
+};
 
 void ap_entry(uint64_t pid) {
     asm volatile ("cli");
@@ -33,13 +90,15 @@ void ap_entry(uint64_t pid) {
     paging_init_per_cpu();
     enable_apic(pid, false);
     apic_timer_init(1000);
-    log_debug("Hello from processor: %d\n", pid);
+    //log_debug("Hello from processor: %d\n", pid);
     asm volatile ("sti");
     for (;;) {
         asm volatile ("hlt" ::: "memory");
         timer_ticks++;
-        if (timer_ticks == 1000) {
-            log_debug("AP %llu heartbeat\n", (unsigned long long)pid);
+        if (timer_ticks == 1) {
+            if (pid <= 24) {
+                smp_console_draw_glyph(pid, cpu_colors[pid], cpu_letters[pid]);
+            }
             timer_ticks = 0;
         }
     }
@@ -47,9 +106,11 @@ void ap_entry(uint64_t pid) {
 
 uint8_t smp_init() {
     struct limine_mp_response *mp_response = mp_request.response;
-    uint8_t cpu_count = mp_response->cpu_count;
+    cpu_count = mp_response->cpu_count;
 
-    uint8_t bsp_lapic_id = mp_response->bsp_lapic_id;
+    smp_console_init(cpu_count);
+
+    bsp_lapic_id = mp_response->bsp_lapic_id;
     uint8_t bsp_pid = 0;
     for (int i = 0; i < cpu_count; i++) {
         if (mp_response->cpus[i]->lapic_id == bsp_lapic_id) {

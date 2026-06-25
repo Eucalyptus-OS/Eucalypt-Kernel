@@ -27,6 +27,7 @@
 #include <drivers/input.h>
 #include <drivers/fs/gpt.h>
 #include <smp.h>
+#include <logging/smp_console.h>
 
 extern void enable_sse();
 
@@ -59,6 +60,9 @@ void idle_thread(void) {
 }
 
 int test_thread() {
+    for (;;) {
+        log_debug("Thread running on CPU %d\n", apic_id());
+    }
     return 1;
 }
 
@@ -141,14 +145,20 @@ void kmain(void) {
     }
 
     scheduler_init();
-    
-    enable_sched();
-    log_info("Scheduler enabled");
+
+    //struct pcb *p = proc_create(test_thread, false);
+    //
+    //for (int i = 0; i < 5; i++) {
+    //    add_thread(p, test_thread);
+    //}
 
     asm volatile ("sti");
 
     smp_init();
     log_info("SMP initialized\n");
+
+    enable_sched();
+    log_info("Scheduler enabled\n");
 
     for (;;) {
         __asm__ volatile("hlt");

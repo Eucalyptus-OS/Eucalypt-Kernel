@@ -414,6 +414,7 @@ void thread_destroy(struct tcb *thread) {
 
 void handle_ret(int64_t code) {
     __asm__ volatile("cli");
+    struct tcb *current_thread = get_current_thread();
     current_thread->state = dead;
     log_info("Thread %d exited with code %ld\n", current_thread->tid, code);
     __asm__ volatile("int $32");
