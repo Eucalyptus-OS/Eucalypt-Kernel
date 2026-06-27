@@ -215,7 +215,9 @@ void ioapic_init(void) {
 void enable_apic(uint8_t id, bool is_bsp) {
     uint64_t phys = cpu_get_apic_base();
     uint64_t msr  = cpu_read_apic_msr();
-    log_debug("Apic - AP: %d, phys = %X, msr = %X, virt = %X\n", id, phys, msr, apic_virt);
+    if (is_bsp) {
+        log_debug("Apic - AP: %d, phys = %X, msr = %X, virt = %X\n", id, phys, msr, apic_virt);
+    }
 
     if ((msr & APIC_BASE_ENABLE) == 0)
         cpu_set_apic_base(phys, is_bsp);

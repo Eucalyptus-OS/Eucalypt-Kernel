@@ -4,6 +4,7 @@ extern ps2_keyboard_interrupt
 extern ps2_mouse_interrupt
 extern do_syscall
 extern exit_syscall
+extern tlb_shootdown_interrupt
 global apic_handler
 global ps2_keyboard_handler
 global ps2_mouse_handler
@@ -241,6 +242,37 @@ ps2_mouse_handler:
     iretq
 
 tlb_shootdown_handler:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    call tlb_shootdown_interrupt
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
     iretq
 
 isr_stub     0

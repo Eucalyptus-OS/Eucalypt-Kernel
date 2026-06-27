@@ -38,6 +38,7 @@ volatile struct limine_framebuffer_request framebuffer_request = {
 
 struct flanterm_context *ft_ctx;
 static spinlock_t printk_lock = 0;
+static bool printk_framebuffer_enabled = true;
 static char printk_buffer[PRINTK_BUFFER_SIZE];
 static size_t printk_head = 0;
 static size_t printk_tail = 0;
@@ -83,8 +84,23 @@ static void irq_restore(bool enabled) {
     }
 }
 
+void printk_set_framebuffer_enabled(bool enabled) {
+    bool had_irqs = irq_save();
+    spinlock_acquire(&printk_lock);
+
+    printk_framebuffer_enabled = enabled;
+    if (!enabled) {
+        printk_head = 0;
+        printk_tail = 0;
+        printk_count = 0;
+    }
+
+    spinlock_release(&printk_lock);
+    irq_restore(had_irqs);
+}
+
 static void print_char(char c) {
-    if (!ft_ctx) {
+    if (!ft_ctx || !printk_framebuffer_enabled) {
         return;
     }
     flanterm_write(ft_ctx, &c, 1);

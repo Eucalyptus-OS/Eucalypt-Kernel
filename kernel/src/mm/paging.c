@@ -66,7 +66,7 @@ void paging_map_page(uint64_t *pml4, vaddr virt, paddr phys, size_t length, uint
     ASSERT(length % 0x1000 == 0);
     for (size_t i = 0; i < length; i += 0x1000)
         map_page(pml4, virt + i, phys + i, flags);
-    invalidate(virt, length);
+    tlb_shootdown(virt, length);
 }
 
 void paging_unmap_page(uint64_t *pml4, vaddr virt, size_t length) {
@@ -74,7 +74,7 @@ void paging_unmap_page(uint64_t *pml4, vaddr virt, size_t length) {
     ASSERT(length % 0x1000 == 0);
     for (size_t i = 0; i < length; i += 0x1000)
         unmap_page(pml4, virt + i);
-    invalidate(virt, length);
+    tlb_shootdown(virt, length);
 }
 
 uint64_t paging_get_entry(uint64_t *pml4, vaddr virt) {

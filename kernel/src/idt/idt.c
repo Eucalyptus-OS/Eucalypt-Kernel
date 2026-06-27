@@ -13,12 +13,6 @@
 #include <smp.h>
 #include <idt/idt.h>
 
-#define APIC_TIMER_VECTOR    0x20
-#define SYSCALL_VECTOR       0x80
-#define PS2_KEYBOARD_VECTOR  0x21
-#define PS2_MOUSE_VECTOR     0x2C
-#define TLB_SHOOTDOWN_VECTOR 0x30
-
 extern void apic_handler();
 extern void int128_handler();
 extern void ps2_keyboard_handler();

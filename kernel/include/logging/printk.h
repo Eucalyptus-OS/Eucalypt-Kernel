@@ -9,8 +9,10 @@
 #define LOG_LEVEL LOG_DEBUG
 
 #include <stdarg.h>
+#include <stdbool.h>
 
 void printk_init();
+void printk_set_framebuffer_enabled(bool enabled);
 void printk(const char *fmt, ...);
 void printk_level(int level, const char *fmt, ...);
 void vprintk(const char *fmt, va_list ap);

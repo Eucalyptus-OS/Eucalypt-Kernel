@@ -25,6 +25,7 @@ struct tcb {
     void          *ustack_base;
     void          *entry;
     uint64_t       rsp;
+    uint8_t        owning_cpu;
 };
 
 extern struct tcb     *current_thread;

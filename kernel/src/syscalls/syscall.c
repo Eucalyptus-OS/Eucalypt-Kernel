@@ -12,6 +12,7 @@
 [[gnu::unused]] 
 uint64_t sys_(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
+    return (uint64_t)-1;
 }
 
 static const syscall_fn_t syscall_table[NR_SYSCALLS] = {

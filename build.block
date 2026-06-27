@@ -1,6 +1,6 @@
 ARCH = x86_64
 MAKE = make
-QEMUFLAGS = "-m 2G -cpu IvyBridge -smp 24 -d int"
+QEMUFLAGS = "-m 2G -cpu IvyBridge -smp 4 -d int"
 IMAGE_NAME = "eucalypt-$(ARCH)"
 HOST_CC = cc
 HOST_CFLAGS = "-g -O2 -pipe"

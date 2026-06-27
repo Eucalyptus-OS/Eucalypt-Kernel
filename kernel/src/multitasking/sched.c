@@ -34,7 +34,6 @@ static bool       enabled = false;
 threads_t *tq = &ready_queue_data;
 struct cpu_sched   sched_cpus[MAX_CPUS];
 
-static uint8_t cpu_to_schedule = 1;
 static spinlock_t sched_lock;
 
 static uintptr_t kernel_stack_top(struct tcb *thread) {
@@ -122,7 +121,6 @@ uintptr_t schedule(uintptr_t rsp) {
         sched_cpus[id].current = next;
         tss.rsp0 = kernel_stack_top(next);
         spinlock_release(&sched_lock);
-
         __asm__ volatile("mov %0, %%cr3" :: "r"(next->cr3));
         return next->rsp;
     }

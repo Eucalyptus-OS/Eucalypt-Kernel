@@ -1,6 +1,12 @@
 #pragma once
 #include <stdint.h>
 
+#define APIC_TIMER_VECTOR    0x20
+#define SYSCALL_VECTOR       0x80
+#define PS2_KEYBOARD_VECTOR  0x21
+#define PS2_MOUSE_VECTOR     0x2C
+#define TLB_SHOOTDOWN_VECTOR 0x30
+
 typedef struct {
     uint16_t isr_low;
     uint16_t kernel_cs;

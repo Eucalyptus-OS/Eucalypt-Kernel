@@ -61,7 +61,6 @@ void idle_thread(void) {
 
 int test_thread() {
     for (;;) {
-        log_debug("Thread running on CPU %d\n", apic_id());
     }
     return 1;
 }
@@ -146,19 +145,22 @@ void kmain(void) {
 
     scheduler_init();
 
-    //struct pcb *p = proc_create(test_thread, false);
-    //
-    //for (int i = 0; i < 5; i++) {
-    //    add_thread(p, test_thread);
-    //}
+    struct pcb *p = proc_create(test_thread, false);
+    
+    for (int i = 0; i < 5; i++) {
+        add_thread(p, test_thread);
+    }
 
     asm volatile ("sti");
 
-    smp_init();
-    log_info("SMP initialized\n");
+    if (smp_init() != 0) {
+        log_error("SMP initialization failed\n");
+    } else {
+        log_info("SMP initialized\n");
+    }
 
-    enable_sched();
     log_info("Scheduler enabled\n");
+    enable_sched();
 
     for (;;) {
         __asm__ volatile("hlt");

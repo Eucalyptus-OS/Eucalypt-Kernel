@@ -29,13 +29,14 @@
 
 extern volatile uint32_t *apic_virt;
 
-void enable_apic(uint8_t id, bool is_bsp);
-void apic_eoi(void);
+void     enable_apic(uint8_t id, bool is_bsp);
+void     apic_eoi(void);
 uint32_t apic_read(uint32_t reg);
-void apic_write(uint32_t reg, uint32_t value);
-uint8_t apic_id(void);
-void apic_timer_init(uint32_t hz);
-void ioapic_init();
-void ioapic_set_entry(uint8_t irq, uint8_t vector, uint8_t dest, bool masked);
-void ioapic_mask(uint8_t irq);
-void ioapic_unmask(uint8_t irq);
+void     apic_write(uint32_t reg, uint32_t value);
+uint8_t  apic_id(void);
+void     apic_timer_init(uint32_t hz);
+void     ioapic_init();
+void     ioapic_set_entry(uint8_t irq, uint8_t vector, uint8_t dest, bool masked);
+void     ioapic_mask(uint8_t irq);
+void     ioapic_unmask(uint8_t irq);
+void     apic_send_ipi(uint8_t apic_id, uint8_t vector);
