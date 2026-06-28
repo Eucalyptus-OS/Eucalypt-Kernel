@@ -1,4 +1,3 @@
-#include "drivers/block/ide.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <limine.h>
@@ -19,6 +18,7 @@
 #include <multitasking/sched.h>
 #include <multitasking/proc.h>
 #include <drivers/pci.h>
+#include <drivers/block/ide.h>
 #include <drivers/block/ahci.h>
 #include <drivers/block/ramfs.h>
 #include <drivers/acpi.h>

@@ -19,4 +19,6 @@ extern cpu_t cpus[100];
 bool smp_is_cpu_online(uint8_t pid);
 uint8_t smp_online_count(void);
 uint8_t smp_get_apic_id(uint8_t pid);
+uint8_t smp_get_cpu_id(uint8_t lapic_id);
+uint8_t smp_current_cpu_id(void);
 uint8_t smp_init();

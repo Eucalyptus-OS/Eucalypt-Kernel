@@ -1,3 +1,3 @@
 #pragma once
 
-void acpi_log_tables(void);
+void acpi_log_tables();

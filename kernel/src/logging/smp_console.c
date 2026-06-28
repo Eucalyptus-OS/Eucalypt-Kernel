@@ -1,8 +1,10 @@
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <limine.h>
 #include <mem.h>
 #include <sync/spinlock.h>
+#include <logging/format.h>
 #include <logging/smp_console.h>
 
 #define MAX_CPUS 24
@@ -10,8 +12,7 @@
 #define LETTER_SPACING_PX 1
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
-extern uint8_t font[26][8];
-extern uint8_t font_lower[26][8];
+extern uint8_t smp_console_font[128][8];
 
 #define GLYPH_W 8
 #define GLYPH_H 8
@@ -37,6 +38,9 @@ static uint16_t grid_rows = 0;
 static bool enabled = false;
 static uint32_t fb_stride = 0;
 static uint32_t *fb_addr = NULL;
+static spinlock_t format_lock = 0;
+static struct console *format_console = NULL;
+static uint32_t format_color = 0xFFFFFFFF;
 
 static inline bool smp_console_enabled(void) {
     return __atomic_load_n(&enabled, __ATOMIC_ACQUIRE);
@@ -107,16 +111,7 @@ static inline void smp_console_new_line_locked(struct console *c) {
 }
 
 static inline void smp_console_putc_locked(struct console *con, uint32_t color, char c) {
-    uint8_t glyph;
-    bool upper_case;
-
-    if (c >= 'A' && c <= 'Z') {
-        upper_case = true;
-        glyph = c - 'A';
-    } else if (c >= 'a' && c <= 'z') {
-        upper_case = false;
-        glyph = c - 'a';
-    } else if (c == ' ') {
+    if (c == ' ') {
         con->col++;
         if (con->col >= con->max_cols) {
             smp_console_new_line_locked(con);
@@ -125,7 +120,22 @@ static inline void smp_console_putc_locked(struct console *con, uint32_t color, 
     } else if (c == '\n' || c == '\r') {
         smp_console_new_line_locked(con);
         return;
-    } else {
+    }
+
+    uint8_t ch = (uint8_t)c;
+    if (ch >= 128) {
+        return;
+    }
+
+    const uint8_t *glyph_rows = smp_console_font[ch];
+    bool empty = true;
+    for (uint8_t i = 0; i < GLYPH_H; i++) {
+        if (glyph_rows[i] != 0) {
+            empty = false;
+            break;
+        }
+    }
+    if (empty) {
         return;
     }
 
@@ -134,7 +144,6 @@ static inline void smp_console_putc_locked(struct console *con, uint32_t color, 
     uint16_t cell_w = GLYPH_W + LETTER_SPACING_PX;
     uint32_t origin_x = con->origin_x + (con->col * cell_w);
     uint32_t origin_y = con->origin_y + (con->row * GLYPH_H);
-    const uint8_t *glyph_rows = upper_case ? font[glyph] : font_lower[glyph];
 
     for (uint8_t i = 0; i < GLYPH_H; i++) {
         uint8_t row_bits = glyph_rows[i];
@@ -173,6 +182,12 @@ void smp_console_draw_glyph(uint8_t cpu_id, uint32_t color, char c) {
         smp_console_putc_locked(con, color, c);
     }
     spinlock_release(&con->lock);
+}
+
+static void smp_console_format_write(char c) {
+    if (format_console) {
+        smp_console_putc_locked(format_console, format_color, c);
+    }
 }
 
 uint8_t smp_console_init(uint8_t cpu_count) {
@@ -240,4 +255,29 @@ void println(uint8_t cpu_id, const char *str, uint32_t color) {
         smp_console_new_line_locked(con);
     }
     spinlock_release(&con->lock);
+}
+
+void smp_vprintf(uint8_t cpu_id, uint32_t color, const char *fmt, va_list ap) {
+    if (!smp_console_enabled() || cpu_id >= console_count) {
+        return;
+    }
+
+    struct console *con = &consoles[cpu_id];
+    spinlock_acquire(&format_lock);
+    spinlock_acquire(&con->lock);
+    if (con->active && con->max_cols != 0 && con->max_rows != 0) {
+        format_console = con;
+        format_color = color;
+        format(smp_console_format_write, fmt, ap);
+        format_console = NULL;
+    }
+    spinlock_release(&con->lock);
+    spinlock_release(&format_lock);
+}
+
+void smp_printf(uint8_t cpu_id, uint32_t color, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    smp_vprintf(cpu_id, color, fmt, ap);
+    va_end(ap);
 }

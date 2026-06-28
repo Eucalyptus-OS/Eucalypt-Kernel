@@ -71,6 +71,7 @@ static void stop_cmd(HBA_PORT *port) {
 }
 
 static void port_rebase(HBA_PORT *port, int portno) {
+    log_info("Sending stop command\n");
     stop_cmd(port);
 
     uint64_t phys_clb = AHCI_BASE + (portno << 10);
@@ -93,15 +94,18 @@ static void port_rebase(HBA_PORT *port, int portno) {
 
     HBA_CMD_HEADER *cmdheader = (HBA_CMD_HEADER *)virt_clb;
     for (int i = 0; i < 32; i++) {
+        log_info("Probing command slot %d\n", i);
         uint64_t phys_ctba = AHCI_BASE + (40 << 10) + (portno << 13) + (i << 8);
         uint64_t virt_ctba = phys_virt(phys_ctba);
         cmdheader[i].prdtl = AHCI_CMD_TBL_PRDT_ENTRIES;
         cmdheader[i].ctba  = (uint32_t)(phys_ctba & 0xFFFFFFFF);
         cmdheader[i].ctbau = (uint32_t)(phys_ctba >> 32);
         memset((void *)virt_ctba, 0, 256);
+        log_info("Command slot %d CTBA set to 0x%lx\n", i, phys_ctba);
     }
 
     start_cmd(port);
+    log_info("Command slot 0 started\n");
 }
 
 static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
@@ -111,6 +115,7 @@ static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
         if ((pi & (1u << i)) == 0)
             continue;
 
+        log_info("Probing port %d\n", i);
         HBA_PORT *port = &abar->ports[i];
         int type = check_type(port);
 

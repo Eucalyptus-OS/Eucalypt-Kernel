@@ -24,6 +24,7 @@ uint8_t bsp_lapic_id = 0;
 cpu_t cpus[100];
 uint64_t ap_stack_tops[100];
 extern void smp_trampoline();
+extern void enable_sse();
 
 static volatile uint8_t ap_stage[100];
 static volatile uint8_t cpu_online[100];
@@ -146,6 +147,8 @@ void ap_entry(uint64_t pid) {
     enable_apic(pid, false);
     __atomic_store_n(&ap_stage[pid], AP_STAGE_APIC, __ATOMIC_RELEASE);
 
+    enable_sse();
+
     apic_timer_init(1000);
     __atomic_store_n(&ap_stage[pid], AP_STAGE_TIMER, __ATOMIC_RELEASE);
 
@@ -177,6 +180,19 @@ uint8_t smp_get_apic_id(uint8_t pid) {
         }
     }
     return 0;
+}
+
+uint8_t smp_get_cpu_id(uint8_t lapic_id) {
+    for (int i = 0; i < cpu_count; i++) {
+        if (cpus[i].lapic_id == lapic_id) {
+            return cpus[i].cpu_id;
+        }
+    }
+    return lapic_id;
+}
+
+uint8_t smp_current_cpu_id(void) {
+    return smp_get_cpu_id(apic_id());
 }
 
 uint8_t smp_init() {

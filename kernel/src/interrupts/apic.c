@@ -232,7 +232,7 @@ void enable_apic(uint8_t id, bool is_bsp) {
             asm volatile ("pause");
         }
     }
-
+    
     apic_write(APIC_REG_TPR,       0);
     apic_write(APIC_REG_LVT_LINT0, APIC_LVT_MASKED);
     apic_write(APIC_REG_LVT_LINT1, APIC_LVT_MASKED);

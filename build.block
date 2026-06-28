@@ -1,7 +1,8 @@
 ARCH = x86_64
 MAKE = make
-QEMUFLAGS = "-m 2G -cpu IvyBridge -smp 24 -d int"
+QEMUFLAGS = "-m 2G -cpu IvyBridge -netdev user,id=net1 -device rtl8139,netdev=net1,bus=pcie.0,addr=0x3 -smp 6 -d int"
 IMAGE_NAME = "eucalypt-$(ARCH)"
+USERLAND_DIR = ../Eucalypt-Userland
 HOST_CC = cc
 HOST_CFLAGS = "-g -O2 -pipe"
 HOST_CPPFLAGS = ""
@@ -12,6 +13,11 @@ ARCHIVE = main_archive.tar
 target kernel {
     "test -f kernel/.deps-obtained || ./kernel/get-deps"
     "$(MAKE) -C kernel ARCH=$(ARCH)"
+}
+
+target userspace {
+    "$(USERLAND_DIR)/scripts/build-rust-userspace.sh build/USER"
+    "tar -cf $(ARCHIVE) build/USER"
 }
 
 target disks {
@@ -43,6 +49,7 @@ target limine-binary {
 target iso {
     run limine-binary
     run kernel
+    run userspace
     run disks
     "rm -rf iso_root"
     "mkdir -p iso_root/boot iso_root/boot/limine iso_root/EFI/BOOT iso_root/archive"
@@ -59,6 +66,7 @@ target iso {
 target hdd {
     run limine-binary
     run kernel
+    run userspace
     "rm -f $(IMAGE_NAME).hdd"
     "dd if=/dev/zero bs=1M count=0 seek=64 of=$(IMAGE_NAME).hdd"
     "if [ $(ARCH) = x86_64 ]; then PATH=$PATH:/usr/sbin:/sbin sgdisk $(IMAGE_NAME).hdd -n 1:2048 -t 1:ef00 -m 1 && ./limine-binary/limine bios-install $(IMAGE_NAME).hdd; else PATH=$PATH:/usr/sbin:/sbin sgdisk $(IMAGE_NAME).hdd -n 1:2048 -t 1:ef00; fi"
