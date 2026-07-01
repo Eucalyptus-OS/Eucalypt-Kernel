@@ -60,6 +60,7 @@ void idle_thread(void) {
     }
 }
 
+extern uint64_t do_syscall(uint64_t syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5);
 
 uint64_t alloc_user_stack(uint64_t *cr3) {
     uint64_t user_stack_base = 0x70000000000;
@@ -84,18 +85,6 @@ extern struct flanterm_context *ft_ctx;
 void putchar(tty_t *tty, char c) {
     (void)tty;
     flanterm_write(ft_ctx, &c, 1);
-}
-
-uint64_t syscall(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4) {
-    uint64_t result;
-    register uint64_t r8_arg = arg4;
-    asm volatile (
-        "int $0x80"
-        : "=a"(result)
-        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r8_arg)
-        : "memory"
-    );
-    return result;
 }
 
 void kmain(void) {
@@ -171,27 +160,28 @@ void kmain(void) {
  
     info.execfn = "/ram/build/USER";
     
-    log_info("Creating user thread: entry=%llx cr3=%llx\n", entry, user_cr3);
+    log_info("Creating user proc: entry=%llx cr3=%llx\n", entry, user_cr3);
     
     char *argv[] = { "/ram/build/USER", NULL };
     char *envp[] = { "PATH=/", NULL };
+
+    proc_create_loaded_user(entry, user_cr3, argv, envp, &info);
 
     scheduler_init();
 
     asm volatile ("sti");
 
-    //if (smp_init() != 0) {
-    //    log_error("SMP initialization failed\n");
-    //} else {
-    //    log_info("SMP initialized\n");
-    //}
+    if (smp_init() != 0) {
+        log_error("SMP initialization failed\n");
+    } else {
+        log_info("SMP initialized\n");
+    }
 
     log_info("Scheduler enabled\n");
     enable_sched();
 
-    proc_create_loaded_user(entry, user_cr3, argv, envp, &info);
-
     for (;;) {
+        do_syscall(0, 0, 0, 0, 0, 0);
         __asm__ volatile("hlt");
     }
 }

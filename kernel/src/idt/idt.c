@@ -224,7 +224,7 @@ void idt_set_descriptor(uint8_t vector, void *isr, uint8_t flags) {
     d->reserved  = 0;
 }
 
-void idt_init(void) {
+void idt_init() {
     idtr.base  = (uintptr_t)&idt[0];
     idtr.limit = sizeof(idt_entry_t) * 256 - 1;
 

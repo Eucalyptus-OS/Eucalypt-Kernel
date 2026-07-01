@@ -1,3 +1,4 @@
+#include "logging/smp_console.h"
 #include <stdint.h>
 #include <syscalls/syscall_pid.h>
 #include <logging/printk.h>
@@ -8,12 +9,6 @@
 #include <syscalls/syscall_input.h>
 #include <syscalls/syscall_thread.h>
 #include <syscalls/syscall.h>
-
-[[gnu::unused]] 
-uint64_t sys_(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
-    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
-    return (uint64_t)-1;
-}
 
 static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_READ]           = sys_read,
@@ -58,9 +53,9 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
 
 uint64_t do_syscall(uint64_t syscall_num, uint64_t arg0, uint64_t arg1, uint64_t arg2,
                     uint64_t arg3, uint64_t arg4) {
-    log_info("Syscall: %d\n", syscall_num);
+    smp_printf(0, 0xFFFFFFFF, "Syscall: %d", syscall_num);
     if (syscall_num >= NR_SYSCALLS || !syscall_table[syscall_num]) {
-        log_warn("Unknown syscall %llu\n", syscall_num);
+        smp_printf(0, 0xFFFFFFFF, "Uknown syscall: %d", syscall_num);
         return (uint64_t)-1;
     }
     return syscall_table[syscall_num](arg0, arg1, arg2, arg3, arg4, 0);
