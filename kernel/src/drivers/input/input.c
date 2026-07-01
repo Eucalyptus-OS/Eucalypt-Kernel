@@ -16,7 +16,7 @@ static input_subscriber_t subscribers[MAX_INPUT_SUBSCRIBERS];
 static uint32_t num_subscribers = 0;
 static spinlock_t input_lock = 0;
 
-void input_init(void) {
+void input_init() {
     num_subscribers = 0;
     log_info("Input event system initialized\n");
 }
@@ -24,7 +24,6 @@ void input_init(void) {
 void input_subscribe(uint32_t pid) {
     spinlock_acquire(&input_lock);
     
-    // Check if already subscribed
     for (uint32_t i = 0; i < num_subscribers; i++) {
         if (subscribers[i].pid == pid) {
             spinlock_release(&input_lock);
@@ -32,7 +31,6 @@ void input_subscribe(uint32_t pid) {
         }
     }
     
-    // Add new subscriber if space available
     if (num_subscribers < MAX_INPUT_SUBSCRIBERS) {
         subscribers[num_subscribers].pid = pid;
         subscribers[num_subscribers].head = 0;
@@ -50,7 +48,6 @@ void input_unsubscribe(uint32_t pid) {
     
     for (uint32_t i = 0; i < num_subscribers; i++) {
         if (subscribers[i].pid == pid) {
-            // Remove by shifting
             for (uint32_t j = i; j < num_subscribers - 1; j++) {
                 subscribers[j] = subscribers[j + 1];
             }
@@ -71,7 +68,6 @@ void input_event_enqueue(input_event_t *event) {
         if (subscribers[i].count < INPUT_EVENT_QUEUE_SIZE) {
             uint32_t idx = (subscribers[i].tail + subscribers[i].count) % INPUT_EVENT_QUEUE_SIZE;
             
-            // Copy event manually
             input_event_t *dest = &subscribers[i].events[idx];
             dest->type = event->type;
             dest->timestamp = event->timestamp;
@@ -99,7 +95,6 @@ int input_event_read(uint32_t pid, input_event_t *event) {
     for (uint32_t i = 0; i < num_subscribers; i++) {
         if (subscribers[i].pid == pid) {
             if (subscribers[i].count > 0) {
-                // Copy event manually
                 input_event_t *src = &subscribers[i].events[subscribers[i].tail];
                 event->type = src->type;
                 event->timestamp = src->timestamp;
@@ -118,10 +113,10 @@ int input_event_read(uint32_t pid, input_event_t *event) {
                 return 0;
             }
             spinlock_release(&input_lock);
-            return -1; // No events
+            return -1;
         }
     }
     
     spinlock_release(&input_lock);
-    return -1; // Not subscribed
+    return -1;
 }

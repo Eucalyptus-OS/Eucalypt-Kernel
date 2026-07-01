@@ -80,10 +80,7 @@ uint64_t alloc_user_stack(uint64_t *cr3) {
 
 extern struct flanterm_context *ft_ctx;
 
-void putchar(tty_t *tty, char c) {
-    (void)tty;
-    flanterm_write(ft_ctx, &c, 1);
-}
+extern void putchar(tty_t *tty, char c);
 
 void kmain(void) {
     if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) {

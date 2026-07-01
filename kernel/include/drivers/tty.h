@@ -1,12 +1,11 @@
 #pragma once
+
 #include <stdint.h>
 
 #define ICRNL   0x0100
 #define IXON    0x0400
-
 #define OPOST   0x0001
 #define ONLCR   0x0004
-
 #define ECHO    0x0008
 #define ECHOE   0x0010
 #define ECHONL  0x0040
@@ -50,11 +49,18 @@ struct tty {
     void (*putchar)(tty_t *tty, char c);
     void (*push_char)(tty_t *tty, char c);
     uint8_t    active;
+
+    uint32_t   col;
+    uint32_t   row;
+    uint32_t   max_cols;
+    uint32_t   max_rows;
+    uint32_t   origin_x;
+    uint32_t   origin_y;
 };
 
 void    tty_init(void (*output_fn)(tty_t *tty, char c));
 void    tty_switch(uint8_t index);
-tty_t  *tty_get_active(void);
+tty_t  *tty_get_active();
 tty_t  *tty_get(uint8_t index);
 void    tty_input(tty_t *tty, char c);
 int32_t tty_write(tty_t *tty, const uint8_t *buf, uint32_t count);
