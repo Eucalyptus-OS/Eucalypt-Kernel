@@ -150,6 +150,7 @@ int128_handler:
     mov rdx, [rsp + iframe.rdx]
     mov r8,  [rsp + iframe.r8]
     mov r9,  [rsp + iframe.r9]
+    mov r11, [rsp + iframe.r10]
     
     mov r10, rdx
     mov rdx, rsi
@@ -157,7 +158,10 @@ int128_handler:
     mov rdi, rax
     mov rcx, r10
 
+    sub rsp, 16
+    mov [rsp], r11
     call do_syscall
+    add rsp, 16
 
     mov [rsp + iframe.rax], rax
     mov rdi, rsp

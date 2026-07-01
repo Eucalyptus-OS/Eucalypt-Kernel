@@ -60,8 +60,6 @@ void idle_thread(void) {
     }
 }
 
-extern uint64_t do_syscall(uint64_t syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5);
-
 uint64_t alloc_user_stack(uint64_t *cr3) {
     uint64_t user_stack_base = 0x70000000000;
     uint64_t pages = 4;
@@ -129,6 +127,7 @@ void kmain(void) {
     log_info("RAMFS initialized\n");
     gpt_init();
     log_info("GPT initialized\n");
+    scheduler_init();
 
     if (!ramfs_addr || ramfs_size == 0) {
         log_error("No ramfs module loaded\n");
@@ -167,8 +166,6 @@ void kmain(void) {
 
     proc_create_loaded_user(entry, user_cr3, argv, envp, &info);
 
-    scheduler_init();
-
     asm volatile ("sti");
 
     if (smp_init() != 0) {
@@ -181,7 +178,6 @@ void kmain(void) {
     enable_sched();
 
     for (;;) {
-        do_syscall(0, 0, 0, 0, 0, 0);
         __asm__ volatile("hlt");
     }
 }

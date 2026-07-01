@@ -790,7 +790,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
     if (!buf)   { errno = EINVAL; return -1; }
     if (!count) return 0;
 
-    int acc = file->flags & O_RDWR;
+    int acc = file->flags & (O_WRONLY | O_RDWR);
     if (acc == O_RDONLY) { errno = EACCES; return -1; }
 
     vfs_node_t *node = file->node;

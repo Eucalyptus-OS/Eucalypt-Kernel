@@ -1,4 +1,3 @@
-#include "logging/smp_console.h"
 #include <stdint.h>
 #include <syscalls/syscall_pid.h>
 #include <logging/printk.h>
@@ -52,11 +51,10 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
 };
 
 uint64_t do_syscall(uint64_t syscall_num, uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                    uint64_t arg3, uint64_t arg4) {
-    smp_printf(0, 0xFFFFFFFF, "Syscall: %d", syscall_num);
+                    uint64_t arg3, uint64_t arg4, uint64_t arg5) {
     if (syscall_num >= NR_SYSCALLS || !syscall_table[syscall_num]) {
-        smp_printf(0, 0xFFFFFFFF, "Uknown syscall: %d", syscall_num);
+        log_debug("Unknown syscall: %llu\n", (unsigned long long)syscall_num);
         return (uint64_t)-1;
     }
-    return syscall_table[syscall_num](arg0, arg1, arg2, arg3, arg4, 0);
+    return syscall_table[syscall_num](arg0, arg1, arg2, arg3, arg4, arg5);
 }
