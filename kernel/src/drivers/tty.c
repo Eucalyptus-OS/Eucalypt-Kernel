@@ -138,8 +138,21 @@ static void tty_new_line(tty_t *tty) {
 
 void putchar(tty_t *tty, char c) {
     if (c == ' ') {
+        uint32_t stride = framebuffer_request.response->framebuffers[0]->pitch / 4;
+        uint32_t *fb = framebuffer_request.response->framebuffers[0]->address;
+        uint16_t cell_w = GLYPH_W + LETTER_SPACING_PX;
+        uint32_t origin_x = tty->origin_x + (tty->col * cell_w);
+        uint32_t origin_y = tty->origin_y + (tty->row * GLYPH_H);
+
+        for (uint8_t i = 0; i < GLYPH_H; i++) {
+            uint32_t *row = &fb[(origin_y + i) * stride + origin_x];
+            for (uint8_t j = 0; j < cell_w; j++) {
+                row[j] = 0x00000000;
+            }
+        }
+
         tty->col++;
-        if (tty->col >= tty->max_cols)
+    if (tty->col >= tty->max_cols)
             tty_new_line(tty);
         return;
     } else if (c == '\n') {
@@ -149,8 +162,12 @@ void putchar(tty_t *tty, char c) {
         tty->col = 0;
         return;
     } else if (c == '\b') {
-        if (tty->col > 0)
+        if (tty->col > 0) {
             tty->col--;
+        } else if (tty->row > 0) {
+            tty->row--;
+            tty->col = tty->max_cols - 1;
+        }
         return;
     }
 

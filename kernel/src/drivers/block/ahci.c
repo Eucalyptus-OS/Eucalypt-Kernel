@@ -6,6 +6,26 @@
 #include <drivers/pci.h>
 #include <drivers/block/ahci.h>
 
+extern void pci_config_write_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value);
+
+#define AHCI_GHC_AE   (1u << 31)
+#define AHCI_GHC_IE   (1u << 1)
+#define AHCI_GHC_HR   (1u << 0)
+
+#define AHCI_BOHC_BOS (1u << 0)
+#define AHCI_BOHC_OOS (1u << 1)
+#define AHCI_BOHC_SOOE (1u << 2)
+#define AHCI_BOHC_OOC (1u << 3)
+#define AHCI_BOHC_BB  (1u << 4)
+
+#define AHCI_CAP2_BOH (1u << 0)
+
+#define PCI_CMD_IO_SPACE     (1u << 0)
+#define PCI_CMD_MEM_SPACE    (1u << 1)
+#define PCI_CMD_BUS_MASTER   (1u << 2)
+
+#define AHCI_SPIN_TIMEOUT_ITERS 2000000
+
 static HBA_MEM *g_abars[AHCI_MAX_CONTROLLERS];
 static uint8_t  g_abar_count = 0;
 static ahci_state_t g_ahci;
@@ -51,28 +71,87 @@ static uint8_t pci_is_ahci_device(uint8_t bus, uint8_t slot, uint8_t func) {
     return class_code == 0x01 && subclass == 0x06 && prog_if == 0x01;
 }
 
-static void start_cmd(HBA_PORT *port) {
-    while (port->cmd & HBA_PxCMD_CR)
-        ;
-    port->cmd |= HBA_PxCMD_FRE;
-    port->cmd |= HBA_PxCMD_ST;
+static void pci_enable_device(uint8_t bus, uint8_t slot, uint8_t func) {
+    uint16_t cmd = pci_config_read_word(bus, slot, func, 0x04);
+    cmd |= PCI_CMD_MEM_SPACE | PCI_CMD_BUS_MASTER;
+    pci_config_write_word(bus, slot, func, 0x04, cmd);
 }
 
-static void stop_cmd(HBA_PORT *port) {
-    port->cmd &= ~HBA_PxCMD_ST;
-    port->cmd &= ~HBA_PxCMD_FRE;
-    while (1) {
-        if (port->cmd & HBA_PxCMD_FR)
-            continue;
-        if (port->cmd & HBA_PxCMD_CR)
-            continue;
-        break;
+static void ahci_spin_delay(uint32_t iters) {
+    for (volatile uint32_t i = 0; i < iters; i++) {
+        asm volatile ("pause");
     }
 }
 
-static void port_rebase(HBA_PORT *port, int portno) {
-    log_info("Sending stop command\n");
-    stop_cmd(port);
+static void ahci_bios_handoff(HBA_MEM *abar) {
+    if (!(abar->cap2 & AHCI_CAP2_BOH)) {
+        return;
+    }
+
+    abar->bohc |= AHCI_BOHC_OOS;
+
+    uint32_t spin = 0;
+    while ((abar->bohc & AHCI_BOHC_BOS) && spin++ < AHCI_SPIN_TIMEOUT_ITERS) {
+        ahci_spin_delay(1);
+    }
+
+    ahci_spin_delay(250000);
+
+    if (abar->bohc & AHCI_BOHC_BB) {
+        ahci_spin_delay(2000000);
+    }
+
+    abar->bohc |= AHCI_BOHC_OOC;
+}
+
+static uint8_t ahci_hba_enable(HBA_MEM *abar) {
+    abar->ghc |= AHCI_GHC_AE;
+
+    uint32_t spin = 0;
+    while (!(abar->ghc & AHCI_GHC_AE)) {
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static uint8_t start_cmd(HBA_PORT *port) {
+    uint32_t spin = 0;
+    while (port->cmd & HBA_PxCMD_CR) {
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS) {
+            return 1;
+        }
+    }
+
+    port->cmd |= HBA_PxCMD_FRE;
+    port->cmd |= HBA_PxCMD_ST;
+    return 0;
+}
+
+static uint8_t stop_cmd(HBA_PORT *port) {
+    port->cmd &= ~HBA_PxCMD_ST;
+    port->cmd &= ~HBA_PxCMD_FRE;
+
+    uint32_t spin = 0;
+    while (1) {
+        if (!(port->cmd & HBA_PxCMD_FR) && !(port->cmd & HBA_PxCMD_CR)) {
+            break;
+        }
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static uint8_t port_rebase(HBA_PORT *port, int portno) {
+    if (stop_cmd(port) != 0) {
+        log_warn("AHCI: port %d failed to stop command engine, skipping\n", portno);
+        return 1;
+    }
 
     uint64_t phys_clb = AHCI_BASE + (portno << 10);
     uint64_t virt_clb = phys_virt(phys_clb);
@@ -94,18 +173,20 @@ static void port_rebase(HBA_PORT *port, int portno) {
 
     HBA_CMD_HEADER *cmdheader = (HBA_CMD_HEADER *)virt_clb;
     for (int i = 0; i < 32; i++) {
-        log_info("Probing command slot %d\n", i);
         uint64_t phys_ctba = AHCI_BASE + (40 << 10) + (portno << 13) + (i << 8);
         uint64_t virt_ctba = phys_virt(phys_ctba);
         cmdheader[i].prdtl = AHCI_CMD_TBL_PRDT_ENTRIES;
         cmdheader[i].ctba  = (uint32_t)(phys_ctba & 0xFFFFFFFF);
         cmdheader[i].ctbau = (uint32_t)(phys_ctba >> 32);
         memset((void *)virt_ctba, 0, 256);
-        log_info("Command slot %d CTBA set to 0x%lx\n", i, phys_ctba);
     }
 
-    start_cmd(port);
-    log_info("Command slot 0 started\n");
+    if (start_cmd(port) != 0) {
+        log_warn("AHCI: port %d failed to start command engine\n", portno);
+        return 1;
+    }
+
+    return 0;
 }
 
 static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
@@ -115,14 +196,21 @@ static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
         if ((pi & (1u << i)) == 0)
             continue;
 
-        log_info("Probing port %d\n", i);
         HBA_PORT *port = &abar->ports[i];
         int type = check_type(port);
 
-        port_rebase(port, i);
-
         g_ahci.controllers[controller].ports[i].type = type;
         g_ahci.controllers[controller].ports[i].present = (type != AHCI_DEV_NULL);
+
+        if (type == AHCI_DEV_NULL) {
+            log_info("No device at controller %u port %u\n", controller, i);
+            continue;
+        }
+
+        if (port_rebase(port, i) != 0) {
+            g_ahci.controllers[controller].ports[i].present = 0;
+            continue;
+        }
 
         switch (type) {
             case AHCI_DEV_SATA:
@@ -138,7 +226,6 @@ static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
                 log_info("Port multiplier at controller %u port %u\n", controller, i);
                 break;
             default:
-                log_info("No device at controller %u port %u\n", controller, i);
                 break;
         }
     }
@@ -221,9 +308,9 @@ uint8_t ahci_read(uint8_t controller, uint8_t port, uint64_t sector, uint8_t cou
     cfis->countl   = count & 0xFF;
     cfis->counth   = (count >> 8) & 0xFF;
 
-    int spin = 0;
+    uint32_t spin = 0;
     while ((hba_port->tfd & (ATA_DEV_BUSY | ATA_DEV_DRQ)) != 0) {
-        if (++spin > 1000000)
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS)
             return 1;
     }
 
@@ -233,7 +320,7 @@ uint8_t ahci_read(uint8_t controller, uint8_t port, uint64_t sector, uint8_t cou
     while ((hba_port->ci & (1u << slot)) != 0) {
         if (hba_port->is & (HBA_PxIS_TFES | HBA_PxIS_HBFS | HBA_PxIS_HBDS | HBA_PxIS_IFS))
             return 1;
-        if (++spin > 1000000)
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS)
             return 1;
     }
 
@@ -311,9 +398,9 @@ uint8_t ahci_write(uint8_t controller, uint8_t port, uint64_t sector, uint8_t co
     cfis->countl   = count & 0xFF;
     cfis->counth   = (count >> 8) & 0xFF;
 
-    int spin = 0;
+    uint32_t spin = 0;
     while ((hba_port->tfd & (ATA_DEV_BUSY | ATA_DEV_DRQ)) != 0) {
-        if (++spin > 1000000)
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS)
             return 1;
     }
 
@@ -323,7 +410,7 @@ uint8_t ahci_write(uint8_t controller, uint8_t port, uint64_t sector, uint8_t co
     while ((hba_port->ci & (1u << slot)) != 0) {
         if (hba_port->is & (HBA_PxIS_TFES | HBA_PxIS_HBFS | HBA_PxIS_HBDS | HBA_PxIS_IFS))
             return 1;
-        if (++spin > 1000000)
+        if (++spin > AHCI_SPIN_TIMEOUT_ITERS)
             return 1;
     }
 
@@ -359,6 +446,8 @@ uint8_t ahci_init() {
                 if (!pci_is_ahci_device(bus, slot, func))
                     continue;
 
+                pci_enable_device(bus, slot, func);
+
                 uint64_t abar_phys = pci_read_bar64(bus, slot, func, 0x24);
                 if (abar_phys == 0)
                     continue;
@@ -373,12 +462,21 @@ uint8_t ahci_init() {
                 uint64_t *pml4 = paging_get_current_pml4();
 
                 paging_map_page(pml4, abar_virt, abar_phys, 0x1000,
-                                ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
+                                 ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
 
                 paging_map_page(pml4, phys_virt(AHCI_BASE), AHCI_BASE, 0x4A000,
-                                ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
+                                 ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
 
                 HBA_MEM *abar = (HBA_MEM *)abar_virt;
+
+                ahci_bios_handoff(abar);
+
+                if (ahci_hba_enable(abar) != 0) {
+                    log_warn("AHCI: controller at %u:%u:%u failed to enable, skipping\n",
+                             bus, slot, func);
+                    continue;
+                }
+
                 uint8_t ctrl_idx = g_abar_count;
 
                 g_abars[ctrl_idx] = abar;

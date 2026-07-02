@@ -75,9 +75,72 @@ static const uint8_t scancode_to_keycode[] = {
     0,    // 0x3A CAPSLOCK
 };
 
+static const uint8_t scancode_to_shifted_keycode[] = {
+    0,    // 0x00
+    27,   // 0x01 ESC
+    33,   // 0x02 !
+    64,   // 0x03 @
+    35,   // 0x04 #
+    36,   // 0x05 $
+    37,   // 0x06 %
+    94,   // 0x07 ^
+    38,   // 0x08 &
+    42,   // 0x09 *
+    40,   // 0x0A (
+    41,   // 0x0B )
+    95,   // 0x0C _
+    43,   // 0x0D +
+    8,    // 0x0E BACKSPACE
+    9,    // 0x0F TAB
+    81,   // 0x10 Q
+    87,   // 0x11 W
+    69,   // 0x12 E
+    82,   // 0x13 R
+    84,   // 0x14 T
+    89,   // 0x15 Y
+    85,   // 0x16 U
+    73,   // 0x17 I
+    79,   // 0x18 O
+    80,   // 0x19 P
+    123,  // 0x1A {
+    125,  // 0x1B }
+    10,   // 0x1C ENTER
+    0,    // 0x1D LCTRL
+    65,   // 0x1E A
+    83,   // 0x1F S
+    68,   // 0x20 D
+    70,   // 0x21 F
+    71,   // 0x22 G
+    72,   // 0x23 H
+    74,   // 0x24 J
+    75,   // 0x25 K
+    76,   // 0x26 L
+    58,   // 0x27 :
+    34,   // 0x28 "
+    126,  // 0x29 ~
+    0,    // 0x2A LSHIFT
+    124,  // 0x2B |
+    90,   // 0x2C Z
+    88,   // 0x2D X
+    67,   // 0x2E C
+    86,   // 0x2F V
+    66,   // 0x30 B
+    78,   // 0x31 N
+    77,   // 0x32 M
+    60,   // 0x33 
+    62,   // 0x34 >
+    63,   // 0x35 ?
+    0,    // 0x36 RSHIFT
+    42,   // 0x37 *
+    0,    // 0x38 LALT
+    32,   // 0x39 SPACE
+    0,    // 0x3A CAPSLOCK
+};
+
 static bool shift_pressed = false;
 static bool ctrl_pressed = false;
 static bool alt_pressed = false;
+static bool capslock_active = false;
 static bool extended = false;
 
 static void ps2_wait_write(void) {
@@ -109,83 +172,110 @@ static void ps2_write_command(uint8_t cmd) {
 
 void ps2_keyboard_interrupt(void) {
     uint8_t scancode = inb(PS2_DATA_PORT);
-    
-    input_event_t event = {0};
-    event.timestamp = 0;
-    
-    // Handle extended scancodes
+
     if (scancode == 0xE0) {
         extended = true;
         apic_eoi();
         return;
     }
-    
+
     bool key_release = (scancode & 0x80) != 0;
     uint8_t code = scancode & 0x7F;
-    
-    // Handle modifier keys
+
+
     if (code == 0x1D) { // CTRL
         ctrl_pressed = !key_release;
+        extended = false;
+        apic_eoi();
+        return;
     } else if (code == 0x2A || code == 0x36) { // SHIFT
         shift_pressed = !key_release;
+        extended = false;
+        apic_eoi();
+        return;
     } else if (code == 0x38) { // ALT
         alt_pressed = !key_release;
+        extended = false;
+        apic_eoi();
+        return;
+    } else if (code == 0x3A) { // CAPSLOCK
+        if (!key_release) {
+            capslock_active = !capslock_active;
+        }
+        extended = false;
+        apic_eoi();
+        return;
     }
-    
-    // Regular key event
+
+    if (key_release) {
+        extended = false;
+        apic_eoi();
+        return;
+    }
+
     if (code < sizeof(scancode_to_keycode)) {
-        event.type = key_release ? INPUT_EVENT_KEY_RELEASE : INPUT_EVENT_KEY_PRESS;
-        event.data.key.scancode = code;
-        event.data.key.keycode = scancode_to_keycode[code];
-        
-        input_event_enqueue(&event);
+        uint8_t normal = scancode_to_keycode[code];
+        uint8_t shifted = scancode_to_shifted_keycode[code];
+        uint8_t keycode = normal;
+
+        if (normal >= 'a' && normal <= 'z') {
+            bool uppercase = shift_pressed ^ capslock_active;
+            if (uppercase) {
+                keycode = normal - 'a' + 'A';
+            }
+        } else if (shift_pressed && shifted != 0) {
+            keycode = shifted;
+        }
+
+        if (keycode != 0) {
+            input_event_t event = {0};
+            event.timestamp = 0;
+            event.type = INPUT_EVENT_KEY_PRESS;
+            event.data.key.scancode = code;
+            event.data.key.keycode = keycode;
+
+            input_event_enqueue(&event);
+        }
     }
-    
+
     extended = false;
     apic_eoi();
 }
 
 void ps2_keyboard_init(void) {
-    // Disable both PS/2 ports
-    ps2_write_command(0xAD); // Disable keyboard
-    ps2_write_command(0xA7); // Disable mouse
-    
-    // Flush output buffer
+    ps2_write_command(0xAD);
+    ps2_write_command(0xA7); 
+
     inb(PS2_DATA_PORT);
-    
-    // Set controller configuration byte
-    ps2_write_command(0x20); // Read config
+
+    ps2_write_command(0x20); 
     uint8_t config = ps2_read_data();
-    config |= 0x01;  // Enable keyboard interrupt
-    config &= ~0x02; // Disable mouse interrupt for now
-    config |= 0x40;  // Disable translate mode
-    ps2_write_command(0x60); // Write config
+    config |= 0x01;  
+    config &= ~0x02; 
+    config &= ~0x40; 
+    ps2_write_command(0x60);
     ps2_write_data(config);
-    
-    // Enable keyboard port
+
     ps2_write_command(0xAE);
-    
-    // Reset keyboard
+
     ps2_write_data(0xFF);
     uint8_t resp = ps2_read_data();
     if (resp != 0xFA) {
         log_warn("PS2 keyboard reset failed: %x\n", resp);
     }
-    
-    // Wait for keyboard to complete self-test
-    ps2_read_data(); // BAT completion code
-    
-    // Set scancode set 1
-    ps2_write_data(0xF0); // Set scancode command
-    ps2_read_data(); // ACK
-    ps2_write_data(0x01); // Scancode set 1
-    ps2_read_data(); // ACK
-    
-    // Enable scanning
-    ps2_write_data(0xF4);
-    ps2_read_data(); // ACK
 
+    ps2_read_data();
+
+    ps2_write_data(0xF0);
+    ps2_read_data();
+    ps2_write_data(0x01); 
+    ps2_read_data();
+
+    ps2_write_data(0xF4);
+    ps2_read_data();
+
+    ioapic_set_entry(PS2_KEYBOARD_IRQ, PS2_KEYBOARD_VECTOR, apic_id(), true);
     ioapic_unmask(PS2_KEYBOARD_IRQ);
-    
+
     log_info("PS2 keyboard initialized\n");
 }

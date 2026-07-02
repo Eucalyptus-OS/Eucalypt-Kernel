@@ -48,24 +48,27 @@
 #define ATA_SECONDARY    0x01
 #define ATA_READ      0x00
 #define ATA_WRITE     0x01
-#define ATA_SR_BSY     0x80    // Busy
-#define ATA_SR_DRDY    0x40    // Drive ready
-#define ATA_SR_DF      0x20    // Drive write fault
-#define ATA_SR_DSC     0x10    // Drive seek complete
-#define ATA_SR_DRQ     0x08    // Data request ready
-#define ATA_SR_CORR    0x04    // Corrected data
-#define ATA_SR_IDX     0x02    // Index
-#define ATA_SR_ERR     0x01    // Error
-#define ATA_ER_BBK     0x80    // Bad block
-#define ATA_ER_UNC     0x40    // Uncorrectable data
-#define ATA_ER_MC      0x20    // Media changed
-#define ATA_ER_IDNF    0x10    // ID mark not found
-#define ATA_ER_MCR     0x08    // Media change request
-#define ATA_ER_ABRT    0x04    // Command aborted
-#define ATA_ER_TK0NF   0x02    // Track 0 not found
-#define ATA_ER_AMNF    0x01    // No address mark
+#define ATA_SR_BSY     0x80
+#define ATA_SR_DRDY    0x40
+#define ATA_SR_DF      0x20
+#define ATA_SR_DSC     0x10
+#define ATA_SR_DRQ     0x08
+#define ATA_SR_CORR    0x04
+#define ATA_SR_IDX     0x02
+#define ATA_SR_ERR     0x01
+#define ATA_ER_BBK     0x80
+#define ATA_ER_UNC     0x40
+#define ATA_ER_MC      0x20
+#define ATA_ER_IDNF    0x10
+#define ATA_ER_MCR     0x08
+#define ATA_ER_ABRT    0x04
+#define ATA_ER_TK0NF   0x02
+#define ATA_ER_AMNF    0x01
 #define IDE_ATA     0x00
 #define IDE_ATAPI   0x01
+
+#define IDE_POLL_TIMEOUT_ITERS 2000000
+#define IDE_STATUS_FLOATING    0xFF
 
 uint8_t ide_buf[2048] = {0};
 uint8_t ide_count = 0;
@@ -74,11 +77,11 @@ volatile unsigned static char ide_irq = 0;
 static ide_state_t ide_state = {0};
 
 struct ide_channel_regs {
-    uint16_t base;   // I/O Base.
-    uint16_t ctrl;   // Control Base
-    uint16_t bmide;  // Bus Master IDE
-    uint8_t  n_ien;  // nIEN (No Interrupt);
-} channels [2]; // 2 channels, primary and secondary
+    uint16_t base;
+    uint16_t ctrl;
+    uint16_t bmide;
+    uint8_t  n_ien;
+} channels [2];
 
 struct ide_device {
     uint8_t reserved;
@@ -90,48 +93,47 @@ struct ide_device {
     uint32_t commands;
     uint32_t size;
     uint8_t model[41];
-} ide_devicesp[4]; // There can only be 4 devices at a time
+} ide_devicesp[4];
 
 void ide_write_reg(uint8_t channel, uint8_t reg, uint8_t data) {
-   if (reg > 0x07 && reg < 0x0C)
-      ide_write_reg(channel, ATA_REG_CONTROL, 0x80 | channels[channel].n_ien);
-   if (reg < 0x08)
-      outb(channels[channel].base  + reg - 0x00, data);
-   else if (reg < 0x0C)
-      outb(channels[channel].base  + reg - 0x06, data);
-   else if (reg < 0x0E)
-      outb(channels[channel].ctrl  + reg - 0x0A, data);
-   else if (reg < 0x16)
-      outb(channels[channel].bmide + reg - 0x0E, data);
-   if (reg > 0x07 && reg < 0x0C)
-      ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien);
+    if (reg > 0x07 && reg < 0x0C)
+        ide_write_reg(channel, ATA_REG_CONTROL, 0x80 | channels[channel].n_ien);
+    if (reg < 0x08)
+        outb(channels[channel].base  + reg - 0x00, data);
+    else if (reg < 0x0C)
+        outb(channels[channel].base  + reg - 0x06, data);
+    else if (reg < 0x0E)
+        outb(channels[channel].ctrl  + reg - 0x0A, data);
+    else if (reg < 0x16)
+        outb(channels[channel].bmide + reg - 0x0E, data);
+    if (reg > 0x07 && reg < 0x0C)
+        ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien);
 }
 
 uint8_t ide_read_reg(uint8_t channel, uint8_t reg) {
     uint8_t res = '\0';
     if (reg > 0x07 && reg < 0x0C)
-      ide_write_reg(channel, ATA_REG_CONTROL, 0x80 | channels[channel].n_ien);
-   if (reg < 0x08)
-      res = inb(channels[channel].base + reg - 0x00);
-   else if (reg < 0x0C)
-      res = inb(channels[channel].base  + reg - 0x06);
-   else if (reg < 0x0E)
-      res = inb(channels[channel].ctrl  + reg - 0x0A);
-   else if (reg < 0x16)
-      res = inb(channels[channel].bmide + reg - 0x0E);
-   if (reg > 0x07 && reg < 0x0C)
-      ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien);
-   return res;
+        ide_write_reg(channel, ATA_REG_CONTROL, 0x80 | channels[channel].n_ien);
+    if (reg < 0x08)
+        res = inb(channels[channel].base + reg - 0x00);
+    else if (reg < 0x0C)
+        res = inb(channels[channel].base  + reg - 0x06);
+    else if (reg < 0x0E)
+        res = inb(channels[channel].ctrl  + reg - 0x0A);
+    else if (reg < 0x16)
+        res = inb(channels[channel].bmide + reg - 0x0E);
+    if (reg > 0x07 && reg < 0x0C)
+        ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien);
+    return res;
 }
 
 void ide_read_buffer(unsigned char channel, unsigned char reg,
-                     void *buffer, unsigned int quads) {
-
+                      void *buffer, unsigned int quads) {
     if (reg > 0x07 && reg < 0x0C)
         ide_write_reg(channel, ATA_REG_CONTROL, 0x80 | channels[channel].n_ien);
 
     uint16_t port = 0;
-    if      (reg < 0x08) {
+    if (reg < 0x08) {
         port = channels[channel].base  + reg - 0x00;
     } else if (reg < 0x0C) {
         port = channels[channel].base  + reg - 0x06;
@@ -152,30 +154,42 @@ void ide_read_buffer(unsigned char channel, unsigned char reg,
         ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien);
 }
 
+static uint8_t ide_channel_floating(uint8_t channel) {
+    return ide_read_reg(channel, ATA_REG_STATUS) == IDE_STATUS_FLOATING;
+}
+
 uint8_t ide_polling(uint8_t channel, uint32_t advanced_check) {
-   for(int i = 0; i < 4; i++)
-      ide_read_reg(channel, ATA_REG_ALTSTATUS);
+    if (ide_channel_floating(channel)) {
+        return 4;
+    }
 
-   while (ide_read_reg(channel, ATA_REG_STATUS) & ATA_SR_BSY); 
+    for (int i = 0; i < 4; i++)
+        ide_read_reg(channel, ATA_REG_ALTSTATUS);
 
-   if (advanced_check) {
-      uint8_t state = ide_read_reg(channel, ATA_REG_STATUS);
-      if (state & ATA_SR_ERR) {
-         return 2;
-      }
-      if (state & ATA_SR_DF) {
-         return 1;
-      }
-      if ((state & ATA_SR_DRQ) == 0) {
-         return 3;
-      }
-   }
-   return 0;
+    uint32_t spin = 0;
+    while (ide_read_reg(channel, ATA_REG_STATUS) & ATA_SR_BSY) {
+        if (++spin > IDE_POLL_TIMEOUT_ITERS) {
+            return 4;
+        }
+    }
 
+    if (advanced_check) {
+        uint8_t state = ide_read_reg(channel, ATA_REG_STATUS);
+        if (state & ATA_SR_ERR) {
+            return 2;
+        }
+        if (state & ATA_SR_DF) {
+            return 1;
+        }
+        if ((state & ATA_SR_DRQ) == 0) {
+            return 3;
+        }
+    }
+    return 0;
 }
 
 uint8_t ide_init(uint32_t bar0, uint32_t bar1, uint32_t bar2, uint32_t bar3,
-              uint32_t bar4) {
+                  uint32_t bar4) {
     int i, j, c = 0;
 
     channels[ATA_PRIMARY  ].base  = (bar0 & 0xFFFFFFFC) + 0x1F0 * (!bar0);
@@ -188,12 +202,22 @@ uint8_t ide_init(uint32_t bar0, uint32_t bar1, uint32_t bar2, uint32_t bar3,
     ide_write_reg(ATA_PRIMARY  , ATA_REG_CONTROL, 2);
     ide_write_reg(ATA_SECONDARY, ATA_REG_CONTROL, 2);
 
-    // Enumerate all IDE devices
     for (i = 0; i < 2; i++) {
+        if (ide_channel_floating(i)) {
+            continue;
+        }
+
         for (j = 0; j < 2; j++) {
             uint8_t type = IDE_ATA;
 
             ide_write_reg(i, ATA_REG_HDDEVSEL, 0xA0 | (j << 4));
+            for (int k = 0; k < 4; k++)
+                ide_read_reg(i, ATA_REG_ALTSTATUS);
+
+            if (ide_channel_floating(i)) {
+                continue;
+            }
+
             ide_write_reg(i, ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
 
             if (ide_polling(i, 1)) {
@@ -251,6 +275,10 @@ uint8_t ide_read(uint8_t port, uint8_t drive, uint64_t sector, uint8_t count, vo
     uint8_t channel = port;
     uint8_t slave = drive;
 
+    if (ide_channel_floating(channel)) {
+        return 1;
+    }
+
     ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien = (ide_irq == 0) ? 1 : 0);
     if (ide_polling(channel, 0)) {
         return 1;
@@ -285,6 +313,10 @@ uint8_t ide_write(uint8_t port, uint8_t drive, uint64_t sector, uint8_t count, c
 
     uint8_t channel = port;
     uint8_t slave = drive;
+
+    if (ide_channel_floating(channel)) {
+        return 1;
+    }
 
     ide_write_reg(channel, ATA_REG_CONTROL, channels[channel].n_ien = (ide_irq == 0) ? 1 : 0);
     if (ide_polling(channel, 0)) {

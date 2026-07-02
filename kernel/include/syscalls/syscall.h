@@ -39,7 +39,9 @@
 #define INPUT_READ         35
 #define THREAD_CREATE      36
 #define THREAD_REMOVE      37
-#define NR_SYSCALLS        38
+#define SYS_CHDIR          38
+#define SYS_GETCWD         39
+#define NR_SYSCALLS        40
 
 typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 

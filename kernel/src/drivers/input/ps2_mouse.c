@@ -191,6 +191,7 @@ void ps2_mouse_init(void) {
     ps2_write_data(0xF4);
     ps2_read_data(); // ACK
 
+    ioapic_set_entry(PS2_MOUSE_IRQ, PS2_MOUSE_VECTOR, apic_id(), true);
     ioapic_unmask(PS2_MOUSE_IRQ);
     
     log_info("PS2 mouse initialized\n");

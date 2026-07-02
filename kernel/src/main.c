@@ -94,7 +94,7 @@ void kmain(void) {
     log_info("IDT initialized\n");
     hhdm_init();
     log_info("HHDM initialized\n");
-    acpi_log_tables();
+    // acpi_log_tables();
     pci_log_ids_once();
     frame_init();
     log_info("Frame allocator initialized\n");
@@ -103,13 +103,21 @@ void kmain(void) {
     heap_init();
     log_info("Heap initialized\n");
     enable_apic(0, true);
-    log_info("APIC enabled\n");
+    if (apic_virt != NULL) {
+        log_info("APIC enabled\n");
+    } else {
+        log_warn("APIC unavailable on this hardware; continuing without LAPIC\n");
+    }
     ioapic_init();
-    log_info("IOAPIC initalized\n");
+    if (ioapic_virt != NULL) {
+        log_info("IOAPIC initialized\n");
+    } else {
+        log_warn("IOAPIC unavailable on this hardware; continuing without IOAPIC\n");
+    }
     apic_timer_init(1000);
     log_info("APIC timer initialized\n");
-    // ide_init(0, 0, 0, 0, 0);
-    // log_info("IDE initialized\n");
+    ide_init(0, 0, 0, 0, 0);
+    log_info("IDE initialized\n");
     ahci_init();
     log_info("AHCI initialized\n");
     enable_sse();

@@ -34,3 +34,16 @@ uint64_t sys_readdir(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3,
     vfs_dirent_t *out = (vfs_dirent_t *)arg2;
     return (uint64_t)vfs_readdir(path, index, out);
 }
+
+uint64_t sys_chdir(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg1; (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    const char *path = (const char *)arg0;
+    return (uint64_t)vfs_chdir(path);
+}
+
+uint64_t sys_getcwd(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    char *buf = (char *)arg0;
+    size_t size = (size_t)arg1;
+    return (uint64_t)vfs_getcwd(buf, size);
+}

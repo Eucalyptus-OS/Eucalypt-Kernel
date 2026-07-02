@@ -13,7 +13,7 @@
 #define ENTRY_FLAG_ACCESSED ((uint64_t)1 << 5)
 #define ENTRY_FLAG_DIRTY    ((uint64_t)1 << 6)
 #define ENTRY_FLAG_NX       ((uint64_t)1 << 63)
-#define ENTRY_FLAG_COW      ((uint64_t)1 << 9);
+#define ENTRY_FLAG_COW      ((uint64_t)1 << 9)
 
 #define ENTRY_4K_ADDRESS_MASK ((uint64_t)0x000FFFFFFFFFF000)
 

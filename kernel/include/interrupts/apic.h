@@ -29,6 +29,7 @@
 #define IOAPIC_REG_REDTBL     0x10
 
 extern volatile uint32_t *apic_virt;
+extern volatile uint32_t *ioapic_virt;
 
 void     enable_apic(uint8_t id, bool is_bsp);
 void     apic_eoi(void);

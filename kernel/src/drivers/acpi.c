@@ -48,6 +48,25 @@ struct acpi_bgrt {
     uint32_t image_offset_y;
 } __attribute__((packed));
 
+struct acpi_madt {
+    struct acpi_sdt_header header;
+    uint32_t lapic_address;
+    uint32_t flags;
+} __attribute__((packed));
+
+struct acpi_madt_entry_header {
+    uint8_t type;
+    uint8_t length;
+} __attribute__((packed));
+
+struct acpi_madt_ioapic {
+    struct acpi_madt_entry_header header;
+    uint8_t ioapic_id;
+    uint8_t reserved;
+    uint32_t address;
+    uint32_t global_system_interrupt_base;
+} __attribute__((packed));
+
 struct bmp_file_header {
     uint16_t signature;
     uint32_t file_size;
@@ -65,6 +84,13 @@ struct bmp_info_header {
     uint32_t compression;
     uint32_t image_size;
 } __attribute__((packed));
+
+#define ACPI_BGRT_MAX_DIMENSION 8192u
+#define ACPI_BGRT_MIN_FILE_SIZE (sizeof(struct bmp_file_header) + sizeof(struct bmp_info_header))
+
+static uint64_t acpi_lapic_phys = 0;
+static uint64_t acpi_ioapic_phys = 0;
+static bool acpi_apic_info_ready = false;
 
 static uint8_t acpi_checksum(const void *table, size_t length) {
     const uint8_t *bytes = table;
@@ -113,6 +139,34 @@ static uint32_t bmp_row_stride(uint32_t width, uint16_t bits_per_pixel) {
     return ((width * bits_per_pixel + 31) / 32) * 4;
 }
 
+static bool acpi_bgrt_bmp_bounds_valid(const struct bmp_file_header *file,
+                                        const struct bmp_info_header *info,
+                                        uint32_t width, uint32_t height,
+                                        uint32_t stride) {
+    if (width == 0 || height == 0) {
+        return false;
+    }
+    if (width > ACPI_BGRT_MAX_DIMENSION || height > ACPI_BGRT_MAX_DIMENSION) {
+        return false;
+    }
+    if (file->file_size < ACPI_BGRT_MIN_FILE_SIZE) {
+        return false;
+    }
+    if (file->data_offset < sizeof(struct bmp_file_header)
+        || file->data_offset >= file->file_size) {
+        return false;
+    }
+
+    uint64_t required = (uint64_t)file->data_offset
+                         + (uint64_t)stride * (uint64_t)height;
+    if (required > (uint64_t)file->file_size) {
+        return false;
+    }
+
+    (void)info;
+    return true;
+}
+
 static uint8_t acpi_draw_bgrt_bmp(const struct acpi_bgrt *bgrt,
                                   const struct bmp_file_header *file,
                                   const struct bmp_info_header *info) {
@@ -123,15 +177,21 @@ static uint8_t acpi_draw_bgrt_bmp(const struct acpi_bgrt *bgrt,
         return 1;
     }
 
+    uint32_t width = abs_i32(info->width);
+    uint32_t height = abs_i32(info->height);
+    uint32_t stride = bmp_row_stride(width, info->bits_per_pixel);
+
+    if (!acpi_bgrt_bmp_bounds_valid(file, info, width, height, stride)) {
+        log_warn("ACPI: BGRT BMP has invalid dimensions/offset, skipping draw\n");
+        return 1;
+    }
+
     framebuffer_info_t fb;
     if (framebuffer_get_info(0, &fb) != 0) {
         log_warn("ACPI: no framebuffer available for BGRT draw\n");
         return 1;
     }
 
-    uint32_t width = abs_i32(info->width);
-    uint32_t height = abs_i32(info->height);
-    uint32_t stride = bmp_row_stride(width, info->bits_per_pixel);
     uint32_t bytes_per_pixel = info->bits_per_pixel / 8;
     bool top_down = info->height < 0;
     const uint8_t *pixel_data = (const uint8_t *)file + file->data_offset;
@@ -143,7 +203,7 @@ static uint8_t acpi_draw_bgrt_bmp(const struct acpi_bgrt *bgrt,
         }
 
         uint32_t src_y = top_down ? y : height - 1 - y;
-        const uint8_t *row = pixel_data + src_y * stride;
+        const uint8_t *row = pixel_data + (uint64_t)src_y * stride;
 
         for (uint32_t x = 0; x < width; x++) {
             uint64_t dst_x = (uint64_t)bgrt->image_offset_x + x;
@@ -151,7 +211,7 @@ static uint8_t acpi_draw_bgrt_bmp(const struct acpi_bgrt *bgrt,
                 break;
             }
 
-            const uint8_t *pixel = row + x * bytes_per_pixel;
+            const uint8_t *pixel = row + (uint64_t)x * bytes_per_pixel;
             uint32_t color = framebuffer_rgb(0, pixel[2], pixel[1], pixel[0]);
             framebuffer_put_pixel(0, dst_x, dst_y, color);
         }
@@ -170,6 +230,11 @@ static void acpi_log_bgrt_bmp(const struct acpi_bgrt *bgrt) {
     if (file->signature != 0x4d42) {
         log_warn("ACPI: BGRT image is not a BMP: signature 0x%X\n",
                  file->signature);
+        return;
+    }
+
+    if (file->file_size < ACPI_BGRT_MIN_FILE_SIZE) {
+        log_warn("ACPI: BGRT BMP file_size too small: %u\n", file->file_size);
         return;
     }
 
@@ -203,13 +268,52 @@ static void acpi_log_bgrt(const struct acpi_bgrt *bgrt) {
     acpi_log_bgrt_bmp(bgrt);
 }
 
-static void acpi_log_table(uint64_t table_phys, bool *found_bgrt) {
-    struct acpi_sdt_header *header = (void *)phys_virt(table_phys);
-    char signature[5];
+static void acpi_parse_madt(const struct acpi_sdt_header *header) {
+    if (header->length < sizeof(struct acpi_madt)) {
+        return;
+    }
 
+    const struct acpi_madt *madt = (const struct acpi_madt *)header;
+    const uint8_t *entries = (const uint8_t *)header + sizeof(*madt);
+    uint32_t remaining = header->length - sizeof(*madt);
+
+    if (madt->lapic_address != 0) {
+        acpi_lapic_phys = madt->lapic_address;
+    }
+
+    while (remaining >= sizeof(struct acpi_madt_entry_header)) {
+        const struct acpi_madt_entry_header *entry =
+            (const struct acpi_madt_entry_header *)entries;
+        if (entry->length < sizeof(*entry) || entry->length > remaining) {
+            break;
+        }
+
+        if (entry->type == 1 && entry->length >= sizeof(struct acpi_madt_ioapic)) {
+            const struct acpi_madt_ioapic *ioapic =
+                (const struct acpi_madt_ioapic *)entry;
+            if (ioapic->address != 0) {
+                acpi_ioapic_phys = ioapic->address;
+                break;
+            }
+        }
+
+        entries += entry->length;
+        remaining -= entry->length;
+    }
+
+    acpi_apic_info_ready = true;
+    log_info("ACPI: MADT LAPIC=%llX IOAPIC=%llX\n",
+             (unsigned long long)acpi_lapic_phys,
+             (unsigned long long)acpi_ioapic_phys);
+}
+
+static void acpi_log_table(uint64_t table_phys, bool *found_bgrt) {
     if (!table_phys) {
         return;
     }
+
+    struct acpi_sdt_header *header = (void *)phys_virt(table_phys);
+    char signature[5];
 
     acpi_sig_string(header->signature, signature);
     log_info("ACPI: table %s at %llX length %u revision %u\n",
@@ -226,6 +330,10 @@ static void acpi_log_table(uint64_t table_phys, bool *found_bgrt) {
         log_warn("ACPI: table %s checksum failed\n", signature);
     }
 
+    if (acpi_sig_eq(header->signature, "APIC")) {
+        acpi_parse_madt(header);
+    }
+
     if (!*found_bgrt && acpi_sig_eq(header->signature, "BGRT")) {
         if (header->length < sizeof(struct acpi_bgrt)) {
             log_warn("ACPI: BGRT table too short: %u\n", header->length);
@@ -235,6 +343,20 @@ static void acpi_log_table(uint64_t table_phys, bool *found_bgrt) {
         acpi_log_bgrt((const struct acpi_bgrt *)header);
         *found_bgrt = true;
     }
+}
+
+bool acpi_get_apic_info(uint64_t *lapic_phys, uint64_t *ioapic_phys) {
+    if (!acpi_apic_info_ready) {
+        return false;
+    }
+
+    if (lapic_phys != NULL) {
+        *lapic_phys = acpi_lapic_phys;
+    }
+    if (ioapic_phys != NULL) {
+        *ioapic_phys = acpi_ioapic_phys;
+    }
+    return true;
 }
 
 void acpi_log_tables(void) {
@@ -299,9 +421,13 @@ void acpi_log_tables(void) {
         uint64_t table_phys;
 
         if (use_xsdt) {
-            table_phys = ((uint64_t *)entries)[i];
+            uint64_t raw;
+            memcpy(&raw, entries + (uint64_t)i * sizeof(uint64_t), sizeof(uint64_t));
+            table_phys = raw;
         } else {
-            table_phys = ((uint32_t *)entries)[i];
+            uint32_t raw;
+            memcpy(&raw, entries + (uint64_t)i * sizeof(uint32_t), sizeof(uint32_t));
+            table_phys = raw;
         }
 
         acpi_log_table(table_phys, &found_bgrt);
