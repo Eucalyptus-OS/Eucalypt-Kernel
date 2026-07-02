@@ -47,3 +47,24 @@ uint64_t sys_getcwd(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, 
     size_t size = (size_t)arg1;
     return (uint64_t)vfs_getcwd(buf, size);
 }
+
+uint64_t sys_rename(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    const char *old_path = (const char *)arg0;
+    const char *new_path = (const char *)arg1;
+    return (uint64_t)rename(old_path, new_path);
+}
+
+uint64_t sys_chmod(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    const char *path = (const char *)arg0;
+    uint32_t mode = (uint32_t)arg1;
+    return (uint64_t)chmod(path, mode);
+}
+
+uint64_t sys_fchmod(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    int fd = (int)arg0;
+    uint32_t mode = (uint32_t)arg1;
+    return (uint64_t)fchmod(fd, mode);
+}

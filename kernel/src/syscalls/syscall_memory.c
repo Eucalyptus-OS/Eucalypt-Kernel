@@ -1,3 +1,4 @@
+#include "logging/smp_console.h"
 #include <stdint.h>
 #include <mm/frame.h>
 #include <mm/hhdm.h>
@@ -20,6 +21,8 @@ uint64_t sys_mmap(uint64_t hint, uint64_t size, uint64_t flags, uint64_t d, uint
         return (uint64_t)-1;
 
     uint64_t vaddr = proc->heap_end;
+
+    smp_printf(3, 0xFFFFFFFF, "sys_mmap: Allocating %lu bytes at virtual address 0x%lx for process %d, Heap end: 0x%lX\n", size, vaddr, proc->pid, proc->heap_end);
 
     for (uint64_t i = 0; i < size; i += 0x1000) {
         uint64_t phys = frame_alloc();

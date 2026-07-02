@@ -41,7 +41,10 @@
 #define THREAD_REMOVE      37
 #define SYS_CHDIR          38
 #define SYS_GETCWD         39
-#define NR_SYSCALLS        40
+#define SYS_RENAME         40
+#define SYS_CHMOD          41
+#define SYS_FCHMOD         42
+#define NR_SYSCALLS        43
 
 typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 

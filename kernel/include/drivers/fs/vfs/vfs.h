@@ -269,3 +269,5 @@ static inline int vfs_readdir(const char *path, uint32_t idx, vfs_dirent_t *out)
     closedir(d);
     return ret;
 }
+int chmod(const char *path, uint32_t mode);
+int fchmod(int fd, uint32_t mode);

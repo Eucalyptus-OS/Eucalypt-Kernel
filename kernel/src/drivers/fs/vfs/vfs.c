@@ -1007,6 +1007,22 @@ int ftruncate(int fd, off_t length) {
     return 0;
 }
 
+int chmod(const char *path, uint32_t mode) {
+    vfs_node_t *node = vfs_resolve_path(path);
+    if (!node) return -1;
+    node->mode = (node->mode & S_IFMT) | (mode & 0777);
+    return 0;
+}
+
+int fchmod(int fd, uint32_t mode) {
+    vfs_file_t *file = fd_get(fd);
+    if (!file) { errno = EBADF; return -1; }
+    vfs_node_t *node = file->node;
+    if (!node) { errno = EBADF; return -1; }
+    node->mode = (node->mode & S_IFMT) | (mode & 0777);
+    return 0;
+}
+
 int symlink(const char *target, const char *linkpath) {
     char name[MAX_NAME_LEN];
     vfs_node_t *parent = vfs_resolve_parent(linkpath, name);
