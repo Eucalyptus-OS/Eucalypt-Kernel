@@ -92,9 +92,14 @@ override CPPFLAGS := \
 
 ifeq ($(ARCH),x86_64)
     # Internal nasm flags that should not be changed by the user.
+    # Section-crossing relocation warnings are disabled: references to
+    # extern C symbols and 64-bit pointer tables always trigger them,
+    # and mcmodel=kernel guarantees all sections link within +-2 GiB.
     override NASMFLAGS := \
         $(patsubst -g,-g -F dwarf,$(NASMFLAGS)) \
-        -Wall
+        -Wall \
+        -w-reloc-rel-dword \
+        -w-reloc-abs-qword
 endif
 
 # Architecture specific internal flags.

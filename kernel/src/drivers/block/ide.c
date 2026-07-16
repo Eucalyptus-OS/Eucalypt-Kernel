@@ -72,7 +72,7 @@
 
 uint8_t ide_buf[2048] = {0};
 uint8_t ide_count = 0;
-volatile unsigned static char ide_irq = 0;
+static volatile unsigned char ide_irq = 0;
 
 static ide_state_t ide_state = {0};
 

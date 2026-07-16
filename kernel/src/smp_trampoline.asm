@@ -5,11 +5,10 @@ global smp_trampoline
 
 smp_trampoline:
     mov rax, [rdi + 24]
-    mov rdx, ap_stack_tops
+    lea rdx, [rel ap_stack_tops]
     mov rsp, [rdx + rax * 8]
     mov rdi, rax
-    mov rax, ap_entry
-    call rax
+    call ap_entry
     
     cli
     hlt
