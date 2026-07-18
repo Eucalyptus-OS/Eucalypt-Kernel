@@ -1,439 +1,207 @@
-#include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
-
-#include <drivers/framebuffer.h>
 #include <limine.h>
-#include <logging/printk.h>
+#include <mm/frame.h>
 #include <mem.h>
 #include <mm/hhdm.h>
+#include <logging/printk.h>
+#include <drivers/acpi.h>
+
+uint64_t lapic_addr = 0;
+uint64_t ioapic_addr = 0;
 
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_rsdp_request rsdp_request = {
-    .id = LIMINE_RSDP_REQUEST_ID,
-    .revision = 0
+	.id = LIMINE_RSDP_REQUEST_ID,
+	.revision = 0
 };
 
-struct acpi_rsdp {
-    char     signature[8];
-    uint8_t  checksum;
-    char     oem_id[6];
-    uint8_t  revision;
-    uint32_t rsdt_address;
-    uint32_t length;
-    uint64_t xsdt_address;
-    uint8_t  extended_checksum;
-    uint8_t  reserved[3];
+struct rsdp {
+	char signature[8];
+	uint8_t checksum;
+	char oem_id[6];
+	uint8_t rev;
+	uint32_t rsdt;
+} __attribute__ ((packed));
+
+struct xsdp {
+	char signature[8];
+	uint8_t checksum;
+	char oem_id[6];
+	uint8_t rev;
+	uint32_t rsdt;
+
+	uint32_t length;
+	uint64_t xsdt;
+	uint8_t xchecksum;
+	uint8_t reserved[3];
+} __attribute__ ((packed));
+
+struct sdt_header {
+	char signature[4];
+	uint32_t len;
+	uint8_t rev;
+	uint8_t checksum;
+	char oem_id[6];
+	char oem_table_id[8];
+	uint32_t oem_rev;
+	uint32_t creator_id;
+	uint32_t creator_rev;
+} __attribute__ ((packed));
+
+struct rsdt {
+	struct sdt_header header;
+	uint32_t entries[];
+} __attribute__ ((packed));
+
+struct madt_entry_header {
+	uint8_t type;
+	uint8_t length;
 } __attribute__((packed));
 
-struct acpi_sdt_header {
-    char     signature[4];
-    uint32_t length;
-    uint8_t  revision;
-    uint8_t  checksum;
-    char     oem_id[6];
-    char     oem_table_id[8];
-    uint32_t oem_revision;
-    uint32_t creator_id;
-    uint32_t creator_revision;
+struct madt_local_apic {
+	uint8_t type;      // 0
+	uint8_t length;
+	uint8_t processor_id;
+	uint8_t apic_id;
+	uint32_t flags;
 } __attribute__((packed));
 
-struct acpi_bgrt {
-    struct acpi_sdt_header header;
-    uint16_t version;
-    uint8_t  status;
-    uint8_t  image_type;
-    uint64_t image_address;
-    uint32_t image_offset_x;
-    uint32_t image_offset_y;
+struct madt_ioapic {
+	uint8_t type;      // 1
+	uint8_t length;
+	uint8_t ioapic_id;
+	uint8_t reserved;
+	uint32_t ioapic_addr;
+	uint32_t gsi_base;
 } __attribute__((packed));
 
-struct acpi_madt {
-    struct acpi_sdt_header header;
-    uint32_t lapic_address;
-    uint32_t flags;
+struct madt_iso {
+	uint8_t type;      // 2, interrupt source override
+	uint8_t length;
+	uint8_t bus_source;
+	uint8_t irq_source;
+	uint32_t gsi;
+	uint16_t flags;
 } __attribute__((packed));
 
-struct acpi_madt_entry_header {
-    uint8_t type;
-    uint8_t length;
+struct madt_nmi {
+	uint8_t type;      // 4, non-maskable interrupts
+	uint8_t length;
+	uint8_t processor_id;
+	uint16_t flags;
+	uint8_t lint;
 } __attribute__((packed));
 
-struct acpi_madt_ioapic {
-    struct acpi_madt_entry_header header;
-    uint8_t ioapic_id;
-    uint8_t reserved;
-    uint32_t address;
-    uint32_t global_system_interrupt_base;
-} __attribute__((packed));
+struct madt {
+	char signature[4];
+	uint32_t len;
+	uint8_t rev;
+	uint8_t checksum;
+	char oem_id[6];
+	char oem_table_id[8];
+	uint32_t oem_rev;
+	uint32_t creator_id;
+	uint32_t creator_rev;
 
-struct bmp_file_header {
-    uint16_t signature;
-    uint32_t file_size;
-    uint16_t reserved0;
-    uint16_t reserved1;
-    uint32_t data_offset;
-} __attribute__((packed));
+	uint32_t lapic_addr;
+	uint32_t flags;
+	uint8_t entries[];
+} __attribute__ ((packed));
 
-struct bmp_info_header {
-    uint32_t header_size;
-    int32_t  width;
-    int32_t  height;
-    uint16_t planes;
-    uint16_t bits_per_pixel;
-    uint32_t compression;
-    uint32_t image_size;
-} __attribute__((packed));
+void *find_table(struct rsdt *rsdt, const char *sig) {
+	int num_entries = (rsdt->header.len - sizeof(struct sdt_header)) / 4;
 
-#define ACPI_BGRT_MAX_DIMENSION 8192u
-#define ACPI_BGRT_MIN_FILE_SIZE (sizeof(struct bmp_file_header) + sizeof(struct bmp_info_header))
-
-static uint64_t acpi_lapic_phys = 0;
-static uint64_t acpi_ioapic_phys = 0;
-static bool acpi_apic_info_ready = false;
-
-static uint8_t acpi_checksum(const void *table, size_t length) {
-    const uint8_t *bytes = table;
-    uint8_t sum = 0;
-
-    for (size_t i = 0; i < length; i++) {
-        sum += bytes[i];
-    }
-
-    return sum;
+	for (int i = 0; i < num_entries; i++) {
+		struct sdt_header *header = (struct sdt_header *)phys_virt(rsdt->entries[i]);
+		if (!strncmp(header->signature, sig, strlen(sig))) {
+			return (void *)header;
+		}
+	}
+	return NULL;
 }
 
-static bool acpi_sig_eq(const char signature[4], const char *expected) {
-    return memcmp(signature, expected, 4) == 0;
+void parse_madt_entries(struct madt *madt) {
+	uint8_t *p = madt->entries;
+	uint8_t *end = (uint8_t *)madt + madt->len;
+
+	while (p < end) {
+		struct madt_entry_header *eh = (struct madt_entry_header *)p;
+
+		if (eh->length == 0) {
+			log_debug("MADT: zero-length entry, aborting parse\n");
+			break;
+		}
+
+		switch (eh->type) {
+			case 0: {
+				struct madt_local_apic *lapic = (struct madt_local_apic *)p;
+				log_debug("MADT: Local APIC - proc_id: %d, apic_id: %d, flags: 0x%X\n",
+				      lapic->processor_id, lapic->apic_id, lapic->flags);
+				break;
+			}
+			case 1: {
+				struct madt_ioapic *ioapic = (struct madt_ioapic *)p;
+				log_debug("MADT: IOAPIC - id: %d, addr: 0x%X, gsi_base: %d\n",
+				      ioapic->ioapic_id, ioapic->ioapic_addr, ioapic->gsi_base);
+				ioapic_addr = ioapic->ioapic_addr;
+				break;
+			}
+			case 2: {
+				struct madt_iso *iso = (struct madt_iso *)p;
+				log_debug("MADT: Interrupt Source Override - bus: %d, irq: %d, gsi: %d, flags: 0x%X\n",
+				      iso->bus_source, iso->irq_source, iso->gsi, iso->flags);
+				break;
+			}
+			case 4: {
+				struct madt_nmi *nmi = (struct madt_nmi *)p;
+				log_debug("MADT: NMI - proc_id: %d, flags: 0x%X, lint: %d\n",
+				      nmi->processor_id, nmi->flags, nmi->lint);
+				break;
+			}
+			default:
+				log_debug("MADT: unhandled entry type %d, len %d\n", eh->type, eh->length);
+				break;
+		}
+
+		p += eh->length;
+	}
 }
 
-static void acpi_sig_string(const char signature[4], char out[5]) {
-    memcpy(out, signature, 4);
-    out[4] = '\0';
-}
+void acpi_parse_tables() {
+	uint8_t acpi_rev = rsdp_request.response->revision;
+	void *rsdp_addr = rsdp_request.response->address;
+	struct xsdp *rsdp = (struct xsdp *)phys_virt(frame_alloc());
 
-static const char *bgrt_orientation(uint8_t status) {
-    switch ((status >> 1) & 0x3) {
-        case 0: return "0deg";
-        case 1: return "90deg";
-        case 2: return "180deg";
-        case 3: return "270deg";
-    }
+	log_debug("Filling struct\n");
+	memcpy(rsdp, rsdp_addr, acpi_rev > 0 ? sizeof(struct xsdp) : sizeof(struct xsdp) - 16);
 
-    return "unknown";
-}
+	log_debug("RSDP_ADDR: 0x%X\nACPI_REV: %d, RSDP_SIG: %s\nRSDT_ADDR: 0x%X\n", rsdp_addr, acpi_rev, rsdp->signature, rsdp->rsdt);
 
-static const char *bgrt_image_type(uint8_t image_type) {
-    switch (image_type) {
-        case 0: return "BMP";
-    }
+	struct sdt_header temp_header;
+	memcpy(&temp_header, (void *)phys_virt(rsdp->rsdt), sizeof(struct sdt_header));
+	struct rsdt *rsdt = (struct rsdt *)phys_virt(frame_alloc());
+	memcpy(rsdt, (void *)phys_virt((uint64_t)rsdp->rsdt), temp_header.len);
 
-    return "unknown";
-}
+	void *madt_addr = find_table(rsdt, "APIC");
+	if (!madt_addr) {
+		log_debug("MADT not found\n");
+		return;
+	}
 
-static uint32_t abs_i32(int32_t value) {
-    return value < 0 ? (uint32_t)-value : (uint32_t)value;
-}
+	struct sdt_header *madt_hdr = (struct sdt_header *)madt_addr;
+	uint32_t madt_len = madt_hdr->len;
 
-static uint32_t bmp_row_stride(uint32_t width, uint16_t bits_per_pixel) {
-    return ((width * bits_per_pixel + 31) / 32) * 4;
-}
+	if (madt_len > 0x1000) {
+		log_debug("MADT too large for one frame (%d bytes), aborting\n", madt_len);
+		return;
+	}
 
-static bool acpi_bgrt_bmp_bounds_valid(const struct bmp_file_header *file,
-                                        const struct bmp_info_header *info,
-                                        uint32_t width, uint32_t height,
-                                        uint32_t stride) {
-    if (width == 0 || height == 0) {
-        return false;
-    }
-    if (width > ACPI_BGRT_MAX_DIMENSION || height > ACPI_BGRT_MAX_DIMENSION) {
-        return false;
-    }
-    if (file->file_size < ACPI_BGRT_MIN_FILE_SIZE) {
-        return false;
-    }
-    if (file->data_offset < sizeof(struct bmp_file_header)
-        || file->data_offset >= file->file_size) {
-        return false;
-    }
+	struct madt *madt = (struct madt *)phys_virt(frame_alloc());
+	memcpy(madt, madt_addr, madt_len);
 
-    uint64_t required = (uint64_t)file->data_offset
-                         + (uint64_t)stride * (uint64_t)height;
-    if (required > (uint64_t)file->file_size) {
-        return false;
-    }
+	log_debug("MADT_ADDR: 0x%X, LAPIC_ADDR: 0x%X, FLAGS: 0x%X\n", madt_addr, madt->lapic_addr, madt->flags);
+	lapic_addr = madt->lapic_addr;
 
-    (void)info;
-    return true;
-}
-
-static uint8_t acpi_draw_bgrt_bmp(const struct acpi_bgrt *bgrt,
-                                  const struct bmp_file_header *file,
-                                  const struct bmp_info_header *info) {
-    if (info->compression != 0
-        || (info->bits_per_pixel != 24 && info->bits_per_pixel != 32)) {
-        log_warn("ACPI: BGRT BMP draw unsupported: compression %u bpp %u\n",
-                 info->compression, info->bits_per_pixel);
-        return 1;
-    }
-
-    uint32_t width = abs_i32(info->width);
-    uint32_t height = abs_i32(info->height);
-    uint32_t stride = bmp_row_stride(width, info->bits_per_pixel);
-
-    if (!acpi_bgrt_bmp_bounds_valid(file, info, width, height, stride)) {
-        log_warn("ACPI: BGRT BMP has invalid dimensions/offset, skipping draw\n");
-        return 1;
-    }
-
-    framebuffer_info_t fb;
-    if (framebuffer_get_info(0, &fb) != 0) {
-        log_warn("ACPI: no framebuffer available for BGRT draw\n");
-        return 1;
-    }
-
-    uint32_t bytes_per_pixel = info->bits_per_pixel / 8;
-    bool top_down = info->height < 0;
-    const uint8_t *pixel_data = (const uint8_t *)file + file->data_offset;
-
-    for (uint32_t y = 0; y < height; y++) {
-        uint64_t dst_y = (uint64_t)bgrt->image_offset_y + y;
-        if (dst_y >= fb.height) {
-            break;
-        }
-
-        uint32_t src_y = top_down ? y : height - 1 - y;
-        const uint8_t *row = pixel_data + (uint64_t)src_y * stride;
-
-        for (uint32_t x = 0; x < width; x++) {
-            uint64_t dst_x = (uint64_t)bgrt->image_offset_x + x;
-            if (dst_x >= fb.width) {
-                break;
-            }
-
-            const uint8_t *pixel = row + (uint64_t)x * bytes_per_pixel;
-            uint32_t color = framebuffer_rgb(0, pixel[2], pixel[1], pixel[0]);
-            framebuffer_put_pixel(0, dst_x, dst_y, color);
-        }
-    }
-
-    return 0;
-}
-
-static void acpi_log_bgrt_bmp(const struct acpi_bgrt *bgrt) {
-    if (bgrt->image_type != 0 || bgrt->image_address == 0) {
-        return;
-    }
-
-    const struct bmp_file_header *file =
-        (const struct bmp_file_header *)phys_virt(bgrt->image_address);
-    if (file->signature != 0x4d42) {
-        log_warn("ACPI: BGRT image is not a BMP: signature 0x%X\n",
-                 file->signature);
-        return;
-    }
-
-    if (file->file_size < ACPI_BGRT_MIN_FILE_SIZE) {
-        log_warn("ACPI: BGRT BMP file_size too small: %u\n", file->file_size);
-        return;
-    }
-
-    const struct bmp_info_header *info =
-        (const struct bmp_info_header *)((const uint8_t *)file + sizeof(*file));
-    if (info->header_size < 40 || info->planes != 1) {
-        log_warn("ACPI: BGRT BMP header is unsupported: size %u planes %u\n",
-                 info->header_size, info->planes);
-        return;
-    }
-
-    log_info("ACPI: BGRT BMP %ux%u %u bpp data offset %u size %u\n",
-             abs_i32(info->width), abs_i32(info->height),
-             info->bits_per_pixel, file->data_offset, file->file_size);
-
-    if (acpi_draw_bgrt_bmp(bgrt, file, info) == 0) {
-        log_info("ACPI: BGRT image drawn to framebuffer 0\n");
-    }
-}
-
-static void acpi_log_bgrt(const struct acpi_bgrt *bgrt) {
-    bool displayed = (bgrt->status & 1) != 0;
-
-    log_info("ACPI: BGRT version %u status %u displayed %s orientation %s\n",
-             bgrt->version, bgrt->status, displayed ? "yes" : "no",
-             bgrt_orientation(bgrt->status));
-    log_info("ACPI: BGRT image type %u (%s) address %llX offset %u,%u\n",
-             bgrt->image_type, bgrt_image_type(bgrt->image_type),
-             (unsigned long long)bgrt->image_address,
-             bgrt->image_offset_x, bgrt->image_offset_y);
-    acpi_log_bgrt_bmp(bgrt);
-}
-
-static void acpi_parse_madt(const struct acpi_sdt_header *header) {
-    if (header->length < sizeof(struct acpi_madt)) {
-        return;
-    }
-
-    const struct acpi_madt *madt = (const struct acpi_madt *)header;
-    const uint8_t *entries = (const uint8_t *)header + sizeof(*madt);
-    uint32_t remaining = header->length - sizeof(*madt);
-
-    if (madt->lapic_address != 0) {
-        acpi_lapic_phys = madt->lapic_address;
-    }
-
-    while (remaining >= sizeof(struct acpi_madt_entry_header)) {
-        const struct acpi_madt_entry_header *entry =
-            (const struct acpi_madt_entry_header *)entries;
-        if (entry->length < sizeof(*entry) || entry->length > remaining) {
-            break;
-        }
-
-        if (entry->type == 1 && entry->length >= sizeof(struct acpi_madt_ioapic)) {
-            const struct acpi_madt_ioapic *ioapic =
-                (const struct acpi_madt_ioapic *)entry;
-            if (ioapic->address != 0) {
-                acpi_ioapic_phys = ioapic->address;
-                break;
-            }
-        }
-
-        entries += entry->length;
-        remaining -= entry->length;
-    }
-
-    acpi_apic_info_ready = true;
-    log_info("ACPI: MADT LAPIC=%llX IOAPIC=%llX\n",
-             (unsigned long long)acpi_lapic_phys,
-             (unsigned long long)acpi_ioapic_phys);
-}
-
-static void acpi_log_table(uint64_t table_phys, bool *found_bgrt) {
-    if (!table_phys) {
-        return;
-    }
-
-    struct acpi_sdt_header *header = (void *)phys_virt(table_phys);
-    char signature[5];
-
-    acpi_sig_string(header->signature, signature);
-    log_info("ACPI: table %s at %llX length %u revision %u\n",
-             signature, (unsigned long long)table_phys,
-             header->length, header->revision);
-
-    if (header->length < sizeof(*header)) {
-        log_warn("ACPI: table %s has invalid length %u\n",
-                 signature, header->length);
-        return;
-    }
-
-    if (acpi_checksum(header, header->length) != 0) {
-        log_warn("ACPI: table %s checksum failed\n", signature);
-    }
-
-    if (acpi_sig_eq(header->signature, "APIC")) {
-        acpi_parse_madt(header);
-    }
-
-    if (!*found_bgrt && acpi_sig_eq(header->signature, "BGRT")) {
-        if (header->length < sizeof(struct acpi_bgrt)) {
-            log_warn("ACPI: BGRT table too short: %u\n", header->length);
-            return;
-        }
-
-        acpi_log_bgrt((const struct acpi_bgrt *)header);
-        *found_bgrt = true;
-    }
-}
-
-bool acpi_get_apic_info(uint64_t *lapic_phys, uint64_t *ioapic_phys) {
-    if (!acpi_apic_info_ready) {
-        return false;
-    }
-
-    if (lapic_phys != NULL) {
-        *lapic_phys = acpi_lapic_phys;
-    }
-    if (ioapic_phys != NULL) {
-        *ioapic_phys = acpi_ioapic_phys;
-    }
-    return true;
-}
-
-void acpi_log_tables(void) {
-    struct limine_rsdp_response *response = rsdp_request.response;
-
-    if (!response || !response->address) {
-        log_warn("ACPI: Limine did not provide an RSDP\n");
-        return;
-    }
-
-    const struct acpi_rsdp *rsdp = response->address;
-    char oem_id[7];
-    memcpy(oem_id, rsdp->oem_id, 6);
-    oem_id[6] = '\0';
-
-    log_info("ACPI: RSDP at %llX OEM %s revision %u\n",
-             (unsigned long long)(uintptr_t)rsdp, oem_id, rsdp->revision);
-
-    if (memcmp(rsdp->signature, "RSD PTR ", 8) != 0) {
-        log_warn("ACPI: RSDP signature is invalid\n");
-        return;
-    }
-
-    if (acpi_checksum(rsdp, 20) != 0) {
-        log_warn("ACPI: RSDP checksum failed\n");
-    }
-
-    if (rsdp->revision >= 2 && rsdp->length >= sizeof(*rsdp)
-        && acpi_checksum(rsdp, rsdp->length) != 0) {
-        log_warn("ACPI: XSDP checksum failed\n");
-    }
-
-    bool use_xsdt = rsdp->revision >= 2 && rsdp->xsdt_address != 0;
-    uint64_t root_phys = use_xsdt ? rsdp->xsdt_address : rsdp->rsdt_address;
-
-    if (!root_phys) {
-        log_warn("ACPI: no RSDT/XSDT address present\n");
-        return;
-    }
-
-    struct acpi_sdt_header *root = (void *)phys_virt(root_phys);
-    uint32_t entry_size = use_xsdt ? sizeof(uint64_t) : sizeof(uint32_t);
-
-    if (root->length < sizeof(*root)) {
-        log_warn("ACPI: root table length is invalid: %u\n", root->length);
-        return;
-    }
-
-    uint32_t entry_count = (root->length - sizeof(*root)) / entry_size;
-    log_info("ACPI: using %s at %llX with %u entries\n",
-             use_xsdt ? "XSDT" : "RSDT",
-             (unsigned long long)root_phys, entry_count);
-
-    if (acpi_checksum(root, root->length) != 0) {
-        log_warn("ACPI: root table checksum failed\n");
-    }
-
-    bool found_bgrt = false;
-    uint8_t *entries = (uint8_t *)root + sizeof(*root);
-
-    for (uint32_t i = 0; i < entry_count; i++) {
-        uint64_t table_phys;
-
-        if (use_xsdt) {
-            uint64_t raw;
-            memcpy(&raw, entries + (uint64_t)i * sizeof(uint64_t), sizeof(uint64_t));
-            table_phys = raw;
-        } else {
-            uint32_t raw;
-            memcpy(&raw, entries + (uint64_t)i * sizeof(uint32_t), sizeof(uint32_t));
-            table_phys = raw;
-        }
-
-        acpi_log_table(table_phys, &found_bgrt);
-    }
-
-    if (!found_bgrt) {
-        log_info("ACPI: BGRT not present\n");
-    }
+	parse_madt_entries(madt);
+	log_debug("APIC_ADDR: 0x%X, IOAPIC_ADDR: 0x%X\n", lapic_addr, ioapic_addr);
 }

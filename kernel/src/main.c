@@ -94,7 +94,7 @@ void kmain(void) {
     log_info("IDT initialized\n");
     hhdm_init();
     log_info("HHDM initialized\n");
-    // acpi_log_tables();
+    acpi_parse_tables();
     pci_log_ids_once();
     frame_init();
     log_info("Frame allocator initialized\n");
