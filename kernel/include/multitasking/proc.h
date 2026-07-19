@@ -9,6 +9,8 @@
 #define MAX_FDS  64
 #define NSIG     32
 
+#define USER_HEAP_BASE 0x0000000000400000ULL
+
 typedef enum {
     PROC_RUNNING,
     PROC_ZOMBIE,

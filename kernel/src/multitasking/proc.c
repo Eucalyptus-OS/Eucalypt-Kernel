@@ -44,6 +44,8 @@ static void proc_init_common(struct pcb *proc, bool user) {
     proc->sid        = proc->pid;
     proc->user       = user;
     proc->state      = PROC_RUNNING;
+    proc->heap_start = USER_HEAP_BASE;
+    proc->heap_end   = USER_HEAP_BASE;
 
     for (int i = 0; i < NSIG; i++)
         proc->signal_handler[i] = default_sig_handler;

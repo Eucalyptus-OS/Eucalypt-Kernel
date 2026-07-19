@@ -38,16 +38,16 @@ archive:
 	tar --format=ustar -cf $(ARCHIVE) build/
 
 edk2-ovmf:
-	rm -rf edk2-ovmf
+	sudo rm -rf edk2-ovmf
 	curl -L https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/edk2-ovmf.tar.gz | gunzip | tar -xf -
 
 limine-binary:
-	rm -rf limine-binary
+	sudo rm -rf limine-binary
 	curl -L https://github.com/Limine-Bootloader/Limine/releases/latest/download/limine-binary.tar.gz | gunzip | tar -xf -
 	$(MAKE) -C limine-binary CC=cc CFLAGS='-g -O2 -pipe' CPPFLAGS= LDFLAGS= LIBS=
 
 iso: limine-binary kernel disks
-	rm -rf iso_root
+	sudo rm -rf iso_root
 	mkdir -p iso_root/boot iso_root/boot/limine iso_root/EFI/BOOT iso_root/archive
 	cp -v kernel/bin-$(ARCH)/kernel iso_root/boot/
 	cp -v limine.conf iso_root/boot/limine/

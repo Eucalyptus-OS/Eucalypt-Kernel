@@ -56,7 +56,7 @@ static volatile uint32_t calibrated_ticks_per_sec = 0;
 static volatile int timer_calibrated = 0;
 static volatile int calibration_lock = 0;
 
-static bool cpu_has_apic(void) {
+static bool cpu_has_apic() {
 	uint32_t eax, ebx, ecx, edx;
 	__asm__ volatile (
 		"cpuid"
@@ -104,7 +104,7 @@ static void cpu_write_apic_msr(uint64_t value) {
 	);
 }
 
-static uint64_t cpu_read_apic_msr(void) {
+static uint64_t cpu_read_apic_msr() {
 	uint32_t low, high;
 	__asm__ volatile (
 		"rdmsr"
@@ -114,7 +114,7 @@ static uint64_t cpu_read_apic_msr(void) {
 	return ((uint64_t)high << 32) | low;
 }
 
-static uint64_t cpu_get_apic_base(void) {
+static uint64_t cpu_get_apic_base() {
 	return cpu_read_apic_msr() & APIC_BASE_MASK;
 }
 
@@ -151,15 +151,25 @@ void apic_write(uint32_t reg, uint32_t value) {
 	apic_virt[reg / 4] = value;
 }
 
-void apic_eoi(void) {
+void apic_eoi() {
 	apic_write(APIC_REG_EOI, 0);
 }
 
-uint8_t apic_id(void) {
+uint8_t apic_id() {
+	/*
+	 * Guard against callers (e.g. fault/panic paths) invoking this
+	 * before the LAPIC MMIO window has been mapped for this core.
+	 * Falling through to apic_read() with apic_virt == NULL is safe
+	 * (it just returns 0), but we make the "not ready yet" case
+	 * explicit here so it's obvious this isn't a real APIC ID of 0.
+	 */
+	if (apic_virt == NULL) {
+		return 0xFF;
+	}
 	return (uint8_t)(apic_read(APIC_REG_ID) >> 24);
 }
 
-static uint32_t apic_timer_calibrate(void) {
+static uint32_t apic_timer_calibrate() {
 	apic_write(APIC_REG_TIMER_DCR, APIC_TIMER_DCR_1);
 	apic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED);
 	apic_write(APIC_REG_TIMER_ICR, 0xFFFFFFFF);
@@ -245,33 +255,46 @@ static void ioapic_write(uint8_t reg, uint32_t value) {
 	ioapic_virt[IOAPIC_REG_WINDOW / 4] = value;
 }
 
-void ioapic_set_entry(uint8_t irq, uint8_t vector, uint8_t dest, bool masked) {
-	uint8_t  reg   = IOAPIC_REG_REDTBL + irq * 2;
+void ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t dest, bool masked, bool active_low, bool level_triggered) {
+	uint8_t  reg   = IOAPIC_REG_REDTBL + gsi * 2;
 	uint64_t entry = vector;
 	if (masked)
 		entry |= APIC_LVT_MASKED;
+	if (active_low)
+		entry |= IOAPIC_ACTIVE_LOW;
+	if (level_triggered)
+		entry |= IOAPIC_LEVEL_TRIGGER;
 	ioapic_write(reg,     (uint32_t)(entry & 0xFFFFFFFF));
 	ioapic_write(reg + 1, (uint32_t)((uint64_t)dest << 24));
 }
 
-void ioapic_mask(uint8_t irq) {
-	uint8_t  reg = IOAPIC_REG_REDTBL + irq * 2;
+uint8_t ioapic_route_isa_irq(uint8_t isa_irq, uint8_t vector, uint8_t dest, bool masked) {
+	uint8_t gsi = acpi_isa_irq_gsi(isa_irq);
+	bool active_low = acpi_isa_irq_active_low(isa_irq);
+	bool level_triggered = acpi_isa_irq_level_triggered(isa_irq);
+
+	ioapic_set_entry(gsi, vector, dest, masked, active_low, level_triggered);
+	return gsi;
+}
+
+void ioapic_mask(uint8_t gsi) {
+	uint8_t  reg = IOAPIC_REG_REDTBL + gsi * 2;
 	uint32_t low = ioapic_read(reg);
 	ioapic_write(reg, low | APIC_LVT_MASKED);
 }
 
-void ioapic_unmask(uint8_t irq) {
-	uint8_t  reg = IOAPIC_REG_REDTBL + irq * 2;
+void ioapic_unmask(uint8_t gsi) {
+	uint8_t  reg = IOAPIC_REG_REDTBL + gsi * 2;
 	uint32_t low = ioapic_read(reg);
 	ioapic_write(reg, low & ~(uint32_t)APIC_LVT_MASKED);
 }
 
-void ioapic_init(void) {
+void ioapic_init() {
 	if (__atomic_exchange_n(&ioapic_initialized, 1, __ATOMIC_ACQ_REL) != 0) {
 		return;
 	}
 
-	paging_map_page(kernel_pml4, phys_virt(ioapic_addr), ioapic_addr, 0x1000, APIC_MMIO_FLAGS);
+	paging_map_page(kernel_pml4, IOAPIC_VIRT_BASE, ioapic_addr, 0x1000, APIC_MMIO_FLAGS);
 	ioapic_virt = (volatile uint32_t *)IOAPIC_VIRT_BASE;
 
 	uint32_t version = ioapic_read(IOAPIC_REG_VERSION);
@@ -312,14 +335,28 @@ void enable_apic(uint8_t id, bool is_bsp) {
 	}
 
 	if (is_bsp) {
-		paging_map_page(kernel_pml4, phys_virt(lapic_addr), lapic_addr, 0x1000, APIC_MMIO_FLAGS);
+		/*
+		 * The LAPIC is MMIO, not RAM, so it is never covered by the
+		 * HHDM (which is built only from usable memory-map regions).
+		 * Explicitly map it once here into a dedicated virtual window.
+		 */
+		paging_map_page(kernel_pml4, APIC_VIRT_BASE, lapic_addr, 0x1000, APIC_MMIO_FLAGS);
 		apic_virt = (volatile uint32_t *)APIC_VIRT_BASE;
 		__atomic_store_n(&apic_mapped, 1, __ATOMIC_RELEASE);
 	} else {
+		/*
+		 * kernel_pml4 is shared across all cores, so the mapping the
+		 * BSP created above is already valid here too. Do NOT use
+		 * phys_virt(lapic_addr) - the HHDM does not cover non-RAM
+		 * physical addresses like the LAPIC's 0xFEE00000, and doing
+		 * so causes an unmapped-page fault (which previously cascaded
+		 * into a double fault via apic_id() being called from the
+		 * fault/panic path before apic_virt was valid).
+		 */
 		while (!__atomic_load_n(&apic_mapped, __ATOMIC_ACQUIRE)) {
 			asm volatile ("pause");
 		}
-		apic_virt = (volatile uint32_t *)phys_virt(lapic_addr);
+		apic_virt = (volatile uint32_t *)APIC_VIRT_BASE;
 	}
 
 	apic_write(APIC_REG_TPR,       0);

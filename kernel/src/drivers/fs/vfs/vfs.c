@@ -9,9 +9,9 @@
 #include <drivers/fs/vfs/blockdev.h>
 #include <drivers/fs/fat16/fat16.h>
 #include <drivers/fs/devfs/devfs.h>
-#include <drivers/fs/vfs/vfs.h>
 #include <multitasking/proc.h>
 #include <multitasking/sched.h>
+#include <drivers/fs/vfs/vfs.h>
 
 #define MAX_DRIVES  254
 #define MAX_FD      256

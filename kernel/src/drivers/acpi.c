@@ -8,6 +8,7 @@
 
 uint64_t lapic_addr = 0;
 uint64_t ioapic_addr = 0;
+isa_irq_override_t isa_irq_overrides[ISA_IRQ_COUNT];
 
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_rsdp_request rsdp_request = {
@@ -59,7 +60,7 @@ struct madt_entry_header {
 } __attribute__((packed));
 
 struct madt_local_apic {
-	uint8_t type;      // 0
+	uint8_t type;
 	uint8_t length;
 	uint8_t processor_id;
 	uint8_t apic_id;
@@ -67,7 +68,7 @@ struct madt_local_apic {
 } __attribute__((packed));
 
 struct madt_ioapic {
-	uint8_t type;      // 1
+	uint8_t type;
 	uint8_t length;
 	uint8_t ioapic_id;
 	uint8_t reserved;
@@ -76,7 +77,7 @@ struct madt_ioapic {
 } __attribute__((packed));
 
 struct madt_iso {
-	uint8_t type;      // 2, interrupt source override
+	uint8_t type;
 	uint8_t length;
 	uint8_t bus_source;
 	uint8_t irq_source;
@@ -85,7 +86,7 @@ struct madt_iso {
 } __attribute__((packed));
 
 struct madt_nmi {
-	uint8_t type;      // 4, non-maskable interrupts
+	uint8_t type;
 	uint8_t length;
 	uint8_t processor_id;
 	uint16_t flags;
@@ -107,6 +108,42 @@ struct madt {
 	uint32_t flags;
 	uint8_t entries[];
 } __attribute__ ((packed));
+
+uint8_t acpi_isa_irq_gsi(uint8_t isa_irq) {
+	if (isa_irq >= ISA_IRQ_COUNT || !isa_irq_overrides[isa_irq].present) {
+		return isa_irq;
+	}
+	return isa_irq_overrides[isa_irq].gsi;
+}
+
+bool acpi_isa_irq_active_low(uint8_t isa_irq) {
+	if (isa_irq >= ISA_IRQ_COUNT || !isa_irq_overrides[isa_irq].present) {
+		return false;
+	}
+	return isa_irq_overrides[isa_irq].active_low;
+}
+
+bool acpi_isa_irq_level_triggered(uint8_t isa_irq) {
+	if (isa_irq >= ISA_IRQ_COUNT || !isa_irq_overrides[isa_irq].present) {
+		return false;
+	}
+	return isa_irq_overrides[isa_irq].level_triggered;
+}
+
+static void record_iso(struct madt_iso *iso) {
+	if (iso->irq_source >= ISA_IRQ_COUNT) {
+		return;
+	}
+
+	uint8_t polarity = iso->flags & 0x3;
+	uint8_t trigger = (iso->flags >> 2) & 0x3;
+
+	isa_irq_override_t *ov = &isa_irq_overrides[iso->irq_source];
+	ov->present = true;
+	ov->gsi = (uint8_t)iso->gsi;
+	ov->active_low = (polarity == 0x3);
+	ov->level_triggered = (trigger == 0x3);
+}
 
 void *find_table(struct rsdt *rsdt, const char *sig) {
 	int num_entries = (rsdt->header.len - sizeof(struct sdt_header)) / 4;
@@ -150,6 +187,7 @@ void parse_madt_entries(struct madt *madt) {
 				struct madt_iso *iso = (struct madt_iso *)p;
 				log_debug("MADT: Interrupt Source Override - bus: %d, irq: %d, gsi: %d, flags: 0x%X\n",
 				      iso->bus_source, iso->irq_source, iso->gsi, iso->flags);
+				record_iso(iso);
 				break;
 			}
 			case 4: {

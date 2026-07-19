@@ -25,19 +25,19 @@ static uint8_t mouse_buttons = 0;
 static uint8_t mouse_packet[3];
 static uint8_t mouse_packet_idx = 0;
 
-static void ps2_wait_write(void) {
+static void ps2_wait_write() {
     for (int i = 0; i < 100000; i++) {
         if (!(inb(PS2_CONTROL_PORT) & 0x02)) return;
     }
 }
 
-static void ps2_wait_read(void) {
+static void ps2_wait_read() {
     for (int i = 0; i < 100000; i++) {
         if (inb(PS2_CONTROL_PORT) & 0x01) return;
     }
 }
 
-static uint8_t ps2_read_data(void) {
+static uint8_t ps2_read_data() {
     ps2_wait_read();
     return inb(PS2_DATA_PORT);
 }
@@ -52,59 +52,50 @@ static void ps2_write_command(uint8_t cmd) {
     outb(PS2_CONTROL_PORT, cmd);
 }
 
-void ps2_mouse_interrupt(void) {
+void ps2_mouse_interrupt() {
     uint8_t status = inb(PS2_CONTROL_PORT);
-    
-    // Check if the byte is from the mouse
+
     if (!(status & 0x20)) {
         apic_eoi();
         return;
     }
-    
+
     mouse_packet[mouse_packet_idx] = inb(PS2_DATA_PORT);
-    
-    // First byte should have bit 3 set
+
     if (mouse_packet_idx == 0 && !(mouse_packet[0] & 0x08)) {
         apic_eoi();
         return;
     }
-    
+
     mouse_packet_idx++;
-    
+
     if (mouse_packet_idx == 3) {
         mouse_packet_idx = 0;
-        
-        // Process complete packet
+
         uint8_t byte0 = mouse_packet[0];
         int8_t dx = mouse_packet[1];
         int8_t dy = mouse_packet[2];
-        
-        // Handle sign extension for overflow
+
         if (byte0 & MOUSE_X_OVERFLOW) dx = 0;
         if (byte0 & MOUSE_Y_OVERFLOW) dy = 0;
-        
-        // Y delta is inverted in PS/2
+
         dy = -dy;
-        
-        // Update mouse position
+
         mouse_x += dx;
         mouse_y += dy;
-        
-        // Clamp to reasonable screen bounds
+
         if (mouse_x < 0) mouse_x = 0;
         if (mouse_y < 0) mouse_y = 0;
         if (mouse_x > 4096) mouse_x = 4096;
         if (mouse_y > 2048) mouse_y = 2048;
-        
-        // Detect button changes
+
         uint8_t new_buttons = 0;
         if (byte0 & MOUSE_LEFT_BUTTON) new_buttons |= MOUSE_BUTTON_LEFT;
         if (byte0 & MOUSE_RIGHT_BUTTON) new_buttons |= MOUSE_BUTTON_RIGHT;
         if (byte0 & MOUSE_MIDDLE_BUTTON) new_buttons |= MOUSE_BUTTON_MIDDLE;
-        
+
         uint8_t button_changed = mouse_buttons ^ new_buttons;
-        
-        // Generate motion event
+
         if (dx != 0 || dy != 0) {
             input_event_t event = {0};
             event.type = INPUT_EVENT_MOUSE_MOTION;
@@ -114,8 +105,7 @@ void ps2_mouse_interrupt(void) {
             event.data.mouse.buttons = new_buttons;
             input_event_enqueue(&event);
         }
-        
-        // Generate button events
+
         if (button_changed) {
             if ((button_changed & MOUSE_BUTTON_LEFT) && (new_buttons & MOUSE_BUTTON_LEFT)) {
                 input_event_t event = {0};
@@ -131,7 +121,7 @@ void ps2_mouse_interrupt(void) {
                 event.data.mouse.buttons = MOUSE_BUTTON_LEFT;
                 input_event_enqueue(&event);
             }
-            
+
             if ((button_changed & MOUSE_BUTTON_RIGHT) && (new_buttons & MOUSE_BUTTON_RIGHT)) {
                 input_event_t event = {0};
                 event.type = INPUT_EVENT_MOUSE_BUTTON_PRESS;
@@ -146,7 +136,7 @@ void ps2_mouse_interrupt(void) {
                 event.data.mouse.buttons = MOUSE_BUTTON_RIGHT;
                 input_event_enqueue(&event);
             }
-            
+
             if ((button_changed & MOUSE_BUTTON_MIDDLE) && (new_buttons & MOUSE_BUTTON_MIDDLE)) {
                 input_event_t event = {0};
                 event.type = INPUT_EVENT_MOUSE_BUTTON_PRESS;
@@ -162,37 +152,33 @@ void ps2_mouse_interrupt(void) {
                 input_event_enqueue(&event);
             }
         }
-        
+
         mouse_buttons = new_buttons;
     }
-    
+
     apic_eoi();
 }
 
-void ps2_mouse_init(void) {
-    // Enable auxiliary port (mouse)
+void ps2_mouse_init() {
     ps2_write_command(0xA8);
-    
-    // Set controller configuration byte to enable mouse interrupt
+
     ps2_write_command(0x20);
     uint8_t config = ps2_read_data();
-    config |= 0x02;  // Enable mouse interrupt
-    config &= ~0x20; // Disable PS/2 clock
+    config |= 0x02;
+    config &= ~0x20;
     ps2_write_command(0x60);
     ps2_write_data(config);
-    
-    // Use default configuration for mouse
+
     ps2_write_command(0xD4);
-    ps2_write_data(0xF6); // Default settings
-    ps2_read_data(); // ACK
-    
-    // Enable data reporting
+    ps2_write_data(0xF6);
+    ps2_read_data();
+
     ps2_write_command(0xD4);
     ps2_write_data(0xF4);
-    ps2_read_data(); // ACK
+    ps2_read_data();
 
-    ioapic_set_entry(PS2_MOUSE_IRQ, PS2_MOUSE_VECTOR, apic_id(), true);
-    ioapic_unmask(PS2_MOUSE_IRQ);
-    
+    uint8_t mouse_gsi = ioapic_route_isa_irq(PS2_MOUSE_IRQ, PS2_MOUSE_VECTOR, apic_id(), true);
+    ioapic_unmask(mouse_gsi);
+
     log_info("PS2 mouse initialized\n");
 }

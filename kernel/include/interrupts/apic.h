@@ -28,17 +28,21 @@
 #define IOAPIC_REG_VERSION    0x01
 #define IOAPIC_REG_REDTBL     0x10
 
+#define IOAPIC_ACTIVE_LOW     (1 << 13)
+#define IOAPIC_LEVEL_TRIGGER  (1 << 15)
+
 extern volatile uint32_t *apic_virt;
 extern volatile uint32_t *ioapic_virt;
 
 void     enable_apic(uint8_t id, bool is_bsp);
-void     apic_eoi(void);
+void     apic_eoi();
 uint32_t apic_read(uint32_t reg);
 void     apic_write(uint32_t reg, uint32_t value);
-uint8_t  apic_id(void);
+uint8_t  apic_id();
 void     apic_timer_init(uint32_t hz);
 void     ioapic_init();
-void     ioapic_set_entry(uint8_t irq, uint8_t vector, uint8_t dest, bool masked);
-void     ioapic_mask(uint8_t irq);
-void     ioapic_unmask(uint8_t irq);
+void     ioapic_set_entry(uint8_t gsi, uint8_t vector, uint8_t dest, bool masked, bool active_low, bool level_triggered);
+uint8_t  ioapic_route_isa_irq(uint8_t isa_irq, uint8_t vector, uint8_t dest, bool masked);
+void     ioapic_mask(uint8_t gsi);
+void     ioapic_unmask(uint8_t gsi);
 void     apic_send_ipi(uint8_t apic_id, uint8_t vector);
