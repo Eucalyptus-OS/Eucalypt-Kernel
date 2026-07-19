@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <limine.h>
 #include <mem.h>
 #include <mm/heap.h>
 #include <logging/printk.h>
@@ -9,6 +10,8 @@
 
 #define DEVFS_MAX_DEVS  64
 #define MAX_NAME        256
+
+extern volatile struct limine_framebuffer_request framebuffer_request;
 
 static devfs_dev_t  devfs_devs[DEVFS_MAX_DEVS];
 static uint8_t      devfs_dev_count = 0;
@@ -143,6 +146,27 @@ static ssize_t stderr_write(devfs_dev_t *dev, const void *buf, size_t count) {
     return console_write(dev, buf, count);
 }
 
+typedef struct {
+    uint32_t *addr;
+    size_t    size;
+} fb_info_t;
+
+static fb_info_t g_fb;
+
+static ssize_t fb_read(devfs_dev_t *dev, void *buf, size_t count) {
+    (void)dev;
+    if (count > g_fb.size) count = g_fb.size;
+    memcpy(buf, g_fb.addr, count);
+    return (ssize_t)count;
+}
+
+static ssize_t fb_write(devfs_dev_t *dev, const void *buf, size_t count) {
+    (void)dev;
+    if (count > g_fb.size) count = g_fb.size;
+    memcpy(g_fb.addr, buf, count);
+    return (ssize_t)count;
+}
+
 int devfs_register(const char *name, ssize_t (*read)(devfs_dev_t *, void *, size_t),
                    ssize_t (*write)(devfs_dev_t *, const void *, size_t), void *priv) {
     if (devfs_dev_count >= DEVFS_MAX_DEVS) return -1;
@@ -192,7 +216,7 @@ devfs_dev_t *devfs_get(const char *name) {
     return NULL;
 }
 
-void devfs_init(void) {
+void devfs_init() {
     if (devfs_ready) return;
 
     devfs_root = vfs_register_node("/dev", VFS_NODE_DIR, &devfs_dir_ops, NULL);
@@ -210,6 +234,10 @@ void devfs_init(void) {
     devfs_register("stdin",   stdin_read,   stdin_write,   NULL);
     devfs_register("stdout",  stdout_read,  stdout_write,  NULL);
     devfs_register("stderr",  stderr_read,  stderr_write,  NULL);
-
+    struct limine_framebuffer *lfb = framebuffer_request.response->framebuffers[0];
+    g_fb.addr = (uint32_t *)lfb->address;
+    g_fb.size = lfb->width * lfb->height * (lfb->bpp / 8);
+    devfs_register("fb0", fb_read, fb_write, &g_fb);
+ 
     log_info("devfs: initialized with %d built-in devices\n", devfs_dev_count);
 }
