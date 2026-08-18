@@ -1,10 +1,22 @@
+
 #include <mm/frame.h>
 #include <memory.h>
 #include <stdint.h>
 
 #define PAGE_SIZE 0x1000
 #define PAGE_PRESENT 0x1
+#define PAGE_WRITABLE (0x1 << 1)
+#define PAGE_USER (0x1 << 2)
+#define PAGE_WRITE_THROUGH (0x1 << 3)
+#define PAGE_DISABLE_CACHE (0x1 << 4)
+#define PAGE_ACCESSED (0x1 << 5)
+#define PAGE_DIRTY (0x1 << 6)
+#define PAGE_NXE (1ULL << 63)
 #define ENTRIES_PER_TABLE 512
+
+extern volatile struct limine_framebuffer_request framebuffer_request;
+
+uint64_t *kernel_pml4;
 
 static inline void invlpg(void *addr) {
     __asm__ volatile("invlpg (%0)" : : "r"(addr) : "memory");
@@ -131,7 +143,7 @@ static uint8_t map_kernel_range(uint64_t *pml4, uintptr_t virt_start, uintptr_t 
 
     for (uintptr_t va = start; va < end; va += PAGE_SIZE) {
         uintptr_t pa = phys_base + (va - virt_base);
-        if (paging_map_page(pml4, (void *)va, pa, flags)) {
+        if (map_page(pml4, (void *)va, pa, flags)) {
             return 1;
         }
     }
@@ -157,10 +169,10 @@ static uint8_t map_framebuffer(uint64_t *pml4) {
           (unsigned long)fb_pages_size, (unsigned)fb->pitch, (unsigned)fb->height);
 
     for (size_t off = 0; off < fb_pages_size; off += PAGE_SIZE) {
-        if (paging_map_page(pml4,
-                             (void *)(fb_virt_start + off),
-                             fb_phys_start + off,
-                             PAGE_WRITABLE | PAGE_NXE)) {
+        if (map_page(pml4,
+                            (void *)(fb_virt_start + off),
+                            fb_phys_start + off,
+                            PAGE_WRITABLE | PAGE_NXE)) {
             return 1;
         }
     }
@@ -212,7 +224,7 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
             || entry->type == LIMINE_MEMMAP_RESERVED
             || entry->type == LIMINE_MEMMAP_EXECUTABLE_AND_MODULES) {
             for (uint64_t offset = 0; offset < entry->length; offset += PAGE_SIZE) {
-                if (paging_map_page((uint64_t *)pml4,
+                if (map_page((uint64_t *)pml4,
                                      phys_to_virt(entry->base + offset),
                                      entry->base + offset,
                                      PAGE_WRITABLE | PAGE_NXE)) {
@@ -263,3 +275,4 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
     }
 
     return 0;
+}
