@@ -56,7 +56,7 @@ endif
 LDFLAGS :=
 
 # Ensure the dependencies have been obtained.
-ifneq ($(filter-out clean distclean,$(MAKECMDGOALS)),)
+ifneq ($(filter-out clean distclean,$(or $(MAKECMDGOALS),default)),)
     ifeq ($(wildcard .deps-obtained),)
         $(error Please run the ./get-deps script first)
     endif
@@ -69,12 +69,11 @@ override CC_IS_CLANG := $(shell ! $(CC) --version 2>/dev/null | grep -q '^Target
 override CFLAGS += \
     -Wall \
     -Wextra \
-    -std=gnu23 \
+    -std=gnu11 \
     -nostdinc \
     -ffreestanding \
     -fno-stack-protector \
     -fno-stack-check \
-    -fno-omit-frame-pointer \
     -fno-lto \
     -fno-PIC \
     -ffunction-sections \
@@ -82,24 +81,19 @@ override CFLAGS += \
 
 # Internal C preprocessor flags that should not be changed by the user.
 override CPPFLAGS := \
-    -I src \
     -I include \
+    -I src \
     -I limine-protocol/include \
-    -isystem freestnd-c-hdrs/include \
+    -isystem freestanding-c-hdrs/include \
     $(CPPFLAGS) \
     -MMD \
     -MP
 
 ifeq ($(ARCH),x86_64)
     # Internal nasm flags that should not be changed by the user.
-    # Section-crossing relocation warnings are disabled: references to
-    # extern C symbols and 64-bit pointer tables always trigger them,
-    # and mcmodel=kernel guarantees all sections link within +-2 GiB.
     override NASMFLAGS := \
         $(patsubst -g,-g -F dwarf,$(NASMFLAGS)) \
-        -Wall \
-        -w-reloc-rel-dword \
-        -w-reloc-abs-qword
+        -Wall
 endif
 
 # Architecture specific internal flags.
@@ -226,7 +220,7 @@ clean:
 # Remove everything built and generated including downloaded dependencies.
 .PHONY: distclean
 distclean:
-	rm -rf bin-* obj-* .deps-obtained .cache compile_commands.json freestnd-c-hdrs cc-runtime limine-protocol
+	rm -rf bin-* obj-* .deps-obtained .cache compile_commands.json freestanding-c-hdrs cc-runtime limine-protocol
 
 # Install the final built executable to its final on-root location.
 .PHONY: install

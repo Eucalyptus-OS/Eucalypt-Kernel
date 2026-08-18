@@ -1,7 +1,11 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
+#include <limine.h>
 
-uint64_t frame_alloc();
-void frame_free(uint64_t page);
-void frame_init();
+uint64_t frame_list;
+
+uintptr_t frame_alloc();
+void frame_free(uintptr_t frame);
+uint8_t frame_init(struct limine_memmap_response *memmap);

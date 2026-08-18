@@ -1,22 +1,18 @@
-#include <limine.h>
+#include <stdint.h>
 #include <mm/hhdm.h>
 
-__attribute__((used, section(".limine_requests")))
-volatile struct limine_hhdm_request hhdm_request = {
-    .id = LIMINE_HHDM_REQUEST_ID,
-    .revision = 0
-};
+uint64_t hhdm_offset;
 
-uint64_t offset = 0;
-
-void hhdm_init() {
-    offset = hhdm_request.response->offset;
+void hhdm_init(uint64_t offset) {
+    hhdm_offset = offset;
 }
 
-uint64_t phys_virt(uint64_t phys) {
-    return offset + phys;
+void *phys_to_virt(uintptr_t phys) {
+    uint64_t offset = hhdm_offset;
+    return (void *)(phys + offset);
 }
 
-uint64_t virt_phys(uint64_t virt) {
-    return virt - offset;
+uintptr_t virt_to_phys(void *virt) {
+    uint64_t offset = hhdm_offset;
+    return (uintptr_t)virt - offset;
 }
