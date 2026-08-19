@@ -1,9 +1,22 @@
-
 #include <mm/frame.h>
+#include <mm/hhdm.h>
 #include <memory.h>
 #include <stdint.h>
+#include <limine.h>
 
 #define PAGE_SIZE 0x1000
+#define KERNEL_STACK_REGION 0xffffffffa0000000
+
+extern char __text_start[];
+extern char __text_end[];
+extern char __rodata_start[];
+extern char __rodata_end[];
+extern char __data_start[];
+extern char __data_end[];
+
+static inline void reload_cr3(uint64_t val) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(val) : "memory");
+}
 #define PAGE_PRESENT 0x1
 #define PAGE_WRITABLE (0x1 << 1)
 #define PAGE_USER (0x1 << 2)
@@ -36,46 +49,47 @@ uint64_t get_level(void *v, uint8_t level) {
     return 0;
 }
 
-void map_page(uint64_t *pml4, void *virt, uintptr_t phys, uint64_t flags) {
+uint8_t map_page(uint64_t *pml4, void *virt, uintptr_t phys, uint64_t flags) {
     if (!pml4 || !virt) {
-        return;
+        return 1;
     }
 
     uint64_t i4 = get_level(virt, 4);
     if (!(pml4[i4] & PAGE_PRESENT)) {
-        uint64_t *new_table = (uint64_t *)frame_alloc();
-        if (!new_table) {
-            return;
+        uintptr_t new_phys = frame_alloc();
+        if (!new_phys) {
+            return 1;
         }
-        memset(new_table, 0, PAGE_SIZE);
-        pml4[i4] = (uint64_t)new_table | PAGE_PRESENT | flags;
+        memset(phys_to_virt(new_phys), 0, PAGE_SIZE);
+        pml4[i4] = new_phys | PAGE_PRESENT | flags;
     }
-    uint64_t *pml3 = (uint64_t *)(pml4[i4] & ~0xFFFULL);
+    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[i4] & ~0xFFFULL);
 
     uint64_t i3 = get_level(virt, 3);
     if (!(pml3[i3] & PAGE_PRESENT)) {
-        uint64_t *new_table = (uint64_t *)frame_alloc();
-        if (!new_table) {
-            return;
+        uintptr_t new_phys = frame_alloc();
+        if (!new_phys) {
+            return 1;
         }
-        memset(new_table, 0, PAGE_SIZE);
-        pml3[i3] = (uint64_t)new_table | PAGE_PRESENT | flags;
+        memset(phys_to_virt(new_phys), 0, PAGE_SIZE);
+        pml3[i3] = new_phys | PAGE_PRESENT | flags;
     }
-    uint64_t *pml2 = (uint64_t *)(pml3[i3] & ~0xFFFULL);
+    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[i3] & ~0xFFFULL);
 
     uint64_t i2 = get_level(virt, 2);
     if (!(pml2[i2] & PAGE_PRESENT)) {
-        uint64_t *new_table = (uint64_t *)frame_alloc();
-        if (!new_table) {
-            return;
+        uintptr_t new_phys = frame_alloc();
+        if (!new_phys) {
+            return 1;
         }
-        memset(new_table, 0, PAGE_SIZE);
-        pml2[i2] = (uint64_t)new_table | PAGE_PRESENT | flags;
+        memset(phys_to_virt(new_phys), 0, PAGE_SIZE);
+        pml2[i2] = new_phys | PAGE_PRESENT | flags;
     }
-    uint64_t *pml1 = (uint64_t *)(pml2[i2] & ~0xFFFULL);
+    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[i2] & ~0xFFFULL);
 
     uint64_t i1 = get_level(virt, 1);
     pml1[i1] = (uint64_t)phys | PAGE_PRESENT | flags;
+    return 0;
 }
 
 static int table_is_empty(uint64_t *table) {
@@ -96,19 +110,19 @@ void free_page(uint64_t *pml4, void *virt) {
     if (!(pml4[i4] & PAGE_PRESENT)) {
         return;
     }
-    uint64_t *pml3 = (uint64_t *)(pml4[i4] & ~0xFFFULL);
+    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[i4] & ~0xFFFULL);
 
     uint64_t i3 = get_level(virt, 3);
     if (!(pml3[i3] & PAGE_PRESENT)) {
         return;
     }
-    uint64_t *pml2 = (uint64_t *)(pml3[i3] & ~0xFFFULL);
+    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[i3] & ~0xFFFULL);
 
     uint64_t i2 = get_level(virt, 2);
     if (!(pml2[i2] & PAGE_PRESENT)) {
         return;
     }
-    uint64_t *pml1 = (uint64_t *)(pml2[i2] & ~0xFFFULL);
+    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[i2] & ~0xFFFULL);
 
     uint64_t i1 = get_level(virt, 1);
     if (!(pml1[i1] & PAGE_PRESENT)) {
@@ -120,15 +134,15 @@ void free_page(uint64_t *pml4, void *virt) {
     invlpg(virt);
 
     if (table_is_empty(pml1)) {
-        frame_free((uintptr_t)pml1);
+        frame_free(virt_to_phys(pml1));
         pml2[i2] = 0;
 
         if (table_is_empty(pml2)) {
-            frame_free((uintptr_t)pml2);
+            frame_free(virt_to_phys(pml2));
             pml3[i3] = 0;
 
             if (table_is_empty(pml3)) {
-                frame_free((uintptr_t)pml3);
+                frame_free(virt_to_phys(pml3));
                 pml4[i4] = 0;
             }
         }
@@ -164,10 +178,6 @@ static uint8_t map_framebuffer(uint64_t *pml4) {
     size_t fb_size = (size_t)fb->pitch * (size_t)fb->height;
     size_t fb_pages_size = (fb_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-    print("FRAMEBUFFER limine_addr=%lx phys=%lx virt=%lx size=%lx pitch=%u height=%u\n",
-          (unsigned long)fb->address, (unsigned long)fb_phys_start, (unsigned long)fb_virt_start,
-          (unsigned long)fb_pages_size, (unsigned)fb->pitch, (unsigned)fb->height);
-
     for (size_t off = 0; off < fb_pages_size; off += PAGE_SIZE) {
         if (map_page(pml4,
                             (void *)(fb_virt_start + off),
@@ -188,8 +198,8 @@ uint8_t paging_prepare_kernel_stack_region() {
         return 1;
     }
 
-    uint64_t *pml4 = phys_to_virt((uintptr_t)kernel_pml4);
-    uint64_t idx = get_pml(4, (void *)KERNEL_STACK_REGION);
+    uint64_t *pml4 = (uint64_t *)phys_to_virt((uintptr_t)kernel_pml4);
+    uint64_t idx = get_level((void *)KERNEL_STACK_REGION, 4);
 
     if (pml4[idx] & PAGE_PRESENT) {
         return 0;
@@ -215,6 +225,8 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
 
     memset(phys_to_virt(pml4), 0, PAGE_SIZE);
 
+    uint64_t *vml4 = (uint64_t *)phys_to_virt(pml4);
+
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE 
@@ -224,7 +236,7 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
             || entry->type == LIMINE_MEMMAP_RESERVED
             || entry->type == LIMINE_MEMMAP_EXECUTABLE_AND_MODULES) {
             for (uint64_t offset = 0; offset < entry->length; offset += PAGE_SIZE) {
-                if (map_page((uint64_t *)pml4,
+                if (map_page(vml4,
                                      phys_to_virt(entry->base + offset),
                                      entry->base + offset,
                                      PAGE_WRITABLE | PAGE_NXE)) {
@@ -234,32 +246,32 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
         }
     }
 
-    if (map_framebuffer((uint64_t *)pml4)) {
+    if (map_framebuffer(vml4)) {
         return 1;
     }
 
-    if (map_kernel_range((uint64_t *)pml4,
+    if (map_kernel_range(vml4,
                           (uintptr_t)__text_start, (uintptr_t)__text_end,
                           exec->physical_base, exec->virtual_base,
                           0)) {
         return 1;
     }
 
-    if (map_kernel_range((uint64_t *)pml4,
+    if (map_kernel_range(vml4,
                           (uintptr_t)__rodata_start, (uintptr_t)__rodata_end,
                           exec->physical_base, exec->virtual_base,
                           PAGE_NXE)) {
         return 1;
     }
 
-    if (map_kernel_range((uint64_t *)pml4,
+    if (map_kernel_range(vml4,
                           (uintptr_t)__data_start, (uintptr_t)__data_end,
                           exec->physical_base, exec->virtual_base,
                           PAGE_WRITABLE | PAGE_NXE)) {
         return 1;
     }
     
-    if (map_kernel_range((uint64_t *)pml4,
+    if (map_kernel_range(vml4,
                       exec->virtual_base, (uintptr_t)__text_start,
                       exec->physical_base, exec->virtual_base,
                       PAGE_NXE)) {

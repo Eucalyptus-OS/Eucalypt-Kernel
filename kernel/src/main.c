@@ -2,27 +2,38 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <limine.h>
-
-// Set the base revision to 6, this is recommended as this is the latest
-// base revision described by the Limine boot protocol specification.
-// See specification for further info.
+#include <init.h>
+#include <mm/hhdm.h>
+#include <mm/frame.h>
+#include <gdt.h>
+#include <paging.h>
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(6);
 
-// The Limine requests can be placed anywhere, but it is important that
-// the compiler does not optimise them away, so, usually, they should
-// be made volatile or equivalent, _and_ they should be accessed at least
-// once or marked as used with the "used" attribute as done here.
-
 __attribute__((used, section(".limine_requests")))
-static volatile struct limine_framebuffer_request framebuffer_request = {
+volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
     .revision = 0
 };
 
-// Finally, define the start and end markers for the Limine requests.
-// These can also be moved anywhere, to any .c file, as seen fit.
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_executable_address_request exec_request = {
+    .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID,
+    .revision = 0
+};
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -30,36 +41,27 @@ static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
-// The following will be our kernel's entry point.
-// If renaming kmain() to something else, make sure to change the
-// linker script accordingly.
-void kmain(void) {
-    // Ensure the bootloader actually understands our base revision (see spec).
-    if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false) {
-        hcf();
-    }
-
-    // Ensure we got a framebuffer.
-    if (framebuffer_request.response == NULL
-     || framebuffer_request.response->framebuffer_count < 1) {
-        hcf();
-    }
-
-    // Fetch the first framebuffer.
-    struct limine_framebuffer *framebuffer = framebuffer_request.response->framebuffers[0];
-
-    // Print a nice pattern to screen as an example.
-    // Note: we assume the framebuffer model is RGB with 32-bit pixels.
-    volatile uint32_t *fb_ptr = framebuffer->address;
-    for (size_t y = 0; y < framebuffer->height; y++) {
-        for (size_t x = 0; x < framebuffer->width; x++) {
-            uint32_t nX = x * 255 / framebuffer->width;
-            uint32_t nY = y * 255 / framebuffer->height;
-            fb_ptr[y * (framebuffer->pitch / 4) + x] = (nY << 8) | nX;
+static void fb_fill(struct limine_framebuffer *fb, uint32_t color) {
+    volatile uint32_t *ptr = fb->address;
+    size_t row_bytes = fb->pitch;
+    for (size_t y = 0; y < 40 && y < fb->height; y++) {
+        for (size_t x = 0; x < fb->width; x++) {
+            ptr[y * (row_bytes / 4) + x] = color;
         }
     }
+}
 
-    // We're done, just hang...
+void kmain(void) {
+    struct limine_framebuffer *framebuffer = framebuffer_request.response->framebuffers[0];
+
+    register_function((init_func_t)(void *)gdt_init, 0, 0);
+    register_function((init_func_t)(void *)hhdm_init, hhdm_request.response->offset, 0);
+    register_function((init_func_t)(void *)frame_init, (uint64_t)memmap_request.response, 0);
+    register_function((init_func_t)(void *)paging_init, (uint64_t)memmap_request.response, (uint64_t)exec_request.response);
+    init();
+
+    fb_fill(framebuffer, 0xFFFFFFFF);
+
     for (;;) {
         asm volatile ("hlt");
     }

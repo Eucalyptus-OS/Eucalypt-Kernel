@@ -1,21 +1,20 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <limine.h>
+#include <mm/hhdm.h>
+#include <mm/frame.h>
 
 uint64_t frame_list;
 
 uintptr_t frame_alloc() {
-    if (frame_list == 0) {
-        return 0;
-    }
-
+    if (frame_list == 0) return 0;
     uintptr_t frame = frame_list;
-    frame_list = *(uint64_t *)frame;
+    frame_list = *(uint64_t *)phys_to_virt(frame);
     return frame;
 }
 
 void frame_free(uintptr_t frame) {
-    uint64_t *frame_ptr = (uint64_t *)frame;
+    uint64_t *frame_ptr = (uint64_t *)phys_to_virt(frame);
     *frame_ptr = frame_list;
     frame_list = frame;
 }

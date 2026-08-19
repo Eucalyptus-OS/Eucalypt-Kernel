@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <limine.h>
 
-uint64_t frame_list;
+extern uint64_t frame_list;
 
 uintptr_t frame_alloc();
 void frame_free(uintptr_t frame);
