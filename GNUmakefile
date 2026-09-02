@@ -5,7 +5,8 @@
 ARCH := x86_64
 
 # Default user QEMU flags. These are appended to the QEMU command calls.
-QEMUFLAGS := -m 2G -d int
+# The isa-debugcon pair routes port 0xE9 writes (print.c) to stdout.
+QEMUFLAGS := -m 2G -d int -device isa-debugcon,chardev=debug -chardev stdio,id=debug
 
 override IMAGE_NAME := eucalypt
 

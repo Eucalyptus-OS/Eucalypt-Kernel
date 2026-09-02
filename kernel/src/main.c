@@ -5,8 +5,18 @@
 #include <init.h>
 #include <mm/hhdm.h>
 #include <mm/frame.h>
+#include <mm/paging.h>
+#include <mm/heap.h>
+#include <mm/vmm.h>
 #include <gdt.h>
-#include <paging.h>
+#include <idt.h>
+#include <acpi.h>
+#include <apic.h>
+#include <memory.h>
+#include <logging/print.h>
+#include <multitasking/thread.h>
+#include <drivers/drive_map.h>
+#include <drivers/ahci.h>
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(6);
@@ -35,32 +45,33 @@ static volatile struct limine_executable_address_request exec_request = {
     .revision = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST_ID,
+    .revision = 0
+};
+
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
 
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
-static void fb_fill(struct limine_framebuffer *fb, uint32_t color) {
-    volatile uint32_t *ptr = fb->address;
-    size_t row_bytes = fb->pitch;
-    for (size_t y = 0; y < 40 && y < fb->height; y++) {
-        for (size_t x = 0; x < fb->width; x++) {
-            ptr[y * (row_bytes / 4) + x] = color;
-        }
-    }
-}
-
 void kmain(void) {
-    struct limine_framebuffer *framebuffer = framebuffer_request.response->framebuffers[0];
-
-    register_function((init_func_t)(void *)gdt_init, 0, 0);
-    register_function((init_func_t)(void *)hhdm_init, hhdm_request.response->offset, 0);
-    register_function((init_func_t)(void *)frame_init, (uint64_t)memmap_request.response, 0);
-    register_function((init_func_t)(void *)paging_init, (uint64_t)memmap_request.response, (uint64_t)exec_request.response);
+    register_function(gdt_init, 0, 0);
+    register_function(hhdm_init, hhdm_request.response->offset, 0);
+    register_function(frame_init, (uint64_t)memmap_request.response, 0);
+    register_function(paging_init, (uint64_t)memmap_request.response, (uint64_t)exec_request.response);
+    register_function(idt_init, 0, 0);
+    register_function(acpi_init, (uint64_t)rsdp_request.response->address, 0);
+    register_function(apic_init, 0, 0);
+    register_function(heap_init, 0, 0);
+    register_function(vmm_init, 0, 0);
+    register_function(ahci_init, 0, 0);
+    register_function(drive_map_init, 0, 0);
     init();
 
-    fb_fill(framebuffer, 0xFFFFFFFF);
+    asm volatile ("sti");
 
     for (;;) {
         asm volatile ("hlt");

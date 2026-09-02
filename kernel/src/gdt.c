@@ -31,6 +31,11 @@ struct gdtr {
 // Global for the CPU
 static struct tss global_tss = {0};
 
+void tss_set_kernel_stack(uint64_t rsp0) {
+    // Per-CPU once SMP lands; switch.asm calls this on every context swap.
+    global_tss.rsp0 = rsp0;
+}
+
 static inline void set_descriptor(uint8_t index, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags) {
     uint8_t *target = gdt_table[index];
 
@@ -70,7 +75,7 @@ static inline void write_tss() {
     set_tss_descriptor(5, base, limit, 0x89); // TSS Descriptor
 }
 
-void gdt_init() {
+uint8_t gdt_init() {
     set_descriptor(0, 0, 0, 0, 0);
     set_descriptor(1, 0, 0xFFFFFFFF, 0x9A, 0xA);
     set_descriptor(2, 0, 0xFFFFFFFF, 0x92, 0xC);
@@ -88,4 +93,5 @@ void gdt_init() {
     uint16_t tss_selector = 0x28;
     asm volatile ("ltr %0" :: "r"(tss_selector));
     reload();
+    return 0;
 }

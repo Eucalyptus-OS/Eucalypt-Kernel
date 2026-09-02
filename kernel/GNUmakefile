@@ -185,7 +185,23 @@ override HEADER_DEPS := $(addprefix obj-$(ARCH)/,$(CFILES:.c=.c.d) $(ASFILES:.S=
 
 # Default target. This must come first, before header dependencies.
 .PHONY: all
-all: bin-$(ARCH)/$(OUTPUT)
+all: compile_commands.json bin-$(ARCH)/$(OUTPUT)
+
+# Generate compile_commands.json so clangd works without running bear.
+# Uses the same source discovery and flags as the real build above.
+override CCDB_FLAGS := $(filter-out -MMD -MP,$(CPPFLAGS) $(CFLAGS))
+
+.PHONY: compile_commands.json
+compile_commands.json: GNUmakefile
+	@printf '[\n' > $@
+	@first=1; \
+	for f in $(CFILES); do \
+		if [ $$first -eq 0 ]; then printf ',\n' >> $@; fi; \
+		first=0; \
+		printf '{"directory": "%s", "file": "%s/%s", "command": "%s %s -c %s/%s"}' \
+			"$(CURDIR)" "$(CURDIR)" "$$f" "$(CC)" "$(CCDB_FLAGS)" "$(CURDIR)" "$$f" >> $@; \
+	done; \
+	printf '\n]\n' >> $@
 
 # Include header dependencies.
 -include $(HEADER_DEPS)

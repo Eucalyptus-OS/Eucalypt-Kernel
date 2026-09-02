@@ -1,11 +1,12 @@
+#include <mm/paging.h>
 #include <mm/frame.h>
 #include <mm/hhdm.h>
 #include <memory.h>
 #include <stdint.h>
 #include <limine.h>
 
-#define PAGE_SIZE 0x1000
-#define KERNEL_STACK_REGION 0xffffffffa0000000
+#define ENTRIES_PER_TABLE 512
+#define PTE_PHYS_MASK 0x000FFFFFFFFFF000ULL
 
 extern char __text_start[];
 extern char __text_end[];
@@ -14,22 +15,22 @@ extern char __rodata_end[];
 extern char __data_start[];
 extern char __data_end[];
 
-static inline void reload_cr3(uint64_t val) {
-    __asm__ volatile("mov %0, %%cr3" : : "r"(val) : "memory");
-}
-#define PAGE_PRESENT 0x1
-#define PAGE_WRITABLE (0x1 << 1)
-#define PAGE_USER (0x1 << 2)
-#define PAGE_WRITE_THROUGH (0x1 << 3)
-#define PAGE_DISABLE_CACHE (0x1 << 4)
-#define PAGE_ACCESSED (0x1 << 5)
-#define PAGE_DIRTY (0x1 << 6)
-#define PAGE_NXE (1ULL << 63)
-#define ENTRIES_PER_TABLE 512
-
 extern volatile struct limine_framebuffer_request framebuffer_request;
 
 uint64_t *kernel_pml4;
+
+static inline void reload_cr3(uint64_t val) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(val) : "memory");
+}
+
+static int table_is_empty(uint64_t *table) {
+    for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
+        if (table[i] & PAGE_PRESENT) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 static inline void invlpg(void *addr) {
     __asm__ volatile("invlpg (%0)" : : "r"(addr) : "memory");
@@ -49,6 +50,20 @@ uint64_t get_level(void *v, uint8_t level) {
     return 0;
 }
 
+uintptr_t create_pml4() {
+    uintptr_t pml4_phys = frame_alloc();
+    if (!pml4_phys) {
+        return 0;
+    }
+    uint64_t *kernel_virt = phys_to_virt((uintptr_t)kernel_pml4);
+    uint64_t *pml4_virt = phys_to_virt(pml4_phys);
+    memset(pml4_virt, 0, PAGE_SIZE);
+    for (int i = 256; i < 512; i++) 
+        pml4_virt[i] = kernel_virt[i];
+
+    return pml4_phys;
+}
+
 uint8_t map_page(uint64_t *pml4, void *virt, uintptr_t phys, uint64_t flags) {
     if (!pml4 || !virt) {
         return 1;
@@ -61,9 +76,9 @@ uint8_t map_page(uint64_t *pml4, void *virt, uintptr_t phys, uint64_t flags) {
             return 1;
         }
         memset(phys_to_virt(new_phys), 0, PAGE_SIZE);
-        pml4[i4] = new_phys | PAGE_PRESENT | flags;
+        pml4[i4] = new_phys | PAGE_PRESENT | PAGE_WRITABLE;
     }
-    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[i4] & ~0xFFFULL);
+    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[i4] & PTE_PHYS_MASK);
 
     uint64_t i3 = get_level(virt, 3);
     if (!(pml3[i3] & PAGE_PRESENT)) {
@@ -72,9 +87,9 @@ uint8_t map_page(uint64_t *pml4, void *virt, uintptr_t phys, uint64_t flags) {
             return 1;
         }
         memset(phys_to_virt(new_phys), 0, PAGE_SIZE);
-        pml3[i3] = new_phys | PAGE_PRESENT | flags;
+        pml3[i3] = new_phys | PAGE_PRESENT | PAGE_WRITABLE;
     }
-    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[i3] & ~0xFFFULL);
+    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[i3] & PTE_PHYS_MASK);
 
     uint64_t i2 = get_level(virt, 2);
     if (!(pml2[i2] & PAGE_PRESENT)) {
@@ -83,22 +98,13 @@ uint8_t map_page(uint64_t *pml4, void *virt, uintptr_t phys, uint64_t flags) {
             return 1;
         }
         memset(phys_to_virt(new_phys), 0, PAGE_SIZE);
-        pml2[i2] = new_phys | PAGE_PRESENT | flags;
+        pml2[i2] = new_phys | PAGE_PRESENT | PAGE_WRITABLE;
     }
-    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[i2] & ~0xFFFULL);
+    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[i2] & PTE_PHYS_MASK);
 
     uint64_t i1 = get_level(virt, 1);
     pml1[i1] = (uint64_t)phys | PAGE_PRESENT | flags;
     return 0;
-}
-
-static int table_is_empty(uint64_t *table) {
-    for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
-        if (table[i] & PAGE_PRESENT) {
-            return 0;
-        }
-    }
-    return 1;
 }
 
 void free_page(uint64_t *pml4, void *virt) {
@@ -110,26 +116,26 @@ void free_page(uint64_t *pml4, void *virt) {
     if (!(pml4[i4] & PAGE_PRESENT)) {
         return;
     }
-    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[i4] & ~0xFFFULL);
+    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[i4] & PTE_PHYS_MASK);
 
     uint64_t i3 = get_level(virt, 3);
     if (!(pml3[i3] & PAGE_PRESENT)) {
         return;
     }
-    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[i3] & ~0xFFFULL);
+    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[i3] & PTE_PHYS_MASK);
 
     uint64_t i2 = get_level(virt, 2);
     if (!(pml2[i2] & PAGE_PRESENT)) {
         return;
     }
-    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[i2] & ~0xFFFULL);
+    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[i2] & PTE_PHYS_MASK);
 
     uint64_t i1 = get_level(virt, 1);
     if (!(pml1[i1] & PAGE_PRESENT)) {
         return;
     }
 
-    frame_free(pml1[i1] & ~0xFFFULL);
+    frame_free(pml1[i1] & PTE_PHYS_MASK);
     pml1[i1] = 0;
     invlpg(virt);
 
@@ -186,32 +192,7 @@ static uint8_t map_framebuffer(uint64_t *pml4) {
             return 1;
         }
     }
-
     fb->address = (void*)fb_virt_start; 
-
-    return 0;
-}
-
-
-uint8_t paging_prepare_kernel_stack_region() {
-    if (!kernel_pml4) {
-        return 1;
-    }
-
-    uint64_t *pml4 = (uint64_t *)phys_to_virt((uintptr_t)kernel_pml4);
-    uint64_t idx = get_level((void *)KERNEL_STACK_REGION, 4);
-
-    if (pml4[idx] & PAGE_PRESENT) {
-        return 0;
-    }
-
-    uintptr_t table = frame_alloc();
-    if (!table) {
-        return 1;
-    }
-
-    memset(phys_to_virt(table), 0, PAGE_SIZE);
-    pml4[idx] = table | PAGE_PRESENT | PAGE_WRITABLE;
 
     return 0;
 }
@@ -281,10 +262,6 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
     reload_cr3((uint64_t)pml4);
 
     kernel_pml4 = (uint64_t *)pml4;
-
-    if (paging_prepare_kernel_stack_region()) {
-        return 1;
-    }
 
     return 0;
 }
