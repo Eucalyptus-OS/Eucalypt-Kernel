@@ -19,15 +19,31 @@ struct pcb {
     uint64_t pid;
     struct vmm_space space;     // replaces raw uintptr_t cr3
     uint64_t t_count;
-    struct tcb *threads;        // linked list of threads
+    struct tcb *threads;        // per-process thread list (via tcb->pthread_next)
     struct pcb *parent;         // for wait/kill
     struct pcb *children;       // head of child list
     struct pcb *sibling_next;   // next sibling in parent's children list
+    struct tcb *waiter;         // thread blocked in proc_wait on this proc
     int exit_code;              // set by proc_exit, read by proc_wait
     uint8_t zombie;             // 1 = exited, waiting to be reaped
     struct pcb *next;           // global process list
 } __attribute__((packed));
 ```
+
+The TCB gains one appended field for per-process thread linkage. It is added
+at the **end** of the packed struct so the `struc tcb` layout mirrored in
+`switch.asm` is unaffected (it only reads up through `timed`):
+
+```c
+struct tcb {
+    // ... existing fields unchanged ...
+    uint8_t timed;
+    struct tcb *pthread_next;   // next thread in the parent process's list
+} __attribute__((packed));
+```
+
+The existing `next` pointer remains owned by the scheduler's circular
+`thread_list` and is not shared with the per-process list.
 
 ## Process API
 
@@ -66,14 +82,28 @@ void proc_destroy(struct pcb *p);              // removes from list + frees all 
 
 - **proc_fork()** — Clone the current process:
   1. Allocate a new PCB and `vmm_create_space_into` a fresh address space.
-  2. Walk the parent's low-half mappings (from the VMM region list plus page
-     table walk for any raw mappings), allocate + copy each frame into the
-     child's space.
-  3. Create one new thread for the child whose saved kernel context is a copy
-     of the parent's most recent context, but altered so the child appears to
-     "return 0" from the fork call site.
-  4. Return 0 in the child (via the forked resume path), parent gets child PID.
+  2. Walk the parent's region list (from the VMM `regions` list), for each
+     region allocate frames in the child's space via `vmm_map_at` and copy the
+     contents verbatim (full copy, no COW).
+  3. Create one new thread for the child. Its kernel stack is a fresh frame
+     whose contents are a verbatim copy of the parent's fork-time context
+     (register save frame + caller stack, via the new `fork_call` asm entry)
+     with the `rax` slot forced to 0, so the child "returns 0" from the fork
+     call site; the parent returns the child's PID normally.
   On any allocation failure: destroy the partial child space + PCB, return -1.
+
+  Fork mechanics: a new asm entry `fork_call` in `switch.asm` snapshots the
+  current context exactly as `switch_task`'s save path does (pushfq + all
+  GPRs, with the fork call site return address at the top of the frame — the
+  same layout `switch_task` restores). It calls `proc_fork_c(frame, resume_rip)`
+  with the frame base and the caller's return address. `proc_fork_c` builds
+  the child: fresh kernel stack, copies `[frame_base, parent_kstack_top)`
+  into it at the same offset, zeroes the copied `rax` slot, and sets
+  `child->ksp` to the copied frame base. When the child is first scheduled,
+  `switch_task` restores it and it continues at the instruction after
+  `call fork_call` with rax = 0. The parent discards its snapshot frame and
+  returns the PID. This works because threads run in ring 0 (no user mode
+  exists yet).
 
 - **proc_exec(elf, size, stack)** — Parse an ELF64 file in memory:
   1. Validate magic, class, machine.
@@ -140,10 +170,20 @@ stack frame apply.
 
 ### switch.asm changes — fork resume path
 
-Add a context-endpoint for the forked child. The child's thread must "win" the
-fork: the child thread's saved kernel stack contains a context whose return
-address points into a small restore stub that performs iretq-like return to user
-mode with RAX = 0. The parent's fork returns normally with RAX = child pid.
+Add a `fork_call` entry (described under `proc_fork` above) that snapshots the
+parent's context and sets up the child's resume. No iretq is involved: threads
+run in ring 0, so the child resumes through the normal `switch_task` restore
+path (popping GPRs + rflags, `ret` to the fork call site) with rax = 0.
+
+### ELF loader
+
+`proc_exec` needs minimal ELF64 parsing. `elf.h` is **not** available in the
+freestanding header set, so the loader defines its own minimal `Elf64_Ehdr`,
+`Elf64_Phdr`, and constants (`EI_CLASS`, `ELFMAG`, `ET_EXEC`, `EM_X86_64`,
+`PT_LOAD`, `PF_X/R/W`). For each `PT_LOAD`, map `align_down(p_vaddr)` for
+`pages = (align_up(p_vaddr + p_memsz) - align_down(p_vaddr)) / PAGE_SIZE` via
+`vmm_map_at`, then `memcpy` the file contents at `p_vaddr` and zero the BSS
+tail from `p_vaddr + p_filesz` to the mapped region end.
 
 ## Data Flow
 
@@ -172,12 +212,10 @@ mode with RAX = 0. The parent's fork returns normally with RAX = child pid.
 
 - `kernel/include/multitasking/proc.h` — new PCB, function declarations
 - `kernel/src/multitasking/proc.c` — all implementations
-- `kernel/include/multitasking/thread.h` — possibly helpers for killing all
-  threads of a proc
-- `kernel/src/multitasking/thread.c` — circular insertion fix
-- `kernel/src/multitasking/sched.c` — reap_dead frame-free fix
-- `kernel/src/multitasking/switch.asm` — fork child resume path
-- `kernel/src/main.c` (or wherever init lives) — test harness exercising the API
+- `kernel/include/multitasking/thread.h` — append `pthread_next` to TCB
+- `kernel/src/multitasking/thread.c` — circular insertion fix, per-process linkage
+- `kernel/src/multitasking/sched.c` — reap_dead frame-free fix + safe unlink
+- `kernel/src/multitasking/switch.asm` — `fork_call` entry
 
 ## Testing
 
