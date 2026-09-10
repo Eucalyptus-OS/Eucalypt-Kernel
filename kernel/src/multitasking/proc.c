@@ -124,6 +124,9 @@ struct pcb *proc_wait(struct pcb *p) {
     }
     for (;;) {
         struct pcb *c = p->children;
+        if (!c) {
+            return NULL;
+        }
         struct pcb *pc = NULL;
         while (c) {
             if (c->zombie) {
