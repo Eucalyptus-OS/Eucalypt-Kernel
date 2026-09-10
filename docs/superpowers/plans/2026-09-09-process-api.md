@@ -13,7 +13,7 @@
 - Kernel is freestanding: no libc, no unit test framework. Verify with `make -C kernel` (from repo root) and `make run-x86_64` (QEMU with `-device isa-debugcon` routing port 0xE9 to stdout).
 - Build flags include `-Wall -Wextra`; each task must leave the build with **no new warnings**.
 - Kernel convention: **no decorative comments**. Only add a comment where a safety invariant is non-obvious.
-- `struct tcb` and `struct pcb` are `__attribute__((packed))`. The TCB layout is mirrored in `switch.asm` via `struc tcb` (reads offsets 0–57). Appending new TCB fields at the **end** is safe; do not move existing fields.
+- `struct tcb` is `__attribute__((packed))`; `struct pcb` is **not** packed. The TCB layout is mirrored in `switch.asm` via `struc tcb` (reads offsets 0–57). Appending new TCB fields at the **end** is safe; do not move existing fields. The PCB embeds a `struct vmm_space` that vmm functions take by address (`&p->space`), and the PCB has no asm mirror, so packing it would trigger `-Waddress-of-packed-member`; pack only the tcb.
 - Never take the address of a packed struct member (triggers `-Waddress-of-packed-member`). Use previous-pointer walks + struct-member assignment instead.
 - Per-thread kernel stacks are 4096 bytes allocated at `thread_create` time via `frame_alloc()` + `phys_to_virt()`. TCB field `kstack_top` = top of that page. Any reaper must free the stack as a physical frame: `frame_free(virt_to_phys(t->kstack_top - 4096))`, never `kfree`.
 - `threads` list: threads live in ONE global **circular** linked list (`thread_list`, `tcb->next`) plus a per-process singly-linked list (`tcb->pthread_next`). `next` is owned by the scheduler; `pthread_next` is owned by the process.
@@ -290,7 +290,7 @@ struct pcb {
     int exit_code;
     uint8_t zombie;
     struct pcb *next;
-} __attribute__((packed));
+};
 
 struct pcb *proc_create(void *entry, void *stack);
 struct pcb *proc_find(uint64_t pid);
@@ -1000,6 +1000,7 @@ int proc_exec(void *elf, uintptr_t size, void *stack) {
     }
     struct pcb *p = cur->parent;
 
+    uint64_t old_regions = p->space.regions.count;
     void *entry = NULL;
     if (elf_load(p, elf, size, &entry)) {
         return -1;
@@ -1011,7 +1012,6 @@ int proc_exec(void *elf, uintptr_t size, void *stack) {
     }
     (void)nt;
 
-    uint64_t old_regions = p->space.regions.count;
     for (uint64_t i = 0; i < old_regions; i++) {
         struct vm_region *r = container_of(p->space.regions.head,
                                            struct vm_region, link);
@@ -1026,7 +1026,7 @@ int proc_exec(void *elf, uintptr_t size, void *stack) {
 }
 ```
 
-Note: new segments are mapped before the old regions are freed (so `elf_load` failure leaves the process untouched); old regions are the first `old_regions` entries of the region list because the new ones were appended after them.
+Note: `old_regions` is captured **before** `elf_load`; new segments are mapped before the old regions are freed, so `elf_load` failure leaves the process untouched and the loop frees only the pre-existing regions (the new ones are appended after them in the region list).
 
 - [ ] **Step 4: Build to verify it compiles**
 
