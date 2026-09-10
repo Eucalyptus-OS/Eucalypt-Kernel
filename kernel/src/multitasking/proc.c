@@ -431,6 +431,12 @@ int proc_exec(void *elf, uintptr_t size, void *stack) {
 
     struct tcb *nt = thread_create(entry, stack, p);
     if (!nt) {
+        uint64_t new_regions = p->space.regions.count - old_regions;
+        for (uint64_t k = 0; k < new_regions; k++) {
+            struct vm_region *r = container_of(p->space.regions.tail,
+                                               struct vm_region, link);
+            vmm_free_region(&p->space, r);
+        }
         return -1;
     }
     (void)nt;
