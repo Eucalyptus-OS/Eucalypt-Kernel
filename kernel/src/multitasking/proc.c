@@ -1,6 +1,7 @@
 #include <multitasking/proc.h>
 #include <multitasking/thread.h>
 #include <multitasking/sched.h>
+#include <multitasking/elf.h>
 #include <mm/paging.h>
 #include <mm/heap.h>
 #include <mm/frame.h>
@@ -348,4 +349,101 @@ int proc_fork_c(void *frame, uint64_t resume_rip) {
     }
 
     return (int)child->pid;
+}
+
+static int elf_load(struct pcb *p, void *elf, uintptr_t size, void **entry) {
+    struct elf64_hdr *h = (struct elf64_hdr *)elf;
+    if (size < sizeof(struct elf64_hdr)) {
+        return -1;
+    }
+    if (h->e_ident[0] != 0x7F || h->e_ident[1] != 'E' ||
+        h->e_ident[2] != 'L' || h->e_ident[3] != 'F') {
+        return -1;
+    }
+    if (h->e_ident[4] != ELFCLASS64 || h->e_type != ET_EXEC) {
+        return -1;
+    }
+    if ((uint64_t)h->e_phoff + (uint64_t)h->e_phnum * h->e_phentsize > size) {
+        return -1;
+    }
+
+    struct vm_region *mapped[64];
+    int nmap = 0;
+
+    for (uint64_t i = 0; i < h->e_phnum; i++) {
+        struct elf64_phdr *ph = (struct elf64_phdr *)((uint8_t *)elf + h->e_phoff + i * h->e_phentsize);
+        if (ph->p_type != PT_LOAD) {
+            continue;
+        }
+        if (nmap >= 64 || (uint64_t)ph->p_offset + ph->p_filesz > size) {
+            goto fail;
+        }
+
+        uint64_t base = ph->p_vaddr & ~(PAGE_SIZE - 1);
+        uint64_t end_va = ph->p_vaddr + ph->p_memsz;
+        uint64_t end_aligned = (end_va + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        int pages = (end_aligned - base) / PAGE_SIZE;
+
+        uint64_t flags = 0;
+        if (ph->p_flags & PF_W) {
+            flags |= PAGE_WRITABLE;
+        }
+        if (!(ph->p_flags & PF_X)) {
+            flags |= PAGE_NXE;
+        }
+
+        if (vmm_find_region(&p->space, base)) {
+            continue;
+        }
+        if (!vmm_map_at(&p->space, (void *)base, flags, pages)) {
+            goto fail;
+        }
+        mapped[nmap++] = vmm_find_region(&p->space, base);
+        memcpy((void *)ph->p_vaddr, (uint8_t *)elf + ph->p_offset, ph->p_filesz);
+        if (ph->p_memsz > ph->p_filesz) {
+            memset((void *)((uint8_t *)ph->p_vaddr + ph->p_filesz), 0,
+                   ph->p_memsz - ph->p_filesz);
+        }
+    }
+
+    *entry = (void *)h->e_entry;
+    return 0;
+
+fail:
+    for (int k = 0; k < nmap; k++) {
+        vmm_free_region(&p->space, mapped[k]);
+    }
+    return -1;
+}
+
+int proc_exec(void *elf, uintptr_t size, void *stack) {
+    struct tcb *cur = get_current_thread();
+    if (!cur || !cur->parent) {
+        return -1;
+    }
+    struct pcb *p = cur->parent;
+
+    uint64_t old_regions = p->space.regions.count;
+    void *entry = NULL;
+    if (elf_load(p, elf, size, &entry)) {
+        return -1;
+    }
+
+    struct tcb *nt = thread_create(entry, stack, p);
+    if (!nt) {
+        return -1;
+    }
+    (void)nt;
+
+    for (uint64_t i = 0; i < old_regions; i++) {
+        struct vm_region *r = container_of(p->space.regions.head,
+                                           struct vm_region, link);
+        vmm_free_region(&p->space, r);
+    }
+
+    cur->state = Dead;
+    schedule();
+    for (;;) {
+        asm volatile ("hlt");
+    }
 }
