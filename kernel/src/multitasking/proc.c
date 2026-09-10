@@ -3,7 +3,10 @@
 #include <multitasking/sched.h>
 #include <mm/paging.h>
 #include <mm/heap.h>
+#include <mm/frame.h>
+#include <mm/hhdm.h>
 #include <mm/vmm.h>
+#include <lib/list.h>
 #include <memory.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -214,4 +217,135 @@ void proc_destroy(struct pcb *p) {
     }
     p->zombie = 1;
     proc_reap(p);
+}
+
+#define STACK_SIZE 4096
+#define PAGE_PHYS_MASK 0x000FFFFFFFFFF000ULL
+
+extern int fork_call(void);
+
+static uintptr_t walk_phys(uint64_t *pml4, void *vaddr) {
+    uint64_t idx = ((uint64_t)vaddr >> 39) & 0x1FF;
+    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[idx] & PAGE_PHYS_MASK);
+    idx = ((uint64_t)vaddr >> 30) & 0x1FF;
+    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[idx] & PAGE_PHYS_MASK);
+    idx = ((uint64_t)vaddr >> 21) & 0x1FF;
+    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[idx] & PAGE_PHYS_MASK);
+    idx = ((uint64_t)vaddr >> 12) & 0x1FF;
+    if (!(pml1[idx] & PAGE_PRESENT)) {
+        return 0;
+    }
+    return pml1[idx] & PAGE_PHYS_MASK;
+}
+
+int proc_fork(void) {
+    return fork_call();
+}
+
+int proc_fork_c(void *frame, uint64_t resume_rip) {
+    (void)resume_rip;
+    struct tcb *cur = get_current_thread();
+    if (!cur || !cur->parent) {
+        return -1;
+    }
+    struct pcb *parent = cur->parent;
+
+    uint64_t frame_addr = (uint64_t)frame;
+    uint64_t stack_base = (uint64_t)cur->kstack_top - STACK_SIZE;
+    if (frame_addr < stack_base || frame_addr >= (uint64_t)cur->kstack_top) {
+        return -1;
+    }
+
+    struct pcb *child = (struct pcb *)kmalloc(sizeof(struct pcb));
+    if (!child) {
+        return -1;
+    }
+    memset(child, 0, sizeof(struct pcb));
+    if (vmm_create_space_into(&child->space)) {
+        kfree(child);
+        return -1;
+    }
+    child->pid = ++next_pid;
+
+    uint64_t *cpml4 = phys_to_virt((uintptr_t)child->space.pml4);
+    uint64_t *ppml4 = phys_to_virt((uintptr_t)parent->space.pml4);
+    list_foreach(&parent->space.regions, n) {
+        struct vm_region *r = container_of(n, struct vm_region, link);
+        int npages = (r->end - r->base) / PAGE_SIZE;
+        if (!vmm_map_at(&child->space, (void *)r->base, r->flags, npages)) {
+            vmm_destroy_space(&child->space);
+            kfree(child);
+            return -1;
+        }
+        for (int i = 0; i < npages; i++) {
+            void *va = (void *)(r->base + (uint64_t)i * PAGE_SIZE);
+            uintptr_t cp = walk_phys(cpml4, va);
+            uintptr_t pp = walk_phys(ppml4, va);
+            if (cp && pp) {
+                memcpy(phys_to_virt(cp), phys_to_virt(pp), PAGE_SIZE);
+            }
+        }
+    }
+
+    uint64_t slice_len = (uint64_t)cur->kstack_top - frame_addr;
+    uint64_t child_off = frame_addr - stack_base;
+
+    uintptr_t child_kstack_phys = frame_alloc();
+    if (!child_kstack_phys) {
+        vmm_destroy_space(&child->space);
+        kfree(child);
+        return -1;
+    }
+    uint8_t *child_kstack = phys_to_virt(child_kstack_phys);
+    memcpy(child_kstack + child_off, (void *)frame_addr, slice_len);
+
+    uint64_t *child_frame = (uint64_t *)(child_kstack + child_off);
+    child_frame[14] = 0;
+
+    struct tcb *tc = (struct tcb *)kmalloc(sizeof(struct tcb));
+    if (!tc) {
+        frame_free(child_kstack_phys);
+        vmm_destroy_space(&child->space);
+        kfree(child);
+        return -1;
+    }
+    memset(tc, 0, sizeof(struct tcb));
+    tc->tid = thread_count++;
+    tc->ksp = child_frame;
+    tc->kstack_top = child_kstack + STACK_SIZE;
+    tc->tsp = cur->tsp;
+    tc->addr_space = (uintptr_t)child->space.pml4;
+    tc->state = Ready;
+    tc->parent = child;
+
+    if (thread_list == NULL) {
+        thread_list = tc;
+        tc->next = tc;
+    } else {
+        struct tcb *tail = thread_list;
+        while (tail->next != thread_list) {
+            tail = tail->next;
+        }
+        tail->next = tc;
+        tc->next = thread_list;
+    }
+
+    child->threads = tc;
+    child->t_count = 1;
+
+    child->parent = parent;
+    child->sibling_next = parent->children;
+    parent->children = child;
+
+    if (!proc_list) {
+        proc_list = child;
+    } else {
+        struct pcb *pl = proc_list;
+        while (pl->next) {
+            pl = pl->next;
+        }
+        pl->next = child;
+    }
+
+    return (int)child->pid;
 }
