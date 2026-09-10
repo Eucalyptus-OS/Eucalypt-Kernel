@@ -113,3 +113,105 @@ void proc_exit(int code) {
         asm volatile ("hlt");
     }
 }
+
+struct pcb *proc_wait(struct pcb *p) {
+    if (!p) {
+        return NULL;
+    }
+    for (;;) {
+        struct pcb *c = p->children;
+        struct pcb *pc = NULL;
+        while (c) {
+            if (c->zombie) {
+                if (pc) {
+                    pc->sibling_next = c->sibling_next;
+                } else {
+                    p->children = c->sibling_next;
+                }
+                c->sibling_next = NULL;
+                c->parent = NULL;
+                return c;
+            }
+            pc = c;
+            c = c->sibling_next;
+        }
+        p->waiter = get_current_thread();
+        block_current();
+        p->waiter = NULL;
+    }
+}
+
+struct pcb *proc_kill(uint64_t pid) {
+    struct tcb *cur = get_current_thread();
+    struct pcb *caller = cur ? cur->parent : NULL;
+    if (!caller) {
+        return NULL;
+    }
+    struct pcb *c = caller->children;
+    struct pcb *pc = NULL;
+    while (c) {
+        if (c->pid == pid) {
+            struct tcb *t = c->threads;
+            while (t) {
+                struct tcb *nt = t->pthread_next;
+                t->state = Dead;
+                t->parent = NULL;
+                t = nt;
+            }
+            c->exit_code = 1;
+            c->zombie = 1;
+            if (pc) {
+                pc->sibling_next = c->sibling_next;
+            } else {
+                caller->children = c->sibling_next;
+            }
+            c->sibling_next = NULL;
+            c->parent = NULL;
+            return c;
+        }
+        pc = c;
+        c = c->sibling_next;
+    }
+    return NULL;
+}
+
+void proc_reap(struct pcb *z) {
+    if (!z) {
+        return;
+    }
+    struct tcb *cur = get_current_thread();
+    if (cur && cur->parent == z) {
+        return;
+    }
+
+    if (proc_list == z) {
+        proc_list = z->next;
+    } else {
+        struct pcb *p = proc_list;
+        while (p && p->next != z) {
+            p = p->next;
+        }
+        if (p) {
+            p->next = z->next;
+        }
+    }
+
+    z->next = NULL;
+    vmm_destroy_space(&z->space);
+    kfree(z);
+}
+
+void proc_destroy(struct pcb *p) {
+    if (!p) {
+        return;
+    }
+    struct tcb *t = p->threads;
+    while (t) {
+        struct tcb *nt = t->pthread_next;
+        t->state = Dead;
+        t->parent = NULL;
+        t = nt;
+    }
+    p->zombie = 1;
+    proc_reap(p);
+}
