@@ -82,3 +82,34 @@ void proc_remove_thread(struct pcb *p, struct tcb *t) {
         p->t_count--;
     }
 }
+
+void proc_exit(int code) {
+    struct tcb *cur = get_current_thread();
+    struct pcb *p = cur ? cur->parent : NULL;
+    if (!p) {
+        for (;;) {
+            asm volatile ("cli; hlt");
+        }
+    }
+
+    p->exit_code = code;
+    struct tcb *t = p->threads;
+    while (t) {
+        struct tcb *nt = t->pthread_next;
+        // parent is cleared so the reaper never touches the soon-freed PCB
+        t->state = Dead;
+        t->parent = NULL;
+        t = nt;
+    }
+    p->zombie = 1;
+
+    if (p->parent && p->parent->waiter) {
+        unblock(p->parent->waiter);
+        p->parent->waiter = NULL;
+    }
+
+    schedule();
+    for (;;) {
+        asm volatile ("hlt");
+    }
+}
