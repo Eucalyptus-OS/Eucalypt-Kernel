@@ -1,8 +1,13 @@
 #include <multitasking/sched.h>
 #include <multitasking/thread.h>
+#include <multitasking/proc.h>
+#include <mm/heap.h>
+#include <mm/frame.h>
+#include <mm/hhdm.h>
 #include <logging/print.h>
 #include <sync/spinlock.h>
 #include <stddef.h>
+#include <stdint.h>
 
 extern void switch_task(struct tcb *t);
 
@@ -11,6 +16,31 @@ spinlock_t sched_lock = 0;
 struct tcb *current_tcb = NULL;
 
 volatile uint32_t preempt_depth = 0;
+
+#define THREAD_STACK_SIZE 4096
+
+static void reap_thread(struct tcb *t) {
+    if (t->parent) {
+        struct tcb *pc = NULL;
+        struct tcb *pt = t->parent->threads;
+        while (pt && pt != t) {
+            pc = pt;
+            pt = pt->pthread_next;
+        }
+        if (pt == t) {
+            if (pc) {
+                pc->pthread_next = t->pthread_next;
+            } else {
+                t->parent->threads = t->pthread_next;
+            }
+            if (t->parent->t_count) {
+                t->parent->t_count--;
+            }
+        }
+    }
+    frame_free(virt_to_phys(t->kstack_top - THREAD_STACK_SIZE));
+    kfree(t);
+}
 
 void schedule() {
     if (__atomic_load_n(&preempt_depth, __ATOMIC_RELAXED)) {
@@ -26,26 +56,52 @@ void schedule() {
 
     struct tcb *prev = current_tcb;
     struct tcb *next = prev ? prev->next : thread_list;
+    struct tcb *ready = NULL;
 
-    for (uint64_t i = 0; i < thread_count; i++) {
+    // Bounded by the pre-reap count: strips Dead nodes while hunting for a
+    // Ready one. Removals only shrink the circular list, so bounds iterations
+    // visit every distinct node. The scan never touches current_tcb itself
+    // (the `next != current_tcb` guard), so an exiting thread's stack is
+    // always safe until it has actually switched away.
+    uint64_t bounds = thread_count;
+    for (uint64_t i = 0; i < bounds && ready == NULL && next != NULL; i++) {
+        if (next->state == Dead && next != current_tcb) {
+            struct tcb *victim = next;
+            if (prev) {
+                prev->next = next->next;
+            } else {
+                thread_list = next->next;
+            }
+            if (next->next == next) {
+                thread_list = NULL;
+                next = NULL;
+            } else {
+                next = next->next;
+            }
+            thread_count--;
+            reap_thread(victim);
+            continue;
+        }
         if (next->state == Ready) {
+            ready = next;
             break;
         }
+        prev = next;
         next = next->next;
     }
 
-    if (next->state != Ready) {
+    if (!ready) {
         spinlock_release_irqrestore(&sched_lock, flags);
         return;
     }
 
-    next->state = Running;
+    ready->state = Running;
     if (prev && prev->state == Running) {
         prev->state = Ready;
     }
 
     spinlock_release(&sched_lock);
-    switch_task(next);
+    switch_task(ready);
     restore_irq(flags);
 }
 
