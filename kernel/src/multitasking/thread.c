@@ -1,8 +1,10 @@
 #include <multitasking/thread.h>
+#include <multitasking/proc.h>
 #include <mm/frame.h>
 #include <mm/heap.h>
 #include <mm/hhdm.h>
 #include <mm/paging.h>
+#include <memory.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,7 +16,7 @@ struct tcb *thread_list = NULL;
 
 uint64_t thread_count = 0;
 
-struct tcb *thread_create(void *entry, void *ustack) {
+struct tcb *thread_create(void *entry, void *ustack, struct pcb *p) {
     if (!entry) {
         return NULL;
     }
@@ -23,6 +25,7 @@ struct tcb *thread_create(void *entry, void *ustack) {
     if (!t) {
         return NULL;
     }
+    memset(t, 0, sizeof(struct tcb));
 
     uintptr_t kstack_phys = frame_alloc();
     if (!kstack_phys) {
@@ -73,13 +76,32 @@ struct tcb *thread_create(void *entry, void *ustack) {
     t->kstack_top = kstack + STACK_SIZE;
     t->tsp = ustack;
     t->state = Ready;
-    t->addr_space = create_pml4();
+    t->addr_space = p->cr3;
+    t->parent = p;
+
+    if (p) {
+        if (!p->threads) {
+            p->threads = t;
+        } else {
+            struct tcb *pt = p->threads;
+            while (pt->pthread_next) {
+                pt = pt->pthread_next;
+            }
+            pt->pthread_next = t;
+        }
+        p->t_count++;
+    }
+
     if (thread_list == NULL) {
         thread_list = t;
         t->next = t;
     } else {
-        t->next = thread_list->next;
-        thread_list->next = t;
+        struct tcb *tail = thread_list;
+        while (tail->next != thread_list) {
+            tail = tail->next;
+        }
+        tail->next = t;
+        t->next = thread_list;
     }
     return t;
 }

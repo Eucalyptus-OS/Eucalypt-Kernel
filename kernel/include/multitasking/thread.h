@@ -8,6 +8,7 @@ typedef enum {
     Blocked,
     Exited,
     Sleeping,
+    Dead,
 } state_t;
 
 // Linked list of threads.
@@ -18,12 +19,14 @@ struct tcb {
     void *tsp;
     uintptr_t addr_space;
     struct tcb *next;
+    struct pcb *parent;
     uint8_t state;
     uint64_t wake_tick;
     uint8_t timed;
+    struct tcb *pthread_next;
 } __attribute__((packed));
 
 extern struct tcb *thread_list;
 extern uint64_t thread_count;
 
-struct tcb *thread_create(void *entry, void *ustack);
+struct tcb *thread_create(void *entry, void *ustack, struct pcb *p);
