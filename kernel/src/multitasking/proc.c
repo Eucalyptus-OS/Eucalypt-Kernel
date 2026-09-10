@@ -1,7 +1,7 @@
 #include <multitasking/proc.h>
 #include <multitasking/thread.h>
 #include <multitasking/sched.h>
-#include <multitasking/elf.h>
+#include <drivers/elf.h>
 #include <mm/paging.h>
 #include <mm/heap.h>
 #include <mm/frame.h>

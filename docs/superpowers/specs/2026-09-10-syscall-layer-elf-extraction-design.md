@@ -19,10 +19,10 @@ ABI. No user-mode trap/entry path exists yet, and none is added here.
 
 | File | Change | Role |
 |------|--------|------|
-| `kernel/include/syscalls/sys.h` | new | `SYS_*` enum, `sys_*` + `syscall_dispatch` declarations |
-| `kernel/src/syscalls/sys.c` | new | dispatch table + 5 ABI wrappers |
-| `kernel/src/multitasking/elf.c` | new | `elf_load`, `elf_fill_segment` |
-| `kernel/include/multitasking/elf.h` | modify | add declarations for the two moved functions |
+| `kernel/include/syscalls.h` | new | `SYS_*` enum, `sys_*` + `syscall_dispatch` declarations |
+| `kernel/src/syscalls.c` | new | dispatch table + 5 ABI wrappers |
+| `kernel/src/drivers/elf.c` | new | `elf_load`, `elf_fill_segment` |
+| `kernel/include/drivers/elf.h` | modify | add declarations for the two moved functions |
 | `kernel/src/multitasking/proc.c` | modify | delete the moved functions; call `vmm_walk_phys` |
 | `kernel/src/mm/vmm.c` | modify | receive promoted `vmm_walk_phys` |
 | `kernel/include/mm/vmm.h` | modify | declare `vmm_walk_phys` |

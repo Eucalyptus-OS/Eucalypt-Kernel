@@ -1,4 +1,4 @@
-#include <syscalls/sys.h>
+#include <syscalls.h>
 #include <multitasking/proc.h>
 #include <multitasking/sched.h>
 #include <stddef.h>
