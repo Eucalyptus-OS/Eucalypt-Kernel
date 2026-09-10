@@ -103,7 +103,7 @@ plus `phys_to_virt`/`virt_to_phys`):
 - `int elf_load(struct pcb *p, void *elf, uintptr_t size, void **entry)` —
   ELF64 validation, PT_LOAD mapping via `vmm_map_at`, on-disk struct access,
   rollback of previously mapped segments on failure (`mapped[]`).
-- `void elf_fill_segment(struct pcb *p, struct elf64_phdr *ph)` — writes
+- `void elf_fill_segment(struct pcb *p, void *elf, struct elf64_phdr *ph)` — writes
   `p_filesz` bytes and zeroes the `p_memsz - p_filesz` BSS tail through the
   segment pages' physical frames (added in Task 8 as the fix for writing into
   an R+X mapping).
