@@ -76,7 +76,7 @@ struct tcb *thread_create(void *entry, void *ustack, struct pcb *p) {
     t->kstack_top = kstack + STACK_SIZE;
     t->tsp = ustack;
     t->state = Ready;
-    t->addr_space = p->cr3;
+    t->addr_space = (uintptr_t)p->space.pml4;
     t->parent = p;
 
     if (p) {
