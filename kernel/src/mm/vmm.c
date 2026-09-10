@@ -158,3 +158,17 @@ uint8_t vmm_init() {
     list_init(&kernel_space.regions);
     return 0;
 }
+
+uintptr_t vmm_walk_phys(uint64_t *pml4, void *vaddr) {
+    uint64_t idx = ((uint64_t)vaddr >> 39) & 0x1FF;
+    uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[idx] & PTE_PHYS_MASK);
+    idx = ((uint64_t)vaddr >> 30) & 0x1FF;
+    uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[idx] & PTE_PHYS_MASK);
+    idx = ((uint64_t)vaddr >> 21) & 0x1FF;
+    uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[idx] & PTE_PHYS_MASK);
+    idx = ((uint64_t)vaddr >> 12) & 0x1FF;
+    if (!(pml1[idx] & PAGE_PRESENT)) {
+        return 0;
+    }
+    return pml1[idx] & PTE_PHYS_MASK;
+}

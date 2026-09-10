@@ -35,6 +35,11 @@ void *vmm_map_at(struct vmm_space *space, void *vaddr, uint64_t flags, int pages
 struct vm_region *vmm_find_region(struct vmm_space *space, uint64_t base);
 void vmm_free_region(struct vmm_space *space, struct vm_region *region);
 
+// Resolve a virtual address to its physical frame through a PML4 (CR3-ready).
+// Returns 0 if the leaf entry is not present. Callers must ensure the
+// intermediate levels exist (e.g. pages mapped via vmm_map_at).
+uintptr_t vmm_walk_phys(uint64_t *pml4, void *vaddr);
+
 // Fresh space sharing the kernel's high half, initialized in place (PCBs
 // embed their space). Returns nonzero on failure; destroy frees all private
 // mappings and the low-half page tables. Never call these on kernel_space.

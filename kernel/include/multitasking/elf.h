@@ -37,3 +37,8 @@ struct elf64_phdr {
     uint64_t p_memsz;
     uint64_t p_align;
 } __attribute__((packed));
+
+struct pcb;
+
+int elf_load(struct pcb *p, void *elf, uintptr_t size, void **entry);
+void elf_fill_segment(struct pcb *p, void *elf, struct elf64_phdr *ph);
