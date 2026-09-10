@@ -351,6 +351,37 @@ int proc_fork_c(void *frame, uint64_t resume_rip) {
     return (int)child->pid;
 }
 
+static void elf_fill_segment(struct pcb *p, void *elf,
+                             struct elf64_phdr *ph) {
+    uint64_t *pml4 = phys_to_virt((uintptr_t)p->space.pml4);
+    uint64_t page_start = ph->p_vaddr & ~(PAGE_SIZE - 1);
+    uint64_t data_end = ph->p_vaddr + ph->p_filesz;
+    uint64_t seg_end = ph->p_vaddr + ph->p_memsz;
+
+    for (uint64_t va = page_start; va < seg_end; va += PAGE_SIZE) {
+        uintptr_t frame = walk_phys(pml4, (void *)va);
+        if (!frame) {
+            continue;
+        }
+        uint8_t *dst = phys_to_virt(frame);
+
+        uint64_t copy_start = va > ph->p_vaddr ? va : ph->p_vaddr;
+        if (copy_start < data_end) {
+            uint64_t copy_end = va + PAGE_SIZE < data_end ? va + PAGE_SIZE : data_end;
+            uint64_t off = copy_start - ph->p_vaddr;
+            memcpy(dst + (copy_start - va),
+                   (uint8_t *)elf + ph->p_offset + off,
+                   copy_end - copy_start);
+        }
+
+        uint64_t zero_start = va > data_end ? va : data_end;
+        if (zero_start < seg_end) {
+            uint64_t zero_end = va + PAGE_SIZE < seg_end ? va + PAGE_SIZE : seg_end;
+            memset(dst + (zero_start - va), 0, zero_end - zero_start);
+        }
+    }
+}
+
 static int elf_load(struct pcb *p, void *elf, uintptr_t size, void **entry) {
     struct elf64_hdr *h = (struct elf64_hdr *)elf;
     if (size < sizeof(struct elf64_hdr)) {
@@ -399,11 +430,7 @@ static int elf_load(struct pcb *p, void *elf, uintptr_t size, void **entry) {
             goto fail;
         }
         mapped[nmap++] = vmm_find_region(&p->space, base);
-        memcpy((void *)ph->p_vaddr, (uint8_t *)elf + ph->p_offset, ph->p_filesz);
-        if (ph->p_memsz > ph->p_filesz) {
-            memset((void *)((uint8_t *)ph->p_vaddr + ph->p_filesz), 0,
-                   ph->p_memsz - ph->p_filesz);
-        }
+        elf_fill_segment(p, elf, ph);
     }
 
     *entry = (void *)h->e_entry;
