@@ -40,6 +40,7 @@ static vfs_node_ops_t devfs_dir_ops = {
 
 static vfs_node_t *devfs_lookup(vfs_node_t *dir, const char *name);
 
+// Sector-backed read: bounce each partially-aligned range through a scratch frame
 static ssize_t blockdev_read(devfs_dev_t *dev, void *buf, size_t size, off_t offset) {
     devfs_block_t *blk = (devfs_block_t *)dev->priv;
     if (!blk || offset < 0) return -1;
@@ -59,6 +60,7 @@ static ssize_t blockdev_read(devfs_dev_t *dev, void *buf, size_t size, off_t off
         uint32_t take = DEV_BLOCK_SIZE - in_sector;
         if (take > size - done) take = (uint32_t)(size - done);
 
+        // One sector at a time through a kernel frame so unaligned requests work
         if (disk_reader(blk->drive_number, lba, 1, tmp) != 0) {
             frame_free(frame);
             return done ? (ssize_t)done : -1;
@@ -70,6 +72,7 @@ static ssize_t blockdev_read(devfs_dev_t *dev, void *buf, size_t size, off_t off
     return (ssize_t)done;
 }
 
+// Sector-backed write: read-modify-write any sector touched only partially
 static ssize_t blockdev_write(devfs_dev_t *dev, const void *buf, size_t size, off_t offset) {
     devfs_block_t *blk = (devfs_block_t *)dev->priv;
     if (!blk || offset < 0) return -1;
@@ -90,6 +93,7 @@ static ssize_t blockdev_write(devfs_dev_t *dev, const void *buf, size_t size, of
         if (take > size - done) take = (uint32_t)(size - done);
 
         if (in_sector || take != DEV_BLOCK_SIZE) {
+            // Partial sector: fetch the existing contents first, then merge the update in
             if (disk_reader(blk->drive_number, lba, 1, tmp) != 0) {
                 frame_free(frame);
                 return done ? (ssize_t)done : -1;
@@ -106,6 +110,7 @@ static ssize_t blockdev_write(devfs_dev_t *dev, const void *buf, size_t size, of
     return (ssize_t)done;
 }
 
+// VFS read dispatch: block devices take offsets, char devices read whole-buffer
 static ssize_t dev_node_read(vfs_node_t *node, void *buf, size_t size, off_t offset) {
     devfs_dev_t *dev = (devfs_dev_t *)node->priv;
     if (!dev) return -1;
@@ -114,6 +119,7 @@ static ssize_t dev_node_read(vfs_node_t *node, void *buf, size_t size, off_t off
     return dev->read(dev, buf, size);
 }
 
+// VFS write dispatch: block devices take offsets, char devices write whole-buffer
 static ssize_t dev_node_write(vfs_node_t *node, const void *buf, size_t size, off_t offset) {
     devfs_dev_t *dev = (devfs_dev_t *)node->priv;
     if (!dev) return -1;
@@ -132,6 +138,7 @@ static vfs_node_ops_t dev_node_ops = {
     .rmdir   = NULL,
 };
 
+// Lazily create and cache a dev node the first time /dev/<name> is looked up
 static vfs_node_t *devfs_lookup(vfs_node_t *dir, const char *name) {
     (void)dir;
     for (uint8_t i = 0; i < devfs_dev_count; i++) {
@@ -150,6 +157,7 @@ static vfs_node_t *devfs_lookup(vfs_node_t *dir, const char *name) {
     return NULL;
 }
 
+// Fill a dirent for the index-th registered device
 static int devfs_readdir(vfs_node_t *dir, uint32_t index, vfs_dirent_t *out) {
     (void)dir;
     if (index >= devfs_dev_count) return -1;
@@ -162,6 +170,7 @@ static int devfs_readdir(vfs_node_t *dir, uint32_t index, vfs_dirent_t *out) {
     return 0;
 }
 
+// /dev/null: reads give zero bytes, writes are discarded
 static ssize_t null_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev; (void)buf; (void)count;
     return 0;
@@ -169,9 +178,10 @@ static ssize_t null_read(devfs_dev_t *dev, void *buf, size_t count) {
 
 static ssize_t null_write(devfs_dev_t *dev, const void *buf, size_t count) {
     (void)dev; (void)buf;
-    return (ssize_t)count;
+    return (ssize_t)count;   // accept and drop everything
 }
 
+// /dev/zero: reads return zeros, writes are discarded
 static ssize_t zero_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev;
     memset(buf, 0, count);
@@ -180,9 +190,10 @@ static ssize_t zero_read(devfs_dev_t *dev, void *buf, size_t count) {
 
 static ssize_t zero_write(devfs_dev_t *dev, const void *buf, size_t count) {
     (void)dev; (void)buf;
-    return (ssize_t)count;
+    return (ssize_t)count;   // accept and drop everything
 }
 
+// /dev/tty: plumb reads/writes to the active terminal
 static ssize_t console_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev;
     return (ssize_t)tty_read(tty_get_active(), (uint8_t *)buf, (uint32_t)count);
@@ -193,6 +204,7 @@ static ssize_t console_write(devfs_dev_t *dev, const void *buf, size_t count) {
     return tty_write(tty_get_active(), (const uint8_t *)buf, count);
 }
 
+// /dev/stdin: reads from the console, writes are rejected
 static ssize_t stdin_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev;
     return console_read(dev, buf, count);
@@ -203,6 +215,7 @@ static ssize_t stdin_write(devfs_dev_t *dev, const void *buf, size_t count) {
     return -1;
 }
 
+// /dev/stdout: writes go to the console, reads are rejected
 static ssize_t stdout_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev; (void)buf; (void)count;
     return -1;
@@ -225,6 +238,7 @@ static ssize_t stderr_write(devfs_dev_t *dev, const void *buf, size_t count) {
 
 static fb_info_t g_fb;
 
+// /dev/fb0: expose the framebuffer as a bulk-accessible memory range
 static ssize_t fb_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev;
     if (count > g_fb.size) count = g_fb.size;
@@ -247,6 +261,7 @@ struct fb_info_user {
     uint32_t pad;
 };
 
+// fb0 ioctl: return framebuffer geometry to userspace under request 0x4600
 static int fb_ioctl(devfs_dev_t *dev, unsigned long req, void *arg) {
     (void)dev;
     if (req == 0x4600) {
@@ -263,6 +278,7 @@ static int fb_ioctl(devfs_dev_t *dev, unsigned long req, void *arg) {
     return -1;
 }
 
+// Add a character device to the devfs table and publish a /dev node for it
 int devfs_register(const char *name, ssize_t (*read)(devfs_dev_t *, void *, size_t),
                    ssize_t (*write)(devfs_dev_t *, const void *, size_t), void *priv) {
     if (devfs_dev_count >= DEVFS_MAX_DEVS) return -1;
@@ -289,6 +305,7 @@ int devfs_register(const char *name, ssize_t (*read)(devfs_dev_t *, void *, size
     return 0;
 }
 
+// Register a raw-disk device whose node size equals sector_count * 512
 int devfs_register_block(const char *name, devfs_block_t *blk) {
     if (devfs_register(name, NULL, NULL, blk) != 0) return -1;
 
@@ -301,6 +318,7 @@ int devfs_register_block(const char *name, devfs_block_t *blk) {
     return 0;
 }
 
+// Map a /dev/<name> (or bare <name>) path to its backing AHCI drive number
 int devfs_resolve_drive(const char *path, uint8_t *drive_number) {
     if (!path || !drive_number) return -1;
 
@@ -315,6 +333,7 @@ int devfs_resolve_drive(const char *path, uint8_t *drive_number) {
     return 0;
 }
 
+// Remove a device: drop its node and shift the table down over the hole
 int devfs_unregister(const char *name) {
     for (uint8_t i = 0; i < devfs_dev_count; i++) {
         if (strcmp(devfs_devs[i].name, name) == 0) {
@@ -332,6 +351,7 @@ int devfs_unregister(const char *name) {
     return -1;
 }
 
+// Linear scan for a registered device by name
 devfs_dev_t *devfs_get(const char *name) {
     for (uint8_t i = 0; i < devfs_dev_count; i++) {
         if (strcmp(devfs_devs[i].name, name) == 0)
@@ -340,6 +360,7 @@ devfs_dev_t *devfs_get(const char *name) {
     return NULL;
 }
 
+// Create /dev, register built-in char devices, the framebuffer, and one sdX per disk
 void devfs_init() {
     if (devfs_ready) return;
 
@@ -380,6 +401,7 @@ void devfs_init() {
         drive_t *d = drive_map_get(i);
         if (!d || d->sector_count == 0) continue;
 
+        // Name each disk /dev/sd<letter>, one letter per drive index
         char name[8] = "sda";
         name[2] = (char)('a' + i);
         g_block_devs[i].drive_number = i;

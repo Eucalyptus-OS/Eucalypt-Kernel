@@ -11,6 +11,7 @@
 #include <tty.h>
 #include <idt.h>
 
+// One IDT entry per possible interrupt vector (0-255).
 #define IDT_MAX_DESCRIPTORS 256
 
 extern void* isr_stub_table[];
@@ -21,6 +22,7 @@ extern void int128_handler();
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 
+// AMD64 IDT gate: the 64-bit handler address split into three fields.
 typedef struct {
     uint16_t    isr_low;
     uint16_t    kernel_cs;
@@ -31,18 +33,22 @@ typedef struct {
     uint32_t    reserved;
 } __attribute__((packed)) idt_entry_t;
 
+// Operand for the LIDT instruction.
 typedef struct {
     uint16_t    limit;
     uint64_t    base;
 } __attribute__((packed)) idtr_t;
 
+// The IDT itself must be 16-byte aligned for LIDT.
 __attribute__((aligned(0x10)))
 static idt_entry_t idt[IDT_MAX_DESCRIPTORS];
 
 static idtr_t idtr;
 
+// Tracks which vectors currently have a handler installed.
 static bool vectors[IDT_MAX_DESCRIPTORS];
 
+// Human-readable names for CPU exceptions 0-31, used in panic dumps.
 static const char* exception_names[32] = {
     "Divide by Zero", "Debug", "NMI", "Breakpoint", "Overflow",
     "Bound Range Exceeded", "Invalid Opcode", "Device Not Available",
@@ -56,10 +62,12 @@ static const char* exception_names[32] = {
     "Security Exception", "Reserved"
 };
 
+// Install ISR into the given vector and mark that slot as present.
 void idt_set_descriptor(uint8_t vector, void* isr, uint8_t flags) {
     idt_entry_t* descriptor = &idt[vector];
 
     descriptor->isr_low        = (uint64_t)isr & 0xFFFF;
+    // 0x08 = ring-0 kernel code segment (GDT entry 1).
     descriptor->kernel_cs      = 0x08;
     descriptor->ist            = 0;
     descriptor->attributes     = flags;
@@ -71,6 +79,7 @@ void idt_set_descriptor(uint8_t vector, void* isr, uint8_t flags) {
     print("IDT entry added\nVector: %d\nISR: %X\nFlags: %X", vector, isr, flags);
 }
 
+// Load the IDT: 32 CPU exceptions plus hardware IRQs and int 0x80.
 void idt_init() {
     idtr.base = (uintptr_t)&idt[0];
     idtr.limit = (uint16_t)(sizeof(idt_entry_t) * IDT_MAX_DESCRIPTORS - 1);
@@ -79,6 +88,7 @@ void idt_init() {
         idt_set_descriptor(vector, isr_stub_table[vector], 0x8E);
     }
 
+    // 0x8E = ring-0 interrupt gate; 0xEE = ring-3 accessible (int 0x80).
     idt_set_descriptor(0x20, apic_stub, 0x8E);
     idt_set_descriptor(0x21, ahci_stub, 0x8E);
     idt_set_descriptor(0x22, keyboard_stub, 0x8E);
@@ -88,7 +98,9 @@ void idt_init() {
     print("IDT loaded");
 }
 
+// Handle a CPU exception: signal user faults, panic on kernel-mode faults.
 void exception_handler(uint64_t vector, uint64_t error_code, user_context_t *ctx) {
+    // Fault from ring 3: map the vector to a Unix-style signal.
     if (ctx && (ctx->cs & 3) == 3) {
         int sig = 0;
         switch (vector) {
@@ -149,6 +161,7 @@ void exception_handler(uint64_t vector, uint64_t error_code, user_context_t *ctx
                       (unsigned long)ctx->r13, (unsigned long)ctx->r14,
                       (unsigned long)ctx->r15);
             }
+            // Queue the signal if it is blocked; otherwise deliver it immediately.
             if (p) {
                 sigset_t bit = (sigset_t)1 << (sig - 1);
                 if (p->sigstate.blocked & bit) {
@@ -162,6 +175,7 @@ void exception_handler(uint64_t vector, uint64_t error_code, user_context_t *ctx
         return;
     }
 
+    // Kernel-side fault: capture registers and page-walk state for the dump.
     uint64_t cr2, cr3, cr4, rflags, cs, ss;
     uint64_t rip = ctx ? ctx->rip : 0;
 
@@ -189,6 +203,7 @@ void exception_handler(uint64_t vector, uint64_t error_code, user_context_t *ctx
     print("RFLAGS    : 0x%016lx\n", (unsigned long)rflags);
     print("CS        : 0x%04lx\n",  (unsigned long)cs);
 
+    // Manually walk the 4-level page tables to show which entry is bad.
     {
         uint64_t pml4i = (cr2 >> 39) & 0x1FF;
         uint64_t pdpti = (cr2 >> 30) & 0x1FF;
@@ -229,6 +244,7 @@ void exception_handler(uint64_t vector, uint64_t error_code, user_context_t *ctx
     print("----------------------------------------------------------------\n");
     print("System halted.\n");
     print("================================================================\n");
+    // Terminal panic: stop the machine.
     for (;;) {
         asm volatile ("hlt");
     }

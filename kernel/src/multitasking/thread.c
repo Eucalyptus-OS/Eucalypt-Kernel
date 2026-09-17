@@ -9,6 +9,7 @@
 #include <multitasking/proc.h>
 #include <multitasking/thread.h>
 
+// Global circular list of all live threads, with the running total.
 struct tcb *thread_list = NULL;
 
 uint64_t thread_count = 0;
@@ -17,6 +18,7 @@ uint64_t thread_count = 0;
 
 static uint64_t next_kstack_vaddr = KSTACK_REGION_BASE;
 
+// Carve the next kernel stack out of the reserved stack region.
 void *alloc_kernel_stack() {
     void *base = vmm_map_region((uint64_t *)kernel_pml4,
                                 (void *)next_kstack_vaddr,
@@ -30,6 +32,7 @@ void *alloc_kernel_stack() {
     return base;
 }
 
+// Hand a mapped kernel stack back to the virtual memory manager.
 void free_kernel_stack(void *base) {
     if (!base) {
         return;
@@ -41,6 +44,7 @@ void free_kernel_stack(void *base) {
     }
 }
 
+// Create a thread for process p, with its own kernel stack and FPU area.
 struct tcb *create_thread(void *entry, struct pcb *p, void *ustack) {
     if (!p || !ustack) {
         return NULL;
@@ -57,18 +61,23 @@ struct tcb *create_thread(void *entry, struct pcb *p, void *ustack) {
         return NULL;
     }
 
+    // Every thread owns a private FXSAVE/FXRSTOR area for its FPU state.
     uint8_t *fpu = (uint8_t *)kmalloc(512);
     if (!fpu) {
         free_kernel_stack(kstack);
         kfree(t);
         return NULL;
     }
+    // Prime the area with the current FPU state so the new thread starts cleanly.
     asm volatile ("fxsave %0" : : "m"(*(uint8_t (*)[512])fpu) : "memory");
 
     uintptr_t *sp = (uintptr_t *)(kstack + KSTACK_SIZE);
 
+    // Build the saved frame so the first switch_task() returns into entry.
     *--sp = (uintptr_t)entry;
+    // Saved EFLAGS: 0x202 has the IF bit set (interrupts enabled).
     *--sp = 0x202;
+    // Empty slots for the registers the context switch will restore.
     *--sp = 0;
     *--sp = 0;
     *--sp = 0;
@@ -105,6 +114,7 @@ struct tcb *create_thread(void *entry, struct pcb *p, void *ustack) {
         thread_list->next = t;
     }
 
+    // Link the thread into the owner process's own circular thread list.
     if (p->t == NULL) {
         p->t = t;
         t->proc_next = t;
@@ -118,6 +128,7 @@ struct tcb *create_thread(void *entry, struct pcb *p, void *ustack) {
     return t;
 }
 
+// Unlink a finished thread from both lists and free its resources.
 void destroy_thread(struct tcb *t) {
     if (!t) {
         return;
@@ -125,6 +136,7 @@ void destroy_thread(struct tcb *t) {
 
     struct pcb *p = t->parent;
 
+    // Unlink t from the global circular thread list.
     if (thread_list->next == thread_list) {
         thread_list = NULL;
     } else {
@@ -138,6 +150,7 @@ void destroy_thread(struct tcb *t) {
         }
     }
 
+    // Unlink t from the owner process's thread list too.
     if (p->t->proc_next == p->t) {
         p->t = NULL;
     } else {

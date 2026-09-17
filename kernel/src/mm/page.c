@@ -30,32 +30,36 @@ extern volatile struct limine_framebuffer_request framebuffer_request;
 
 #define GET_PAGE_OFFSET(addr) ((addr) & 0xFFF)
 
-#define PAGE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+#define PAGE_ADDR_MASK 0x000FFFFFFFFFF000ULL // masks off the flag bits to isolate the physical frame address
 
-uint64_t *kernel_pml4 = NULL;
+uint64_t *kernel_pml4 = NULL; // physical address of the kernel's root PML4, shared by all address spaces
 
 extern char __text_start[], __text_end[];
 extern char __rodata_start[], __rodata_end[];
 extern char __data_start[], __data_end[];
 
-typedef uint64_t page_entry_t;
+typedef uint64_t page_entry_t; // 64-bit entry: [51:12] frame address, [11:0] flags, [63] NX
 
+// Read the current PML4 physical address out of CR3
 static inline uintptr_t get_current_cr3() {
     uintptr_t cr3 = 0;
     asm volatile ("mov %%cr3, %0" : "=r"(cr3) :: "memory");
     return cr3;
 }
 
+// TLB-flush every 4 KiB page in [addr, addr+len) using invlpg
 static void invalidate_page(void *addr, uint64_t len) {
     for (uint64_t i = 0; i < len; i += 0x1000) {
         asm volatile("invlpg (%0)" : : "r"(addr + i) : "memory");
     }
 }
 
+// Switch address spaces by loading a new PML4 physical address into CR3
 void reload_cr3(uint64_t pml_to_load) {
     asm volatile("mov %0, %%cr3" : : "r"(pml_to_load) : "memory");
 }
 
+// Extract the table index for a paging level (1=PT, 2=PD, 3=PDPT, 4=PML4) from a virtual address
 uint64_t get_pml(uint8_t level, void *addr) {
     if (level > 4 || level < 1) {
         return 0;
@@ -81,6 +85,7 @@ uint64_t get_pml(uint8_t level, void *addr) {
     return 0;
 }
 
+// Allocate a fresh PML4 that shares the kernel's upper-half entries with the current tables
 uintptr_t paging_create_pml4() {
     uintptr_t pml4_phys = frame_alloc();
     uint64_t *l_kernel = phys_to_virt((uintptr_t)kernel_pml4);
@@ -93,13 +98,14 @@ uintptr_t paging_create_pml4() {
 
     memset(pml4_virt, 0, PAGE_SIZE);
 
-    for (int i = 256; i < 512; i++) {
+    for (int i = 256; i < 512; i++) { // i >= 256 is the higher half, identical across all address spaces
         pml4_virt[i] = l_kernel[i];
     }
 
     return pml4_phys;
 }
 
+// Deep-copy src_table into dst_table, cloning every present (non-huge-page) child table
 static uint8_t clone_address_space_table(uint64_t *src_table, uint64_t *dst_table, uint64_t level) {
     for (int i = 0; i < 512; i++) {
         uint64_t entry = src_table[i];
@@ -107,7 +113,7 @@ static uint8_t clone_address_space_table(uint64_t *src_table, uint64_t *dst_tabl
             continue;
         }
 
-        if (level == 1) {
+        if (level == 1) { // leaf: copy the frame contents so user pages become independent copies
             uintptr_t new_frame = frame_alloc();
             if (!new_frame) {
                 return 1;
@@ -117,7 +123,7 @@ static uint8_t clone_address_space_table(uint64_t *src_table, uint64_t *dst_tabl
             memcpy(phys_to_virt(new_frame), phys_to_virt(src_frame), PAGE_SIZE);
             dst_table[i] = (new_frame & PAGE_ADDR_MASK) | (entry & ~PAGE_ADDR_MASK);
         } else {
-            if (entry & (1ULL << 7)) {
+            if (entry & (1ULL << 7)) { // bit 7 (PS) marks a huge page; only 4 KiB entries are cloned
                 return 1;
             }
 
@@ -140,6 +146,7 @@ static uint8_t clone_address_space_table(uint64_t *src_table, uint64_t *dst_tabl
     return 0;
 }
 
+// Deep-copy the current user address space into a fresh PML4 (for fork)
 uintptr_t fork_address_space() {
     uintptr_t new_pml4_phys = frame_alloc();
     if (!new_pml4_phys) {
@@ -152,7 +159,7 @@ uintptr_t fork_address_space() {
 
     memset(dst_pml4, 0, PAGE_SIZE);
 
-    for (int i = 256; i < 512; i++) {
+    for (int i = 256; i < 512; i++) { // kernel half points at the shared kernel_pml4 entries
         dst_pml4[i] = kernel[i];
     }
 
@@ -161,7 +168,7 @@ uintptr_t fork_address_space() {
             continue;
         }
 
-        if (src_pml4[i] & (1ULL << 7)) {
+        if (src_pml4[i] & (1ULL << 7)) { // huge pages are not supported across forks
             frame_free(new_pml4_phys);
             return 0;
         }
@@ -186,6 +193,7 @@ uintptr_t fork_address_space() {
     return new_pml4_phys;
 }
 
+// Recursively free every leaf frame and child table reachable from `table`
 static void destroy_table(uint64_t *table, uint64_t level) {
     for (int i = 0; i < 512; i++) {
         uint64_t entry = table[i];
@@ -197,13 +205,14 @@ static void destroy_table(uint64_t *table, uint64_t level) {
 
         if (level == 1) {
             frame_free(frame);
-        } else if (!(entry & (1ULL << 7))) {
+        } else if (!(entry & (1ULL << 7))) { // skip huge-page leaves: no child table to descend into
             destroy_table(phys_to_virt(frame), level - 1);
             frame_free(frame);
         }
     }
 }
 
+// Tear down a user address space, leaving the shared kernel half untouched
 void paging_destroy_address_space(uintptr_t pml4_phys) {
     if (!pml4_phys) {
         return;
@@ -219,7 +228,7 @@ void paging_destroy_address_space(uintptr_t pml4_phys) {
 
         uintptr_t frame = entry & PAGE_ADDR_MASK;
 
-        if (!(entry & (1ULL << 7))) {
+        if (!(entry & (1ULL << 7))) { // only descend into non-huge-page (table) entries
             destroy_table(phys_to_virt(frame), 3);
             frame_free(frame);
         }
@@ -228,6 +237,7 @@ void paging_destroy_address_space(uintptr_t pml4_phys) {
     frame_free(pml4_phys);
 }
 
+// Map one 4 KiB virtual page to phys_addr in the given address space, creating missing tables along the way
 uint8_t paging_map_page(uint64_t *pml4_phys, void *virt_addr, uintptr_t phys_addr, uint64_t flags) {
     if (!pml4_phys) {
         return 1;
@@ -235,6 +245,7 @@ uint8_t paging_map_page(uint64_t *pml4_phys, void *virt_addr, uintptr_t phys_add
 
     uint64_t *pml4 = (uint64_t *)phys_to_virt((uintptr_t)pml4_phys);
     uint64_t pml4_index = get_pml(4, virt_addr);
+    // No PDPT entry yet: allocate a zeroed table and link it in
     if (!(pml4[pml4_index] & PAGE_PRESENT)) {
         uintptr_t new_table = frame_alloc();
         if (!new_table) {
@@ -246,6 +257,7 @@ uint8_t paging_map_page(uint64_t *pml4_phys, void *virt_addr, uintptr_t phys_add
 
     uint64_t *pml3 = (uint64_t *)phys_to_virt(pml4[pml4_index] & PAGE_ADDR_MASK);
     uint64_t pml3_index = get_pml(3, virt_addr);
+    // No PD entry yet: allocate a zeroed table and link it in
     if (!(pml3[pml3_index] & PAGE_PRESENT)) {
         uintptr_t new_table = frame_alloc();
         if (!new_table) {
@@ -257,6 +269,7 @@ uint8_t paging_map_page(uint64_t *pml4_phys, void *virt_addr, uintptr_t phys_add
 
     uint64_t *pml2 = (uint64_t *)phys_to_virt(pml3[pml3_index] & PAGE_ADDR_MASK);
     uint64_t pml2_index = get_pml(2, virt_addr);
+    // No PT entry yet: allocate a zeroed table and link it in
     if (!(pml2[pml2_index] & PAGE_PRESENT)) {
         uintptr_t new_table = frame_alloc();
         if (!new_table) {
@@ -268,13 +281,14 @@ uint8_t paging_map_page(uint64_t *pml4_phys, void *virt_addr, uintptr_t phys_add
 
     uint64_t *pml1 = (uint64_t *)phys_to_virt(pml2[pml2_index] & PAGE_ADDR_MASK);
     uint64_t pml1_index = get_pml(1, virt_addr);
-    pml1[pml1_index] = (phys_addr & PAGE_ADDR_MASK) | flags | PAGE_PRESENT;
+    pml1[pml1_index] = (phys_addr & PAGE_ADDR_MASK) | flags | PAGE_PRESENT; // leaf entry: frame address + flags + present
 
     invalidate_page(virt_addr, PAGE_SIZE);
 
     return 0;
 }
 
+// Unmap one virtual page and hand its physical frame back to the frame allocator
 void paging_unmap_page(uint64_t *pml4_phys, void *virt_addr) {
     if (!pml4_phys) {
         return;
@@ -304,6 +318,7 @@ void paging_unmap_page(uint64_t *pml4_phys, void *virt_addr) {
     frame_free(phys_frame);
 }
 
+// Map a kernel image section at its correct physical load address for the given PML4
 static uint8_t map_kernel_range(uint64_t *pml4, uintptr_t virt_start, uintptr_t virt_end,
                                  uintptr_t phys_base, uintptr_t virt_base, uint64_t flags) {
     uintptr_t start = virt_start & ~0xFFFULL;
@@ -319,6 +334,7 @@ static uint8_t map_kernel_range(uint64_t *pml4, uintptr_t virt_start, uintptr_t 
     return 0;
 }
 
+// Map the primary limine framebuffer into the higher half and repoint fb->address at the virtual copy
 static uint8_t map_framebuffer(uint64_t *pml4) {
     if (framebuffer_request.response == NULL ||
         framebuffer_request.response->framebuffer_count < 1) {
@@ -351,6 +367,7 @@ static uint8_t map_framebuffer(uint64_t *pml4) {
 }
 
 
+// Ensure the fixed kernel-stack region has an empty top-level entry so it can be populated later
 uint8_t paging_prepare_kernel_stack_region() {
     if (!kernel_pml4) {
         return 1;
@@ -374,6 +391,7 @@ uint8_t paging_prepare_kernel_stack_region() {
     return 0;
 }
 
+// Build the initial kernel address space: HHDM, kernel sections, framebuffer, and stack region
 uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executable_address_response *exec) {
     uintptr_t pml4 = frame_alloc();
 
@@ -383,6 +401,7 @@ uint8_t paging_init(struct limine_memmap_response *memmap, struct limine_executa
 
     memset(phys_to_virt(pml4), 0, PAGE_SIZE);
 
+    // Map every reported physical region into the higher half so phys_to_virt covers all of RAM
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE 

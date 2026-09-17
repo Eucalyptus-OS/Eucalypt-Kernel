@@ -37,6 +37,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // clang-format off
 
+// Formatting flags decoded from the '%' flag characters.
 #define FLAG_LEFT (1 << 0)
 #define FLAG_SIGN (1 << 1)
 #define FLAG_SPACE (1 << 2)
@@ -46,13 +47,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define FLAG_LEADING_ZERO (1 << 6)
 #define FLAG_NO_PREFIX_ON_ZERO (1 << 7)
 
+// Map a lowercase letter to a 0-25 index for the lookup tables.
 #define HASH(C) ((C) - 'a')
+// Emit one character and bump the running output count.
 #define PUTCHAR(OUTFUNC, CH, COUNT) ({ (COUNT)++; OUTFUNC((CH)); })
 
+// Length-modifier tags (index into the first dimension of g_lookup).
 enum {
     L_NONE, L_H, L_HH, L_L, L_LL, L_J, L_Z, L_T, LL
 };
 
+// Argument type tags that tell the formatter how wide a vararg to fetch.
 enum {
     INT = 1, UINT,
     CHAR, UCHAR,
@@ -65,11 +70,13 @@ enum {
     PTRDIFF, UPTRDIFF
 };
 
+// A vararg stored as its widest integer or as a raw pointer.
 typedef union {
     uintmax_t integer;
     void *pointer;
 } arg_t;
 
+// g_lookup[length_modifier][HASH(specifier)] maps a conversion to its arg type.
 static const uint8_t g_lookup[][26] = {
     { // NONE
         [HASH('c')] = INT, [HASH('s')] = PTR, [HASH('d')] = INT, [HASH('i')] = INT,
@@ -118,8 +125,10 @@ static const uint8_t g_lookup[][26] = {
     }
 };
 
+// Null-separated prefix strings ("0x", "0X", "+", " ") selected by prefix_offset.
 static const char *g_prefixes = "\0000x\0000X\0+\0 ";
 
+// Format a printf-style string, pushing each character through the writer callback.
 int format(format_writer_t writer, const char *format, va_list list) {
     char *fmt = (char *) format;
     char *fallback;
@@ -136,6 +145,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     arg_t value = {0};
     int prefix_offset = 0;
 
+    // Push literal text straight through until a '%' begins a conversion.
     lbl_normal:
     while(*fmt) {
         if(*fmt == '%') {
@@ -155,6 +165,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     goto lbl_done;
 
+    // Collect the '-' '+' ' ' '#' '0' flag characters.
     lbl_flags:
     while(*fmt) {
         switch(*fmt) {
@@ -176,6 +187,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     goto lbl_done;
 
+    // Parse the field width ('*' takes it from the arg list, otherwise digits).
     lbl_width:
     if(*fmt == '*') {
         width = va_arg(list, int);
@@ -197,6 +209,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     goto lbl_done;
 
+    // Parse a '.precision' clause; '*' takes it from the arg list.
     lbl_precision:
     if(*fmt != '.') {
         goto lbl_length;
@@ -223,6 +236,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     goto lbl_done;
 
+    // Consume the length modifier (h/hh/l/ll/j/z/t/L).
     lbl_length:
     switch(*fmt) {
         case 'h': length_prefix = L_H; goto lbl_length_ext;
@@ -245,6 +259,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     fmt++;
 
+    // Resolve the conversion's argument type via g_lookup and extract the value.
     lbl_modifiers:
     uint8_t index = *fmt;
     if(index < 'a') {
@@ -323,6 +338,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
                 if(precision < 0) {
                     precision = 1;
                 }
+                // '#' requests the 0x/0X prefix; the offset selects it from g_prefixes.
                 if(flags & FLAG_ALTERNATIVE) {
                     if(flags & FLAG_UPPERCASE) {
                         prefix_offset = 4;
@@ -361,6 +377,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
                 if(precision < 0) {
                     precision = 1;
                 }
+                // Pick the '+', ' ' or no prefix depending on the SIGN/SPACE flags.
                 if(flags & FLAG_SIGN) {
                     prefix_offset = 7;
                 } else if(flags & FLAG_SPACE) {
@@ -375,6 +392,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     goto lbl_done;
 
+    // Signed path: capture the sign, negate, then fall into the shared printer.
     lbl_print_signed_number:
     negative = ((intmax_t) value.integer) < 0;
     if(negative) {
@@ -383,6 +401,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
 
     lbl_print_number:
     fmt++;
+    // Compute the highest digit power and total printed length (digits + prefix).
     uint64_t pw = 1;
     int length = (precision || value.integer);
     while(value.integer / pw >= radix) {
@@ -393,6 +412,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     if(precision > length) {
         precision_pad = precision - length;
     }
+    // '#' forces at least one leading zero when the value would otherwise print bare.
     if(precision_pad == 0 && (flags & FLAG_LEADING_ZERO) && (value.integer != 0 || !(flags & FLAG_NO_PREFIX_ON_ZERO))) {
         precision_pad = 1;
     }
@@ -428,6 +448,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     for(int i = 0; i < precision_pad; i++) {
         PUTCHAR(writer, '0', count);
     }
+    // Emit most-significant digit first (a-f above base 10, honouring case).
     while(pw != 0 && (precision || value.integer)) {
         uint8_t c = value.integer / pw;
         if(c >= 10) {
@@ -445,6 +466,7 @@ int format(format_writer_t writer, const char *format, va_list list) {
     }
     goto lbl_normal;
 
+    // Unsupported conversion: emit '%' and resync at the flag characters.
     lbl_invalid:
         PUTCHAR(writer, '%', count);
         fmt = fallback;

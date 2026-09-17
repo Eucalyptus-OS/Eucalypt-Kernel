@@ -17,15 +17,19 @@
 
 typedef int pid_t;
 
+// Waitpid option bits, mirrored here to avoid libc coupling
 #define WNOHANG 1
 #define WUNTRACED 2
 #define WCONTINUED 8
 
+// User address-space layout: heap, mmap arena and stack live in disjoint, fixed ranges
 #define USER_HEAP_START 0x0000600000000000UL
 #define USER_STACK_TOP 0x0000700000000000UL
 #define USER_MMAP_START 0x0000620000000000UL
+// 64 KiB stack, immediately below USER_STACK_TOP
 #define USTACK_SIZE 0x10000
 
+// Auxv entry ids laid out on the user stack (must match abi/auxv.h)
 #define AT_NULL   0
 #define AT_PHDR   3
 #define AT_PHENT  4
@@ -40,15 +44,18 @@ extern void fork_child_restore();
 extern void jump_to_user(uint64_t entry, uint64_t stack);
 extern void exec_switch_resume(void *ksp);
 
+// Kernel-side snapshot of the exec arguments, freed once the new image is in place
 struct exec_args {
     char *path;
     char **argv;
     char **envp;
 };
 
+// Build the initial user stack: argv/envp strings plus the auxv block, SysV-style
 int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
                             const char *path, const struct elf64_load_info *info,
                             uint64_t *out_rsp) {
+    // Map the fixed 64 KiB user stack region
     void *base = vmm_map_region((uint64_t *)pml4,
                                 (void *)(USER_STACK_TOP - USTACK_SIZE),
                                 PAGE_WRITABLE | PAGE_USER,
@@ -62,6 +69,7 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
     uint64_t nenvp = 0;
     while (envp && envp[nenvp]) nenvp++;
 
+    // Scratch copies of the pointers; freed after the pointers land on the stack
     char **arg_strs = (char **)kmalloc((nargv ? nargv : 1) * sizeof(char *));
     char **env_strs = (char **)kmalloc((nenvp ? nenvp : 1) * sizeof(char *));
     if (!arg_strs || !env_strs) {
@@ -72,6 +80,7 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
 
     uint8_t *sp = (uint8_t *)USER_STACK_TOP;
 
+    // Copy each argv string to the top of the stack, recording its final address
     for (uint64_t i = 0; i < nargv; i++) {
         size_t len = strlen(argv[i]) + 1;
         sp -= len;
@@ -79,6 +88,7 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
         arg_strs[i] = (char *)sp;
     }
 
+    // Copy each envp string below the argv strings
     for (uint64_t i = 0; i < nenvp; i++) {
         size_t len = strlen(envp[i]) + 1;
         sp -= len;
@@ -86,11 +96,13 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
         env_strs[i] = (char *)sp;
     }
 
+    // Place the executable path (AT_EXECFN) on the stack
     size_t path_len = strlen(path) + 1;
     sp -= path_len;
     memcpy(sp, path, path_len);
     uint64_t execfn = (uint64_t)sp;
 
+    // xorshift64 PRNG seeds AT_RANDOM so userspace ASLR/stack-canary setup works
     uint8_t random_bytes[16];
     static uint64_t rng = 0x9E3779B97F4A7C15ULL;
     for (int i = 0; i < 16; i += 8) {
@@ -103,12 +115,14 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
     memcpy(sp, random_bytes, 16);
     uint64_t random_ptr = (uint64_t)sp;
 
+    // Guard against running off the bottom of the mapped stack
     if ((uint64_t)sp < (uint64_t)base) {
         kfree(arg_strs);
         kfree(env_strs);
         return 1;
     }
 
+    // Fill in the auxiliary vector: program-header info, page size, entry, random
     uint64_t auxv[18];
     uint64_t ai = 0;
     auxv[ai++] = AT_PHDR;    auxv[ai++] = info->phdr;
@@ -121,16 +135,19 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
     auxv[ai++] = AT_RANDOM;  auxv[ai++] = random_ptr;
     auxv[ai++] = AT_NULL;    auxv[ai++] = 0;
 
+    // Layout the pointer arrays below the strings, keeping both 16-byte aligned
     uint64_t array_top = (uint64_t)sp & ~0xFULL;
     uint64_t total = (1 + (nargv + 1) + (nenvp + 1) + ai) * 8;
     uint64_t *p = (uint64_t *)((array_top - total) & ~0xFULL);
 
+    // Guard again in case the whole block won't fit on the stack
     if ((uint64_t)p < (uint64_t)base) {
         kfree(arg_strs);
         kfree(env_strs);
         return 1;
     }
 
+    // Emit argc, argv[], envp[] then the auxv pairs; rsp ends up at the array start
     uint64_t q = 0;
     p[q++] = nargv;
     for (uint64_t i = 0; i < nargv; i++) p[q++] = (uint64_t)arg_strs[i];
@@ -146,6 +163,7 @@ int setup_user_stack(uintptr_t pml4, char *const argv[], char *const envp[],
     return 0;
 }
 
+// Free a snapshot taken by snapshot_exec_args
 static void free_exec_args(struct exec_args *a) {
     if (a->argv) {
         for (int i = 0; a->argv[i]; i++) kfree(a->argv[i]);
@@ -158,6 +176,7 @@ static void free_exec_args(struct exec_args *a) {
     kfree(a->path);
 }
 
+// Deep-copy path/argv/envp into kernel memory before the old user space is abandoned
 static int snapshot_exec_args(const char *path, char *const argv[], char *const envp[],
                               struct exec_args *out) {
     memset(out, 0, sizeof(*out));
@@ -205,17 +224,20 @@ fail:
     return 1;
 }
 
+// Terminate the current process: record the code, notify the parent, park as a zombie, never return
 void _exit(uint64_t exit_code) {
     struct pcb *p = sched_current_proc();
     if (p) {
         p->exit_code = exit_code;
         p->wait_events |= WAIT_EVT_EXITED;
         if (p->ppcb) {
+            // Notify the parent, waking it if it is blocked in waitpid()
             sig_queue(p->ppcb, SIGCHLD);
             if (!p->ppcb->stopped) {
                 wake_threads(p->ppcb);
             }
         }
+        // Hand the process to the zombie list so the parent can reap its pid/status
         p->is_zombie = 1;
         zombie_enqueue(p);
         print("EXIT pid=%d code=%lu\n", p->pid, (unsigned long)exit_code);
@@ -223,15 +245,18 @@ void _exit(uint64_t exit_code) {
         print("EXIT tid=%d code=%lu (no proc)\n", current_tcb->tid, (unsigned long)exit_code);
     }
 
+    // Never resume this thread: mark it exited and switch away
     current_tcb->state = Exited;
 
     schedule();
 
+    // Belt-and-braces: park forever if control somehow returns
     for (;;) {
         asm volatile ("hlt");
     }
 }
 
+// Clone the current process: copied address space, fd table, FPU state and a shim resume frame
 pid_t fork() {
     struct pcb *p = sched_current_proc();
     if (!p) {
@@ -255,8 +280,10 @@ pid_t fork() {
         }
         return -1;
     }
+    // Snapshot the parent's FPU state so the child starts with a clean copy
     asm volatile ("fxsave %0" : : "m"(*(uint8_t (*)[512])cfpu) : "memory");
 
+    // Inherit the parent's malleable state (heap bounds, umask, mmap cursor, sigstate)
     cp->pid = ++proc_count;
     cp->pgid = p->pgid;
     cp->t_count = 1;
@@ -275,6 +302,7 @@ pid_t fork() {
     cp->umask = p->umask;
     cp->mmap_cursor = p->mmap_cursor;
     cp->mmaps = NULL;
+    // Deep-copy the mmap region list so child and parent track mappings independently
     for (struct mmap_region *r = p->mmaps; r; r = r->next) {
         struct mmap_region *nr = (struct mmap_region *)kmalloc(sizeof(struct mmap_region));
         if (!nr) break;
@@ -284,11 +312,14 @@ pid_t fork() {
         nr->next = cp->mmaps;
         cp->mmaps = nr;
     }
+    // Copy the parent's signal state but start with no pending signals
     cp->sigstate = p->sigstate;
     cp->sigstate.pending = 0;
     cp->next = NULL;
+    // Clone (share) the parent's file descriptor table
     vfs_fd_table_clone(cp->fd_table, p->fd_table, MAX_FDS);
 
+    // Insert the child into the circular process list
     if (proc_list == NULL) {
         proc_list = cp;
         cp->next = cp;
@@ -297,9 +328,11 @@ pid_t fork() {
         proc_list->next = cp;
     }
 
+    // Clone the tail of the current kernel stack; the child resumes where fork() returned
     uint64_t *sp = (uint64_t *)(kstack + KSTACK_SIZE);
     uint64_t *src = (uint64_t *)current_tcb->kstack_top;
 
+    // 22 saved words; slot 16 forces the child to re-enter via fork_child_restore
     sp -= 22;
     sp[0] = src[-21];
     sp[1] = src[-20];
@@ -348,6 +381,7 @@ pid_t fork() {
     return (pid_t)cp->pid;
 }
 
+// Replace this process's image with the ELF at path: fresh address space, stack and registers
 int execve(const char *path, char *const argv[], char *const envp[]) {
     struct pcb *p = sched_current_proc();
     if (!p || !path) {
@@ -356,11 +390,13 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
 
     print("EXECVE pid=%d path=%s\n", p->pid, path);
 
+    // Snapshot args now: the old user space is wiped shortly
     struct exec_args args;
     if (snapshot_exec_args(path, argv, envp, &args)) {
         return -1;
     }
 
+    // Open the executable and parse its ELF program headers into a new address space
     int fd = open(args.path, O_RDONLY);
     if (fd < 0) {
         return -1;
@@ -380,6 +416,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
         return -1;
     }
 
+    // Disable interrupts while swapping the address space and user context
     asm volatile ("cli");
 
     reload_cr3(new_pml4);
@@ -403,6 +440,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
     p->mmaps = NULL;
     p->mmap_cursor = USER_MMAP_START;
     p->stopped = 0;
+    // Exec resets caught handlers to default; disposition of SIG_IGN survives
     for (int i = 1; i < NSIG; i++) {
         if (p->sigstate.actions[i].sa_handler != SIG_IGN) {
             p->sigstate.actions[i].sa_handler = SIG_DFL;
@@ -415,6 +453,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
 
     paging_destroy_address_space(old_pml4);
 
+    // Craft the resume frame: user rsp=stack_top, rip=entry, rflags=0x202 (IF set)
     uint64_t *sp = (uint64_t *)current_tcb->kstack_top;
     sp -= 17;
     for (int i = 0; i < 17; i++) {
@@ -431,6 +470,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
     return -1;
 }
 
+// Block until a signal becomes pending, then return -1
 int pause() {
     struct pcb *p = sched_current_proc();
     if (!p) {
@@ -439,6 +479,7 @@ int pause() {
 
     current_tcb->state = Blocked;
 
+    // Keep waiting (rescheduling) until some signal is pending
     while (p->sigstate.pending == 0) {
         schedule();
         if (p->sigstate.pending == 0) {
@@ -451,10 +492,12 @@ int pause() {
     return -1;
 }
 
+// True if c is a direct child of p
 static int child_is_mine(struct pcb *p, struct pcb *c) {
     return c && c->ppcb == p;
 }
 
+// True if the child has produced an event the caller's options allow reporting
 static int child_event_requested(struct pcb *c, int options) {
     if (c->wait_events & WAIT_EVT_EXITED) return 1;
     if ((c->wait_events & WAIT_EVT_STOPPED) && (options & WUNTRACED)) return 1;
@@ -462,8 +505,10 @@ static int child_event_requested(struct pcb *c, int options) {
     return 0;
 }
 
+// Find the first child whose pid matches the waitpid request and has a reportable event
 static struct pcb *find_waitable_child(struct pcb *p, int pid, int options) {
     if (pid > 0) {
+        // Specific pid: only that direct child qualifies
         struct pcb *c = proc_find((uint64_t)pid);
         if (!c) return NULL;
         return child_is_mine(p, c) && child_event_requested(c, options) ? c : NULL;
@@ -471,6 +516,7 @@ static struct pcb *find_waitable_child(struct pcb *p, int pid, int options) {
 
     if (!proc_list) return NULL;
 
+    // Scan the circular process list for our first waitable child (any, or by pgid)
     struct pcb *r = proc_list;
     do {
         if (child_is_mine(p, r)) {
@@ -485,6 +531,7 @@ static struct pcb *find_waitable_child(struct pcb *p, int pid, int options) {
     return NULL;
 }
 
+// True if p has at least one live child (used to turn blocking waits into ECHILD)
 static int parent_has_any_child(struct pcb *p) {
     if (p == NULL || proc_list == NULL) return 0;
     struct pcb *r = proc_list;
@@ -495,6 +542,7 @@ static int parent_has_any_child(struct pcb *p) {
     return 0;
 }
 
+// Wait for a child: returns its pid, -1 with ECHILD when none can match, 0 for WNOHANG
 int waitpid(int pid, int *status, int options) {
     struct pcb *p = sched_current_proc();
     if (!p) {
@@ -504,6 +552,7 @@ int waitpid(int pid, int *status, int options) {
 
     for (;;) {
         if (pid > 0) {
+            // A specific non-child pid is an immediate error, not a wait condition
             struct pcb *c = proc_find((uint64_t)pid);
             if (!c || !child_is_mine(p, c)) {
                 errno = ECHILD;
@@ -518,9 +567,11 @@ int waitpid(int pid, int *status, int options) {
 
             if (child->wait_events & WAIT_EVT_EXITED) {
                 if (status) {
+                    // Encode the exit code in the high byte: WIFEXITED(status >> 8)
                     *status = (int)((unsigned)(child->exit_code & 0xff) << 8);
                 }
                 child->wait_events &= ~WAIT_EVT_EXITED;
+                // The event is consumed, so reap the zombie and hand back its pid
                 proc_destroy(child);
                 return (int)cpid;
             }
@@ -528,6 +579,7 @@ int waitpid(int pid, int *status, int options) {
             if ((child->wait_events & WAIT_EVT_STOPPED) && (options & WUNTRACED)) {
                 child->wait_events &= ~WAIT_EVT_STOPPED;
                 if (status) {
+                    // WIFSTOPPED layout: low byte 0x7f, stopping signal in the high byte
                     *status = (int)((unsigned)(child->wait_stop_sig & 0xff) << 8) | 0x7f;
                 }
                 return (int)cpid;
@@ -536,6 +588,7 @@ int waitpid(int pid, int *status, int options) {
             if ((child->wait_events & WAIT_EVT_CONTINUED) && (options & WCONTINUED)) {
                 child->wait_events &= ~WAIT_EVT_CONTINUED;
                 if (status) {
+                    // WIFCONTINUED is the sentinel value 0xffff
                     *status = 0xffff;
                 }
                 return (int)cpid;
@@ -543,6 +596,7 @@ int waitpid(int pid, int *status, int options) {
         }
 
         if (options & WNOHANG) {
+            // Non-blocking: report "still running" as 0 instead of sleeping
             return 0;
         }
 
@@ -553,10 +607,12 @@ int waitpid(int pid, int *status, int options) {
             }
         }
 
+        // No reportable event yet: sleep until the child's state changes
         block_current();
     }
 }
 
+// Move a process into a process group; pid/pgid of 0 mean the caller itself
 int setpgid(pid_t pid, pid_t pgid) {
     struct pcb *p = sched_current_proc();
     if (!p) {
@@ -572,6 +628,7 @@ int setpgid(pid_t pid, pid_t pgid) {
     if (pgid == 0) {
         pgid = pid;
     }
+    // Reject forms we can't model (negative pgid, or the session-leader id)
     if (pgid < 0 || pgid == 1) {
         return -EINVAL;
     }
@@ -579,6 +636,7 @@ int setpgid(pid_t pid, pid_t pgid) {
     return 0;
 }
 
+// Return the process-group id of pid (0 = the caller)
 pid_t getpgid(pid_t pid) {
     struct pcb *p = sched_current_proc();
     if (!p) {
@@ -594,6 +652,7 @@ pid_t getpgid(pid_t pid) {
     return (pid_t)target->pgid;
 }
 
+// Shorthand for getpgid(0)
 pid_t getpgrp(void) {
     return getpgid(0);
 }

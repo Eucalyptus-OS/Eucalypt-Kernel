@@ -10,20 +10,25 @@
 #include <multitasking/thread.h>
 #include <multitasking/proc.h>
 
+// User virtual layout: heap at 0x6000..., mmap at 0x6200..., stack below 0x7000...
 #define USER_HEAP_START 0x0000600000000000UL
 #define USER_STACK_TOP 0x0000700000000000UL
 #define USER_MMAP_START 0x0000620000000000UL
 #define USTACK_SIZE 0x10000
 
+// Circular doubly-linked list of all live processes.
 struct pcb *proc_list = NULL;
 uint64_t proc_count = 0;
+// Processes that have exited and are waiting for waitpid() to reap them.
 struct pcb *zombie_head = NULL;
 static struct pcb *zombie_tail = NULL;
 static spinlock_t lock = 0;
 static spinlock_t proc_lock = 0;
 
+// Append p to the zombie list (exited processes awaiting a waitpid reap).
 void zombie_enqueue(struct pcb *p) {
     uint64_t flags = spinlock_acquire_irqsave(&lock);
+    // Already linked into the zombie list — don't queue it twice.
     if (p->z_next || p->z_prev) {
         spinlock_release_irqrestore(&lock, flags);
         return;
@@ -40,6 +45,7 @@ void zombie_enqueue(struct pcb *p) {
     spinlock_release_irqrestore(&lock, flags);
 }
 
+// Unlink p from the zombie list; the caller must already hold the lock.
 static void zombie_remove_locked(struct pcb *p) {
     if (!p || !zombie_head) {
         return;
@@ -71,12 +77,14 @@ static void zombie_remove_locked(struct pcb *p) {
     p->z_next = p->z_prev = NULL;
 }
 
+// Public wrapper to unlink p from the zombie reap list.
 void zombie_remove(struct pcb *p) {
     uint64_t flags = spinlock_acquire_irqsave(&lock);
     zombie_remove_locked(p);
     spinlock_release_irqrestore(&lock, flags);
 }
 
+// Pull the head zombie off the list so a waiting parent can reap it.
 struct pcb *zombie_pop() {
     uint64_t flags = spinlock_acquire_irqsave(&lock);
     if (!zombie_head) {
@@ -89,6 +97,7 @@ struct pcb *zombie_pop() {
     return p;
 }
 
+// Re-home p's children to init (or another live process) when p dies.
 static void reparent_children(struct pcb *p) {
     struct pcb *target = proc_find(1);
     uint64_t flags = spinlock_acquire_irqsave(&lock);
@@ -113,6 +122,7 @@ static void reparent_children(struct pcb *p) {
     spinlock_release_irqrestore(&lock, flags);
 }
 
+// Allocate a fresh PCB: address space, user stack, FD table, and first thread.
 struct pcb *proc_create(void *entry) {
     struct pcb *p = (struct pcb *)kmalloc(sizeof(struct pcb));
     uint64_t flags = spinlock_acquire_irqsave(&lock);
@@ -141,9 +151,11 @@ struct pcb *proc_create(void *entry) {
     p->mmap_cursor = USER_MMAP_START;
     memset(&p->sigstate, 0, sizeof(p->sigstate));
 
+    // Give the process its standard file descriptors (stdin/stdout/stderr).
     vfs_fd_table_init(p->fd_table, MAX_FDS);
     vfs_fd_table_setup_stdio(p->fd_table, MAX_FDS);
 
+    // Map a 64 KiB user stack near the top of the user address space.
     void *ustack = vmm_map_region(
         (uint64_t *)p->addr_space,
         (void *)(USER_STACK_TOP - USTACK_SIZE),
@@ -157,6 +169,7 @@ struct pcb *proc_create(void *entry) {
         return NULL;
     }
 
+    // Insert the new PCB into the circular process list.
     if (proc_list == NULL) {
         proc_list = p;
         p->next = p;
@@ -165,6 +178,7 @@ struct pcb *proc_create(void *entry) {
         proc_list->next = p;
     }
 
+    // Create the process's initial (main) thread running on its user stack.
     struct tcb *t = create_thread(entry, p, ustack);
     if (!t) {
         kfree(p);
@@ -175,6 +189,7 @@ struct pcb *proc_create(void *entry) {
     return p;
 }
 
+// Walk the circular process list looking for the given pid.
 struct pcb *proc_find(uint64_t pid) {
     uint64_t flags = spinlock_acquire_irqsave(&proc_lock);
     if (!proc_list) {
@@ -193,6 +208,7 @@ struct pcb *proc_find(uint64_t pid) {
     return NULL;
 }
 
+// Grow or shrink the user heap; returns the break as it was before the call.
 uintptr_t proc_sbrk(struct pcb *p, intptr_t increment) {
     uintptr_t old_end = p->heap_end;
 
@@ -200,6 +216,7 @@ uintptr_t proc_sbrk(struct pcb *p, intptr_t increment) {
         return old_end;
     }
 
+    // Growing: map fresh pages just past the current end of the heap.
     if (increment > 0) {
         uint64_t bytes_needed = (uint64_t)increment;
         int pages_needed = (bytes_needed + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -217,6 +234,7 @@ uintptr_t proc_sbrk(struct pcb *p, intptr_t increment) {
 
         p->heap_end += pages_needed * PAGE_SIZE;
     } else {
+        // Shrinking: drop the top heap region and lower the break.
         uintptr_t shrink_target = old_end + increment;
 
         linked_list_node_t *node = vmm_find_region(p->heap_end);
@@ -230,6 +248,7 @@ uintptr_t proc_sbrk(struct pcb *p, intptr_t increment) {
     return old_end;
 }
 
+// Release every resource owned by a dead process, then free its PCB.
 void proc_destroy(struct pcb *p) {
     reparent_children(p);
     zombie_remove(p);
@@ -239,6 +258,7 @@ void proc_destroy(struct pcb *p) {
         destroy_thread(p->t);
     }
 
+    // Unlink p from the circular process list.
     uint64_t flags = spinlock_acquire_irqsave(&proc_lock);
     if (proc_list) {
         if (proc_list->next == proc_list) {
@@ -256,6 +276,7 @@ void proc_destroy(struct pcb *p) {
     }
     spinlock_release_irqrestore(&proc_lock, flags);
 
+    // Tear down the process's page tree, then free the PCB itself.
     paging_destroy_address_space(p->addr_space);
     kfree(p);
 }

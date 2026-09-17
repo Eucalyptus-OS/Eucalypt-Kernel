@@ -28,16 +28,23 @@ extern int setpgid(int pid, int pgid);
 extern int getpgid(int pid);
 extern int getpgrp(void);
 
+// Sentinel result for syscall numbers with no case in the dispatch switch below
 #define UNDEFINED_SYSCALL 10000000
+// Upper bound on fds the flag tables below can address
 #define MAX_FCNTL_FDS 256
 
+// MSR holding the FS segment base, i.e. the x86-64 thread-local-storage pointer
 #define IA32_FS_BASE 0xC0000100
 
+// Per-fd descriptor flags (FD_CLOEXEC), served by F_GETFD/F_SETFD
 static int fd_flags[MAX_FCNTL_FDS];
+// Per-fd open status flags (O_APPEND, O_NONBLOCK, ...), served by F_GETFL/F_SETFL
 static int fd_status_flags[MAX_FCNTL_FDS];
 
+// Convert a negative return plus kernel errno into the negated -errno the syscall ABI expects
 static uint64_t ret_errno(long ret) {
     if (ret < 0) {
+        // The failed lib-style call left its errno in the kernel-global below
         int e = errno;
         if (e > 0) {
             return (uint64_t)(-(int64_t)e);
@@ -46,27 +53,32 @@ static uint64_t ret_errno(long ret) {
     return (uint64_t)ret;
 }
 
+// Read the invariant TSC, used here as a coarse monotonic clock source
 static uint64_t rdtsc() {
     uint32_t lo, hi;
     asm volatile ("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
 }
 
+// Which end of the pipe a descriptor refers to, stashed in the fd's "offset" field
 #define PIPE_END_READ  0
 #define PIPE_END_WRITE 1
 
+// VFS read backend forwarding to the pipe object so userspace reads reach pipe_read()
 static ssize_t sys_pipe_vfs_read(vfs_node_t *node, void *buf, size_t count, off_t offset) {
     (void)offset;
     pipe_t *p = (pipe_t *)node->priv;
     return pipe_read(p, buf, count);
 }
 
+// VFS write backend forwarding to the pipe object so userspace writes reach pipe_write()
 static ssize_t sys_pipe_vfs_write(vfs_node_t *node, const void *buf, size_t count, off_t offset) {
     (void)offset;
     pipe_t *p = (pipe_t *)node->priv;
     return pipe_write(p, buf, count);
 }
 
+// Read-end ops: no write slot means writing to the read end fails cleanly
 static vfs_node_ops_t pipe_read_ops = {
     .read    = sys_pipe_vfs_read,
     .write   = NULL,
@@ -81,6 +93,7 @@ static vfs_node_ops_t pipe_read_ops = {
     .readlink = NULL,
 };
 
+// Write-end ops: no read slot means reading from the write end fails cleanly
 static vfs_node_ops_t pipe_write_ops = {
     .read    = NULL,
     .write   = sys_pipe_vfs_write,
@@ -95,6 +108,7 @@ static vfs_node_ops_t pipe_write_ops = {
     .readlink = NULL,
 };
 
+// No RTC/PIT wall clock yet: fabricate an approximate clock from the TSC counter
 static uint64_t sys_clock_gettime(int clk, struct timespec *ts) {
     if (!ts) return (uint64_t)-EFAULT;
     if (clk != CLOCK_REALTIME && clk != CLOCK_MONOTONIC) return (uint64_t)-EINVAL;
@@ -104,27 +118,32 @@ static uint64_t sys_clock_gettime(int clk, struct timespec *ts) {
     return 0;
 }
 
+// Report a fixed eucalypt identity so uname(2) has something to return
 static uint64_t sys_uname(struct utsname *u) {
     if (!u) return (uint64_t)-EFAULT;
-    strcpy(u->sysname, "TinyKern");
-    strcpy(u->nodename, "TinyKern");
+    strcpy(u->sysname, "eucalypt");
+    strcpy(u->nodename, "eucalypt");
     strcpy(u->release, "0.0.1");
-    strcpy(u->version, "TinyKern");
+    strcpy(u->version, "eucalypt");
     strcpy(u->machine, "x86_64");
     strcpy(u->domainname, "");
     return 0;
 }
 
+// Minimal fcntl touching only the commands userspace actually calls
 static uint64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
+    // Reject fds beyond our flag-table range
     if (fd < 0 || fd >= MAX_FCNTL_FDS) return (uint64_t)-EBADF;
 
     switch (cmd) {
+        // F_DUPFD: hand out a duplicate of this fd
         case F_DUPFD: {
             int newfd = dup(fd);
             if (newfd < 0) return ret_errno(newfd);
             return (uint64_t)newfd;
         }
 
+        // F_GETFD/F_SETFD manage the per-fd descriptor flags (FD_CLOEXEC)
         case F_GETFD:
             return (uint64_t)fd_flags[fd];
 
@@ -132,6 +151,7 @@ static uint64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
             fd_flags[fd] = (int)arg;
             return 0;
 
+        // F_GETFL/F_SETFL manage the open status flags (O_APPEND, O_NONBLOCK, ...)
         case F_GETFL:
             return (uint64_t)fd_status_flags[fd];
 
@@ -140,14 +160,18 @@ static uint64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
             return 0;
 
         default:
+            // Unsupported command
             return (uint64_t)-EINVAL;
     }
 }
 
+// Central syscall entry: dispatch on the number and hand the result back via ctx->rax
 uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3,
                          uint64_t arg4, uint64_t arg5, user_context_t *ctx) {
+    // Default result: a distinctive sentinel, not a silent 0, for unknown numbers
     uint64_t result = UNDEFINED_SYSCALL;
 
+    // Debug aid: dump registers/TLS/stack for pid 2 on every syscall (strace-style)
     {
         struct pcb *tp = sched_current_proc();
         if (tp && tp->pid == 2) {
@@ -256,6 +280,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
             break;
 
         case SYS_BRK: {
+            // brk: resize the heap by moving the program break
             struct pcb *p = sched_current_proc();
             if (!p) {
                 result = (uint64_t)-1;
@@ -359,6 +384,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
             break;
 
         case SYS_UMASK: {
+            // umask: set the 9-bit file-creation mask and return the previous value
             struct pcb *p = sched_current_proc();
             uint32_t old = p ? p->umask : 0;
             if (p) {
@@ -395,6 +421,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
             break;
 
         case SYS_ARCH_PRCTL: {
+            // arch_prctl: read/write the FS base (TLS pointer) via the IA32_FS_BASE MSR
             struct tcb *t = current_tcb;
             int code = (int)arg1;
             if (code == ARCH_SET_FS) {
@@ -454,6 +481,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
             break;
 
         case SYS_PIPE: {
+            // pipe: allocate a pipe and wire its read/write ends into two fresh fds
             int *pipefd = (int *)arg1;
             if (!pipefd) { result = (uint64_t)-EFAULT; break; }
 
@@ -496,6 +524,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
         }
 
         case SYS_IOCTL: {
+            // ioctl: forward the request to the device handler if the fd is a devfs device
             int fd = (int)arg1;
             unsigned long req = (unsigned long)arg2;
             void *user_arg = (void *)arg3;
@@ -519,9 +548,11 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
         }
     }
 
+    // sigreturn restores rax from the signal frame itself; for all others report the result
     if (num != SYS_SIGRETURN) {
         ctx->rax = result;
     }
+    // After every syscall, deliver the lowest-numbered pending unblocked signal
     sig_deliver_current(ctx, num);
 
     return result;

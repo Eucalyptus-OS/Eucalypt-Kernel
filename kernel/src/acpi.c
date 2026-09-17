@@ -15,11 +15,12 @@ static volatile struct limine_rsdp_request rsdp_request = {
 	.revision = 0
 };
 
+// ACPI 1.0 RSDP: an XSDP without the extended v2 fields
 struct rsdp {
-	char signature[8];
+	char signature[8];   // ASCII "RSD PTR "
 	uint8_t checksum;
 	char oem_id[6];
-	uint8_t rev;
+	uint8_t rev;         // >= 2 signals ACPI 2.0, where the RSDT pointer gives way to an XSDT
 	uint32_t rsdt;
 } __attribute__ ((packed));
 
@@ -30,14 +31,15 @@ struct xsdp {
 	uint8_t rev;
 	uint32_t rsdt;
 
+	// ACPI 2.0 additions: full length and the 64-bit XSDT pointer
 	uint32_t length;
-	uint64_t xsdt;
+	uint64_t xsdt;       // 8-byte root table pointer, supports addresses above 4 GiB
 	uint8_t xchecksum;
 	uint8_t reserved[3];
 } __attribute__ ((packed));
 
 struct sdt_header {
-	char signature[4];
+	char signature[4];   // 4-byte ASCII table signature, e.g. "RSDT" or "APIC"
 	uint32_t len;
 	uint8_t rev;
 	uint8_t checksum;
@@ -108,10 +110,12 @@ struct madt {
 	uint8_t entries[];
 } __attribute__ ((packed));
 
+// Search the RSDT for a table whose signature matches, returning its virtual address
 void *find_table(struct rsdt *rsdt, const char *sig) {
 	int num_entries = (rsdt->header.len - sizeof(struct sdt_header)) / 4;
 
 	for (int i = 0; i < num_entries; i++) {
+		// RSDT entries hold 32-bit physical addresses, so map them before reading
 		struct sdt_header *header = (struct sdt_header *)phys_to_virt(rsdt->entries[i]);
 		if (!strncmp(header->signature, sig, strlen(sig))) {
 			return (void *)header;
@@ -120,6 +124,7 @@ void *find_table(struct rsdt *rsdt, const char *sig) {
 	return NULL;
 }
 
+// Walk the MADT's variable-length entries and log each APIC structure found
 void parse_madt_entries(struct madt *madt) {
 	uint8_t *p = madt->entries;
 	uint8_t *end = (uint8_t *)madt + madt->len;
@@ -143,6 +148,7 @@ void parse_madt_entries(struct madt *madt) {
 				struct madt_ioapic *ioapic = (struct madt_ioapic *)p;
 				print("MADT: IOAPIC - id: %d, addr: 0x%X, gsi_base: %d\n",
 				      ioapic->ioapic_id, ioapic->ioapic_addr, ioapic->gsi_base);
+				// Keep the first I/O APIC's MMIO base for APIC setup later
 				ioapic_addr = ioapic->ioapic_addr;
 				break;
 			}
@@ -167,19 +173,24 @@ void parse_madt_entries(struct madt *madt) {
 	}
 }
 
+// Parse RSDP/RSDT to locate the MADT, then record the LAPIC and IOAPIC base addresses
 void acpi_parse_tables() {
+	// Copy the physical RSDP into a mapped frame so we can safely read it
 	void *rsdp_addr = rsdp_request.response->address;
 	struct xsdp *rsdp = (struct xsdp *)phys_to_virt(frame_alloc());
 
 	print("Filling struct\n");
+	// Byte 15 holds the revision; v2+ RSDPs carry the extra XSDT fields to copy
 	uint8_t acpi_rev = *(uint8_t *)((char *)rsdp_addr + 15);
 	size_t rsdp_size = acpi_rev >= 2 ? sizeof(struct xsdp) : sizeof(struct xsdp) - 16;
 	memcpy(rsdp, rsdp_addr, rsdp_size);
 
 	print("RSDP_ADDR: 0x%X\nACPI_REV: %d, RSDP_SIG: %s\nRSDT_ADDR: 0x%X\n", rsdp_addr, acpi_rev, rsdp->signature, rsdp->rsdt);
 
+	// Peek at the header first to learn the RSDT's total length
 	struct sdt_header temp_header;
 	memcpy(&temp_header, (void *)phys_to_virt(rsdp->rsdt), sizeof(struct sdt_header));
+	// Copy the whole RSDT into a mapped frame so its entries can be dereferenced
 	struct rsdt *rsdt = (struct rsdt *)phys_to_virt(frame_alloc());
 	memcpy(rsdt, phys_to_virt(rsdp->rsdt), temp_header.len);
 
@@ -192,6 +203,7 @@ void acpi_parse_tables() {
 	struct sdt_header *madt_hdr = (struct sdt_header *)madt_addr;
 	uint32_t madt_len = madt_hdr->len;
 
+	// Refuse tables that will not fit in the single 4 KiB frame we copy them into
 	if (madt_len > 0x1000) {
 		print("MADT too large for one frame (%d bytes), aborting\n", madt_len);
 		return;
@@ -201,6 +213,7 @@ void acpi_parse_tables() {
 	memcpy(madt, madt_addr, madt_len);
 
 	print("MADT_ADDR: 0x%X, LAPIC_ADDR: 0x%X, FLAGS: 0x%X\n", madt_addr, madt->lapic_addr, madt->flags);
+	// Save the memory-mapped local APIC base reported by the MADT
 	lapic_addr = madt->lapic_addr;
 
 	parse_madt_entries(madt);

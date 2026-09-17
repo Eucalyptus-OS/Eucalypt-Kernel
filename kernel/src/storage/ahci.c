@@ -35,11 +35,12 @@ typedef struct {
 static ahci_pending_t g_pending[AHCI_MAX_CONTROLLERS][AHCI_MAX_PORTS][AHCI_MAX_CMD_SLOTS];
 static uint32_t g_pending_mask[AHCI_MAX_CONTROLLERS][AHCI_MAX_PORTS];
 
+// Determine the attached device type from the port's status (SSTS) and signature (SIG)
 static int check_type(HBA_PORT *port) {
     uint32_t ssts = port->ssts;
 
-    uint8_t ipm = (ssts >> 8) & 0x0F;
-    uint8_t det = ssts & 0x0F;
+    uint8_t ipm = (ssts >> 8) & 0x0F;  // interface power management state
+    uint8_t det = ssts & 0x0F;         // device detection state
 
     print("port status ssts=0x%x ipm=0x%x det=0x%x sig=0x%x\n", ssts, ipm, det, port->sig);
 
@@ -68,12 +69,14 @@ static int check_type(HBA_PORT *port) {
     }
 }
 
+// Busy-wait roughly `iters` iterations using pause (for short hardware settling timeouts)
 static void ahci_spin_delay(uint32_t iters) {
     for (volatile uint32_t i = 0; i < iters; i++) {
         asm volatile ("pause");
     }
 }
 
+// Take ownership of the HBA away from a legacy BIOS using the BOHC register
 static void ahci_bios_handoff(HBA_MEM *abar) {
     print("bios handoff cap2=0x%x bohc=0x%x\n", abar->cap2, abar->bohc);
 
@@ -103,6 +106,7 @@ static void ahci_bios_handoff(HBA_MEM *abar) {
     print("bios handoff complete, bohc=0x%x\n", abar->bohc);
 }
 
+// Enable the HBA by setting the global AE (AHCI enable) bit
 static uint8_t ahci_hba_enable(HBA_MEM *abar) {
     print("enabling HBA, ghc=0x%x\n", abar->ghc);
 
@@ -120,6 +124,7 @@ static uint8_t ahci_hba_enable(HBA_MEM *abar) {
     return 0;
 }
 
+// Start a port's command engine: wait for CR clear, then set FRE + ST
 static uint8_t start_cmd(HBA_PORT *port) {
     print("starting command engine, cmd=0x%x\n", port->cmd);
 
@@ -137,6 +142,7 @@ static uint8_t start_cmd(HBA_PORT *port) {
     return 0;
 }
 
+// Stop a port's command engine: clear ST/FRE, then wait for FR/CR to clear
 static uint8_t stop_cmd(HBA_PORT *port) {
     print("stopping command engine, cmd=0x%x\n", port->cmd);
 
@@ -158,6 +164,7 @@ static uint8_t stop_cmd(HBA_PORT *port) {
     return 0;
 }
 
+// Prepare DMA memory (command list, FIS area, command tables) for a port and start its engine
 static int port_rebase(HBA_PORT *port, int portno) {
     print("rebasing port=%d\n", portno);
 
@@ -166,6 +173,7 @@ static int port_rebase(HBA_PORT *port, int portno) {
         return 1;
     }
 
+    // Each of the 32 ports gets a 1KB block; the CLB region sits below 4GB for 32-bit DMA
     uint64_t phys_clb = AHCI_BASE + (portno << 10);
     uint64_t virt_clb = (uint64_t)phys_to_virt((uintptr_t)phys_clb);
 
@@ -178,9 +186,11 @@ static int port_rebase(HBA_PORT *port, int portno) {
     port->clb  = (uint32_t)(phys_clb & 0xFFFFFFFF);
     port->clbu = (uint32_t)(phys_clb >> 32);
 
+    // Zero the 32 command-list headers (1024 bytes); the FB region starts after all CLBs
     memset((void *)virt_clb, 0, 1024);
     print("port %d clb phys=0x%lx virt=0x%lx\n", portno, (unsigned long)phys_clb, (unsigned long)virt_clb);
 
+    // FIS area: begins after the 32 CLB blocks; 256 bytes per port, rounded up for 4KB alignment
     uint64_t phys_fb = AHCI_BASE + (32 << 10) + (portno << 8);
     uint64_t virt_fb = (uint64_t)phys_to_virt((uintptr_t)phys_fb);
 
@@ -196,6 +206,7 @@ static int port_rebase(HBA_PORT *port, int portno) {
     memset((void *)virt_fb, 0, 256);
     print("port %d fb phys=0x%lx virt=0x%lx\n", portno, (unsigned long)phys_fb, (unsigned long)virt_fb);
 
+    // Clear stale interrupts/state before relocating the pointer registers
     port->is   = (uint32_t)-1;
     port->ie   = (uint32_t)-1;
     port->serr = (uint32_t)-1;
@@ -204,6 +215,7 @@ static int port_rebase(HBA_PORT *port, int portno) {
 
     HBA_CMD_HEADER *cmdheader = (HBA_CMD_HEADER *)virt_clb;
     for (int i = 0; i < 32; i++) {
+        // Command tables start after CLBs+FBs: 32 tables of 256 bytes per port (same 4KB alignment fix)
         uint64_t phys_ctba = AHCI_BASE + (40 << 10) + (portno << 13) + (i << 8);
         uint64_t virt_ctba = (uint64_t)phys_to_virt((uintptr_t)phys_ctba);
 
@@ -228,8 +240,9 @@ static int port_rebase(HBA_PORT *port, int portno) {
     return 0;
 }
 
+// Find a free command slot: any bit clear in both SACT (active) and CI (issued)
 static int find_cmdslot(HBA_PORT *port) {
-    uint32_t slots = (port->sact | port->ci);
+    uint32_t slots = (port->sact | port->ci);  // busy slots have a bit set in either register
     for (int i = 0; i < AHCI_MAX_CMD_SLOTS; i++) {
         if ((slots & (1u << i)) == 0) {
             return i;
@@ -239,6 +252,7 @@ static int find_cmdslot(HBA_PORT *port) {
     return -1;
 }
 
+// Issue an ATA IDENTIFY command and parse the returned data into the drive's geometry
 static uint8_t ahci_identify(uint8_t controller, uint8_t port) {
     print("identify start controller=%u port=%u\n", controller, port);
 
@@ -262,6 +276,7 @@ static uint8_t ahci_identify(uint8_t controller, uint8_t port) {
 
     uint64_t ctba_phys = (uint64_t)cmdheader->ctba | ((uint64_t)cmdheader->ctbau << 32);
 
+    // Keep the port's pre-allocated command table pointer; zero the header around it
     uint32_t saved_ctba  = cmdheader->ctba;
     uint32_t saved_ctbau = cmdheader->ctbau;
     memset(cmdheader, 0, sizeof(*cmdheader));
@@ -283,11 +298,13 @@ static uint8_t ahci_identify(uint8_t controller, uint8_t port) {
     uint8_t *ident_buf = (uint8_t *)phys_to_virt(buf_phys);
     memset(ident_buf, 0, 512);
 
+    // Single PRD covering the 512-byte IDENTIFY buffer; dbc holds byte_count-1, i marks the last entry
     cmdtbl->prdt_entry[0].dba  = (uint32_t)(buf_phys & 0xFFFFFFFF);
     cmdtbl->prdt_entry[0].dbau = (uint32_t)(buf_phys >> 32);
     cmdtbl->prdt_entry[0].dbc  = 512 - 1;
     cmdtbl->prdt_entry[0].i    = 1;
 
+    // Build the register FIS for the IDENTIFY command; c=1 marks it as a command FIS
     FIS_REG_H2D *cfis = (FIS_REG_H2D *)&cmdtbl->cfis;
     memset(cfis, 0, sizeof(*cfis));
     cfis->fis_type = FIS_TYPE_REG_H2D;
@@ -337,6 +354,7 @@ static uint8_t ahci_identify(uint8_t controller, uint8_t port) {
     print("identify words[0]=0x%x [1]=0x%x [49]=0x%x [59]=0x%x [60]=0x%x [61]=0x%x [100]=0x%x [101]=0x%x\n",
              words[0], words[1], words[49], words[59], words[60], words[61], words[100], words[101]);
 
+    // The LBA48 sector count lives in words 100-103; fall back to the 28-bit words 60-61
     uint64_t lba48_sectors =
         (uint64_t)words[100] |
         ((uint64_t)words[101] << 16) |
@@ -348,9 +366,10 @@ static uint8_t ahci_identify(uint8_t controller, uint8_t port) {
     }
 
     uint32_t sector_size = AHCI_SECTOR_SIZE;
+    // Word 106 bits 12+14 set with bit 15 clear: drive declares a logical sector size != 512 (words 117-118)
     if ((words[106] & (1 << 14)) && !(words[106] & (1 << 15)) && (words[106] & (1 << 12))) {
-        uint32_t words_per_sector = (uint32_t)words[117] | ((uint32_t)words[118] << 16);
-        sector_size = words_per_sector * 2;
+        uint32_t words_per_sector = (uint32_t)words[117] | ((uint32_t)words[118] << 16);  // words 117-118
+        sector_size = words_per_sector * 2;  // 16-bit words per sector -> bytes per sector
         print("logical sector size override -> %u\n", sector_size);
     }
 
@@ -368,6 +387,7 @@ static uint8_t ahci_identify(uint8_t controller, uint8_t port) {
     return 0;
 }
 
+// Probe the ports advertised in PI, rebase each present one, and set up per-type drive state
 static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
     uint32_t pi = abar->pi;
     print("probing ports controller=%u pi=0x%x\n", controller, pi);
@@ -434,6 +454,7 @@ static void ahci_probe_ports(HBA_MEM *abar, uint8_t controller) {
     print("port probing done controller=%u\n", controller);
 }
 
+// Queue an asynchronous read/write DMA command; completion is reported through the callback
 static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_t count,
                      void *buf, uint8_t write, ahci_callback_t callback, void *ctx) {
     if (count == 0) {
@@ -451,6 +472,7 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
         return -1;
     }
 
+    // Each PRD covers up to 16 sectors (8KB), so a transfer of `count` sectors needs ceil(count/16) of them
     int prdt_entries = (count + 15) / 16;
     if (prdt_entries > AHCI_MAX_PRDT_ENTRIES) {
         print("too many prdt entries %d\n", prdt_entries);
@@ -459,6 +481,7 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
 
     HBA_PORT *hba_port = &g_abars[controller]->ports[port];
 
+    // Stop interrupts while reserving the slot and issuing the command (races with the ISR)
     asm volatile ("cli");
 
     int slot = find_cmdslot(hba_port);
@@ -473,6 +496,7 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
 
     uint64_t ctba_phys = (uint64_t)cmdheader->ctba | ((uint64_t)cmdheader->ctbau << 32);
 
+    // Reuse the reserved command table pointer; wipe the header but keep its CTBA
     uint32_t saved_ctba  = cmdheader->ctba;
     uint32_t saved_ctbau = cmdheader->ctbau;
     memset(cmdheader, 0, sizeof(*cmdheader));
@@ -484,8 +508,10 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
     cmdheader->prdbc = 0;
 
     HBA_CMD_TBL *cmdtbl = (HBA_CMD_TBL *)phys_to_virt(ctba_phys);
+    // Zero the table plus the full PRD array actually in use this transfer
     memset(cmdtbl, 0, sizeof(HBA_CMD_TBL) + (prdt_entries - 1) * sizeof(HBA_PRDT_ENTRY));
 
+    // Fill each PRD with a slice of the caller's buffer; the last entry raises the I bit
     uint8_t *buffer   = buf;
     uint8_t remaining = count;
     for (int i = 0; i < prdt_entries; i++) {
@@ -502,6 +528,7 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
         remaining -= entry_sectors;
     }
 
+    // Build the register FIS carrying the 48-bit LBA DMA read/write command
     FIS_REG_H2D *cfis = (FIS_REG_H2D *)&cmdtbl->cfis;
     memset(cfis, 0, sizeof(*cfis));
     cfis->fis_type = FIS_TYPE_REG_H2D;
@@ -513,7 +540,7 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
     cfis->lba3     = (sector >> 24) & 0xFF;
     cfis->lba4     = 0;
     cfis->lba5     = 0;
-    cfis->device   = 1 << 6;
+    cfis->device   = 1 << 6;  // bit 6 of the device register selects LBA (not CHS) addressing
     cfis->countl   = count & 0xFF;
     cfis->counth   = (count >> 8) & 0xFF;
 
@@ -526,10 +553,12 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
         }
     }
 
+    // Stash the completion callback so the ISR can find it later via the slot number
     g_pending[controller][port][slot].callback = callback;
     g_pending[controller][port][slot].ctx = ctx;
     g_pending_mask[controller][port] |= 1u << slot;
 
+    // Clear stale interrupts/errors, then fire the command by setting its CI bit
     hba_port->is = (uint32_t)-1;
     hba_port->serr = (uint32_t)-1;
     hba_port->ci |= 1u << slot;
@@ -539,16 +568,19 @@ static int ahci_submit(uint8_t controller, uint8_t port, uint64_t sector, uint8_
     return slot;
 }
 
+// Submit an asynchronous read (write flag = 0)
 int ahci_read(uint8_t controller, uint8_t port, uint64_t sector, uint8_t count, void *buf,
               ahci_callback_t callback, void *ctx) {
     return ahci_submit(controller, port, sector, count, buf, 0, callback, ctx);
 }
 
+// Submit an asynchronous write (write flag = 1)
 int ahci_write(uint8_t controller, uint8_t port, uint64_t sector, uint8_t count, const void *buf,
                ahci_callback_t callback, void *ctx) {
     return ahci_submit(controller, port, sector, count, (void *)buf, 1, callback, ctx);
 }
 
+// ISR per-port handler: report errors, then run callbacks for every slot that finished
 static void ahci_handle_port(uint8_t controller, uint8_t port) {
     HBA_PORT *hba_port = &g_abars[controller]->ports[port];
 
@@ -556,9 +588,11 @@ static void ahci_handle_port(uint8_t controller, uint8_t port) {
     if (!is)
         return;
 
+    // PxIS bits 27-30 indicate task-file or host-bus failures with a stale task-file dump
     uint8_t err = (is & (HBA_PxIS_TFES | HBA_PxIS_HBFS | HBA_PxIS_HBDS | HBA_PxIS_IFS)) != 0;
     if (err) {
         uint32_t tfd = hba_port->tfd;
+        // PxTFD: low byte is the status register, next byte is the error register
         uint8_t tfd_status = tfd & 0xFF;
         uint8_t tfd_error  = (tfd >> 8) & 0xFF;
 
@@ -574,9 +608,11 @@ static void ahci_handle_port(uint8_t controller, uint8_t port) {
                  d2h->lba0, d2h->lba1, d2h->lba2, d2h->lba3, d2h->lba4, d2h->lba5, d2h->device);
     }
 
+    // Completed slots = pending mask minus slots still running (set in CI or SACT)
     uint32_t still_running = hba_port->ci | hba_port->sact;
     uint32_t completed = g_pending_mask[controller][port] & ~still_running;
 
+    // Commands that failed are treated as complete (with the error status) so their callbacks can clean up
     if (err) {
         completed |= g_pending_mask[controller][port];
     }
@@ -599,6 +635,7 @@ static void ahci_handle_port(uint8_t controller, uint8_t port) {
     hba_port->is = is;
     hba_port->serr = (uint32_t)-1;
 
+    // After an error, restart the port engine and drop all pending I/O
     if (err) {
         stop_cmd(hba_port);
         start_cmd(hba_port);
@@ -609,6 +646,7 @@ static void ahci_handle_port(uint8_t controller, uint8_t port) {
     }
 }
 
+// Scan the PCI bus for AHCI controllers, map their ABARs, and initialize every attached port
 uint8_t ahci_init() {
     print("init start\n");
 
@@ -627,6 +665,7 @@ uint8_t ahci_init() {
             uint8_t func_limit = 1;
 
             for (uint8_t func = 0; func < func_limit; func++) {
+                // Vendor ID 0xffff marks a non-existent device; walk functions only when multifunction (header type bit 7)
                 uint16_t vendor = pci_config_read_word(bus, slot, func, 0);
                 if (vendor == 0xffff)
                     continue;
@@ -644,6 +683,7 @@ uint8_t ahci_init() {
 
                 pci_enable_device(bus, slot, func);
 
+                // AHCI's memory-mapped registers live at BAR5 (PCI config offset 0x24)
                 uint64_t abar_phys = pci_read_bar64(bus, slot, func, 0x24);
                 if (abar_phys == 0) {
                     print("abar_phys is 0 at %u:%u:%u, skipping\n", bus, slot, func);
@@ -662,6 +702,7 @@ uint8_t ahci_init() {
                 paging_map_page(pml4, (void *)abar_virt, abar_phys,
                                   PAGE_WRITABLE);
 
+                // Also map the fixed AHCI_BASE scratch region that holds command lists, FISes, and command tables
                 paging_map_page(pml4, phys_to_virt(AHCI_BASE), AHCI_BASE,
                                  PAGE_WRITABLE);
 
@@ -688,9 +729,11 @@ uint8_t ahci_init() {
 
                 uint8_t irq = pci_get_interrupt_line(bus, slot, func);
                 print("Controller %u irq line=%u\n", ctrl_idx, irq);
+                // Route the controller's PCI IRQ to vector 0x21 and unmask it in the I/O APIC
                 ioapic_set_entry(irq, 0x21);
                 ioapic_unmask(irq);
 
+                // Enable controller-level interrupts globally
                 abar->ghc |= AHCI_GHC_IE;
             }
         }
@@ -701,16 +744,19 @@ uint8_t ahci_init() {
     return g_abar_count;
 }
 
+// Return the number of initialized controllers
 uint8_t ahci_get_controller_count() {
     return g_ahci.count;
 }
 
+// Return the controller struct for an index, or NULL when out of range
 ahci_controller_t *ahci_get_controller(uint8_t index) {
     if (index >= g_ahci.count)
         return NULL;
     return &g_ahci.controllers[index];
 }
 
+// Count how many ports on a controller currently have a present device
 uint8_t ahci_get_port_count(uint8_t controller) {
     if (controller >= g_ahci.count)
         return 0;
@@ -723,6 +769,7 @@ uint8_t ahci_get_port_count(uint8_t controller) {
     return count;
 }
 
+// Return the physical port index of the n-th present port, or 0xFF when there is no such port
 uint8_t ahci_get_port_index(uint8_t controller, uint8_t n) {
     if (controller >= g_ahci.count)
         return 0xFF;
@@ -738,6 +785,7 @@ uint8_t ahci_get_port_index(uint8_t controller, uint8_t n) {
     return 0xFF;
 }
 
+// Return the drive descriptor for a (controller, port), or NULL when nothing is present
 drive_t *ahci_get_drive(uint8_t controller, uint8_t port) {
     if (controller >= g_abar_count || port >= AHCI_MAX_PORTS)
         return NULL;
@@ -746,6 +794,7 @@ drive_t *ahci_get_drive(uint8_t controller, uint8_t port) {
     return &g_drives[controller][port];
 }
 
+// Interrupt handler: service every port whose IS bit is set, clear IS, then send the EOI
 void ahci_handler() {
     for (uint8_t c = 0; c < g_abar_count; c++) {
         HBA_MEM *abar = g_abars[c];

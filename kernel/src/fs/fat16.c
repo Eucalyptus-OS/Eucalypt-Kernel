@@ -8,30 +8,32 @@
 #include <fs/vfs.h>
 #include <fs/fat16.h>
 
+// BIOS Parameter Block at sector 0; all offsets are absolute within the 512-byte boot sector
 struct __attribute__((packed)) bpb {
-    uint8_t  jmp_boot[3];
+    uint8_t  jmp_boot[3];       // x86 jump to the boot code
     uint8_t  oem_name[8];
-    uint16_t bps;
-    uint8_t  spc;
-    uint16_t rsc;
-    uint8_t  num_fats;
-    uint16_t rec;
-    uint16_t ts16;
-    uint8_t  media;
-    uint16_t fat_s;
-    uint16_t spt;
-    uint16_t heads;
-    uint32_t hidden;
-    uint32_t ts32;
+    uint16_t bps;               // bytes per sector (0Bh)
+    uint8_t  spc;               // sectors per cluster
+    uint16_t rsc;               // reserved sectors before the first FAT
+    uint8_t  num_fats;          // number of FAT copies
+    uint16_t rec;               // root directory entries (FAT12/16 only)
+    uint16_t ts16;              // total sectors, 16-bit form (0 for >=65536)
+    uint8_t  media;             // media descriptor byte
+    uint16_t fat_s;             // sectors per FAT
+    uint16_t spt;               // sectors per track
+    uint16_t heads;             // head count
+    uint32_t hidden;            // hidden sectors before the partition
+    uint32_t ts32;              // total sectors, 32-bit form
 };
 
+// Extended Boot Record: the boot sector bytes past the BPB, holding the volume id
 struct __attribute__((packed)) ebr {
     uint8_t  drive_num;
     uint8_t  r1;
-    uint8_t  bsig;
-    uint32_t vol_id;
+    uint8_t  bsig;              // boot signature, 0x29 for a valid EBR
+    uint32_t vol_id;            // serial number used to fingerprint this volume
     uint8_t  vol_lab[11];
-    uint8_t  f_type[8];
+    uint8_t  f_type[8];         // "FAT12   "/"FAT16   " ASCII marker
 };
 
 typedef struct __attribute__((packed)) {
@@ -39,34 +41,36 @@ typedef struct __attribute__((packed)) {
     struct ebr ebr;
 } fat;
 
+// Fixed 32-byte directory entry as laid out on disk
 struct __attribute__((packed)) fat16_dirent {
-    uint8_t  name[8];
-    uint8_t  ext[3];
-    uint8_t  attr;
+    uint8_t  name[8];           // upper-cased, space-padded 8.3 base name
+    uint8_t  ext[3];            // space-padded 3-char extension
+    uint8_t  attr;              // FAT16_ATTR_* flags (0x0F = LFN slot)
     uint8_t  reserved;
-    uint8_t  crtime_tenths;
-    uint16_t crtime;
+    uint8_t  crtime_tenths;     // reused as the LFN entry checksum
+    uint16_t crtime;            // in LFN entries these 6 fields hold UCS-2 name chars 5-10
     uint16_t crdate;
     uint16_t ladate;
-    uint16_t cluster_high;
+    uint16_t cluster_high;      // top 16 bits of the start cluster
     uint16_t wtime;
     uint16_t wdate;
-    uint16_t cluster_low;
-    uint32_t size;
+    uint16_t cluster_low;       // low 16 bits of the start cluster
+    uint32_t size;              // file size in bytes
 };
 
 #define FAT16_ATTR_READ_ONLY  0x01
 #define FAT16_ATTR_HIDDEN     0x02
 #define FAT16_ATTR_SYSTEM     0x04
 #define FAT16_ATTR_VOLUME     0x08
-#define FAT16_ATTR_DIRECTORY  0x10
+#define FAT16_ATTR_DIRECTORY  0x10   // set on subdirectory entries
 #define FAT16_ATTR_ARCHIVE    0x20
-#define FAT16_ATTR_LFN        0x0F
+#define FAT16_ATTR_LFN        0x0F   // entry is a long-filename slot, not a file
 
+// In-memory volume handle: parsed BPB/EBR plus the block device it lives on
 typedef struct fat_node {
     fat            data;
     vfs_blockdev_t blockdev;
-    struct fat_node *next;
+    struct fat_node *next;      // singleton list of open volumes
 } fat_node;
 
 typedef struct {
@@ -77,17 +81,18 @@ typedef struct {
 static fat_list fat16_volumes;
 static uint8_t  fat16_volumes_ready = 0;
 
-#define FAT16_LBA              0
+#define FAT16_LBA              0      // volume bootable region starts at LBA 0
 #define FAT16_SECTOR_SIZE      512
-#define FAT16_ROOT_ENTRIES     512
+#define FAT16_ROOT_ENTRIES     512    // root dir capacity used when formatting
 #define FAT16_RESERVED_SECTORS 1
 #define FAT16_NUM_FATS         2
-#define FAT16_MEDIA            0xF8
-#define FAT16_CLUSTER_SIZE     8
+#define FAT16_MEDIA            0xF8   // fixed-disk media descriptor
+#define FAT16_CLUSTER_SIZE     8      // sectors per cluster used by the formatter
 #define FAT16_OEM              "MSDOS5.0"
 #define FAT16_VOL_LABEL        "NO NAME    "
 #define FAT16_FS_TYPE          "FAT16   "
 
+// FAT entry values: 0 = free, 0xFFF7 = bad, >= 0xFFF8 = end-of-chain
 #define FAT16_CLUSTER_FREE     0x0000
 #define FAT16_CLUSTER_BAD      0xFFF7
 #define FAT16_CLUSTER_LAST     0xFFF8
@@ -97,6 +102,7 @@ static void fat_list_init(fat_list *list) {
     list->size = 0;
 }
 
+// Append a freshly parsed volume to the open-volume list
 static fat_node *fat_list_push_back(fat_list *list, const fat *data, vfs_blockdev_t *blockdev) {
     fat_node *node = kmalloc(sizeof(fat_node));
     if (!node) {
@@ -128,20 +134,24 @@ static fat_node *fat_list_find_vol_id(const fat_list *list, uint32_t vol_id) {
     return NULL;
 }
 
+// Sector number of the FAT region holding |cluster|'s 2-byte entry: reserved + entry/512
 static uint32_t fat16_get_fat_offset(const fat_node *vol, uint16_t cluster) {
     return vol->data.bpb.rsc + (cluster * 2) / vol->data.bpb.bps;
 }
 
+// Byte offset of |cluster|'s 2-byte entry inside its FAT sector
 static uint16_t fat16_get_fat_index(const fat_node *vol, uint16_t cluster) {
     return (cluster * 2) % vol->data.bpb.bps;
 }
 
+// First sector of |cluster|'s data: root dir ends and data starts at cluster 2
 static uint32_t fat16_get_cluster_sector(const fat_node *vol, uint16_t cluster) {
     uint16_t root_sectors = (vol->data.bpb.rec * 32 + vol->data.bpb.bps - 1) / vol->data.bpb.bps;
     uint32_t first_data = vol->data.bpb.rsc + vol->data.bpb.num_fats * vol->data.bpb.fat_s + root_sectors;
     return first_data + (cluster - 2) * vol->data.bpb.spc;
 }
 
+// Follow a single link in the FAT chain: next cluster for |cluster|
 static uint16_t fat16_get_next_cluster(const fat_node *vol, uint16_t cluster) {
     uint64_t phys = frame_alloc();
     if (!phys) {
@@ -163,6 +173,7 @@ static uint16_t fat16_get_next_cluster(const fat_node *vol, uint16_t cluster) {
     return next;
 }
 
+// Write one FAT entry, mirroring it across every FAT copy on the volume
 static uint8_t fat16_set_next_cluster(const fat_node *vol, uint16_t cluster, uint16_t next) {
     uint64_t phys = frame_alloc();
     if (!phys) {
@@ -181,6 +192,7 @@ static uint8_t fat16_set_next_cluster(const fat_node *vol, uint16_t cluster, uin
     *(uint16_t *)(sector + index) = next;
     
     for (uint8_t i = 0; i < vol->data.bpb.num_fats; i++) {
+        // Same entry offset within each FAT: base + i*fat_s + offset-into-fat
         uint32_t write_sector = vol->data.bpb.rsc + i * vol->data.bpb.fat_s + (fat_sector - vol->data.bpb.rsc) % vol->data.bpb.fat_s;
         if (((fat_node *)vol)->blockdev.write(&((fat_node *)vol)->blockdev, write_sector, 1, sector) != 0) {
             frame_free(phys);
@@ -192,6 +204,7 @@ static uint8_t fat16_set_next_cluster(const fat_node *vol, uint16_t cluster, uin
     return 0;
 }
 
+// Scan the FAT for a free cluster and mark it as end-of-chain
 static uint16_t fat16_allocate_cluster(const fat_node *vol) {
     for (uint16_t cluster = 2; cluster < 65525; cluster++) {
         if (fat16_get_next_cluster(vol, cluster) == FAT16_CLUSTER_FREE) {
@@ -203,6 +216,7 @@ static uint16_t fat16_allocate_cluster(const fat_node *vol) {
     return 0;
 }
 
+// Walk a chain from |start_cluster| freeing every cluster, stopping at end-of-chain
 static void fat16_free_cluster_chain_internal(const fat_node *vol, uint16_t start_cluster) {
     uint16_t current = start_cluster;
     while (current >= 2 && current < FAT16_CLUSTER_BAD) {
@@ -212,16 +226,19 @@ static void fat16_free_cluster_chain_internal(const fat_node *vol, uint16_t star
     }
 }
 
+// Read a whole cluster (spc sectors) contiguous from its first sector
 static uint8_t fat16_read_cluster(const fat_node *vol, uint16_t cluster, uint8_t *buffer) {
     uint32_t sector = fat16_get_cluster_sector(vol, cluster);
     return ((fat_node *)vol)->blockdev.read(&((fat_node *)vol)->blockdev, sector, vol->data.bpb.spc, buffer);
 }
 
+// Write a whole cluster (spc sectors) contiguous from its first sector
 static uint8_t fat16_write_cluster(const fat_node *vol, uint16_t cluster, const uint8_t *buffer) {
     uint32_t sector = fat16_get_cluster_sector(vol, cluster);
     return ((fat_node *)vol)->blockdev.write(&((fat_node *)vol)->blockdev, sector, vol->data.bpb.spc, (void *)buffer);
 }
 
+// Decode the space-padded 8.3 name into "base.ext" (skipping the dot for directories)
 static void fat16_read_dirent(struct fat16_dirent *dirent, char *name, size_t name_len) {
     size_t pos = 0;
     for (int i = 0; i < 8 && dirent->name[i] != ' ' && dirent->name[i] != 0; i++) {
@@ -246,24 +263,29 @@ static void fat16_read_dirent(struct fat16_dirent *dirent, char *name, size_t na
     }
 }
 
+// Fixed root directory size in sectors: rec entries * 32 bytes each
 static uint32_t fat16_root_dir_sectors(const fat_node *vol) {
     return (vol->data.bpb.rec * 32 + vol->data.bpb.bps - 1) / vol->data.bpb.bps;
 }
 
+// 32-byte dirents per sector
 static uint32_t fat16_dir_entries_per_sector(const fat_node *vol) {
     return vol->data.bpb.bps / 32;
 }
 
+// 32-byte dirents per whole cluster
 static uint32_t fat16_dir_entries_per_cluster(const fat_node *vol) {
     return fat16_dir_entries_per_sector(vol) * vol->data.bpb.spc;
 }
 
+// Map directory-entry index |idx| to (sector, offset-within-sector); dir_cluster 0 = fixed root
 static uint8_t fat16_dir_entry_location(const fat_node *vol, uint16_t dir_cluster,
                                         uint32_t idx, uint32_t *sector, uint16_t *in_sector) {
     uint32_t eps = fat16_dir_entries_per_sector(vol);
     uint32_t epc = fat16_dir_entries_per_cluster(vol);
 
     if (dir_cluster == 0) {
+        // Root: entries live right after the FATs, before any data cluster
         if (idx / eps >= fat16_root_dir_sectors(vol))
             return 1;
         *sector = vol->data.bpb.rsc + vol->data.bpb.num_fats * vol->data.bpb.fat_s
@@ -273,7 +295,7 @@ static uint8_t fat16_dir_entry_location(const fat_node *vol, uint16_t dir_cluste
     }
 
     uint16_t cluster = dir_cluster;
-    uint32_t advance = idx / epc;
+    uint32_t advance = idx / epc;   // how many clusters deep into the chain the dirent sits
     for (uint32_t i = 0; i < advance; i++) {
         uint16_t next = fat16_get_next_cluster(vol, cluster);
         if (next < 2 || next >= FAT16_CLUSTER_BAD)
@@ -283,10 +305,11 @@ static uint8_t fat16_dir_entry_location(const fat_node *vol, uint16_t dir_cluste
 
     uint32_t within_cluster = idx % epc;
     *sector = fat16_get_cluster_sector(vol, cluster) + within_cluster / eps;
-    *in_sector = within_cluster % eps;
+    *in_sector = within_cluster % eps;   // 32-byte slot offset inside the sector
     return 0;
 }
 
+// Read the dir entry at logical index |idx| into |entry|
 static uint8_t fat16_read_dirent_index(const fat_node *vol, uint16_t dir_cluster,
                                        uint32_t idx, struct fat16_dirent *entry) {
     uint32_t sector;
@@ -304,11 +327,12 @@ static uint8_t fat16_read_dirent_index(const fat_node *vol, uint16_t dir_cluster
         return 3;
     }
 
-    memcpy(entry, buffer + in_sector * 32, 32);
+    memcpy(entry, buffer + in_sector * 32, 32);   // 32 bytes per dir entry
     frame_free(phys);
     return 0;
 }
 
+// Read-modify-write the dir entry at logical index |idx|
 static uint8_t fat16_write_dirent_index(const fat_node *vol, uint16_t dir_cluster,
                                         uint32_t idx, const struct fat16_dirent *entry) {
     uint32_t sector;
@@ -337,15 +361,18 @@ static uint8_t fat16_write_dirent_index(const fat_node *vol, uint16_t dir_cluste
     return 0;
 }
 
+// Read a little-endian UCS-2 code unit
 static uint16_t fat16_get_ucs2(const uint8_t *p) {
     return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
 }
 
+// Write a little-endian UCS-2 code unit
 static void fat16_put_ucs2(uint8_t *p, uint16_t c) {
     p[0] = c & 0xFF;
     p[1] = c >> 8;
 }
 
+// ASCII case-insensitive filename comparison
 static int fat16_name_iequal(const char *a, const char *b) {
     for (;;) {
         char ca = *a;
@@ -361,6 +388,7 @@ static int fat16_name_iequal(const char *a, const char *b) {
     }
 }
 
+// Standard LFN checksum over the 11 bytes of the 8.3 name, tying LFN slots to their short entry
 static uint8_t fat16_lfn_checksum(const uint8_t *short_name) {
     uint8_t sum = 0;
     for (int i = 0; i < 11; i++)
@@ -368,10 +396,12 @@ static uint8_t fat16_lfn_checksum(const uint8_t *short_name) {
     return sum;
 }
 
+// How many LFN slots a name needs: 13 chars per slot, rounded up
 static uint32_t fat16_lfn_count(const char *name) {
     return ((uint32_t)strlen(name) + 12) / 13;
 }
 
+// Fold an arbitrary name into an upper-case, space-padded 11-byte short name
 static void fat16_short_name(const char *name, uint8_t *short_name) {
     const char *dot = 0;
     for (const char *p = name; *p; p++) {
@@ -394,6 +424,7 @@ static void fat16_short_name(const char *name, uint8_t *short_name) {
     }
 }
 
+// Reassemble a long name from |count| LFN slots; builds in reverse (last slot holds chars 0-12)
 static size_t fat16_lfn_decode(const struct fat16_dirent *entries, int count,
                                char *out, size_t out_size) {
     size_t pos = 0;
@@ -402,6 +433,7 @@ static size_t fat16_lfn_decode(const struct fat16_dirent *entries, int count,
         const uint8_t *p = e->name;
 
         uint16_t chars[13];
+        // LFN slots smuggle 13 UCS-2 chars across the reserved dirent fields
         chars[0]  = fat16_get_ucs2(p + 1);
         chars[1]  = fat16_get_ucs2(p + 3);
         chars[2]  = fat16_get_ucs2(p + 5);
@@ -419,13 +451,14 @@ static size_t fat16_lfn_decode(const struct fat16_dirent *entries, int count,
         for (int j = 0; j < 13; j++) {
             uint16_t c = chars[j];
             if (c == 0xFFFF || c == 0) {
+                // 0xFFFF pads the last LFN slot; 0x0000 also terminates the name
                 if (pos < out_size)
                     out[pos] = '\0';
                 return pos;
             }
             if (pos + 1 >= out_size)
                 return pos;
-            out[pos++] = (char)(c & 0x7F);
+            out[pos++] = (char)(c & 0x7F);   // input is pure ASCII, so low byte is enough
         }
     }
     if (pos < out_size)
@@ -433,6 +466,7 @@ static size_t fat16_lfn_decode(const struct fat16_dirent *entries, int count,
     return pos;
 }
 
+// Encode |offset|-indexed slice of |name| (up to 13 chars) into one LFN slot
 static void fat16_lfn_encode(struct fat16_dirent *e, uint8_t seq, uint8_t checksum,
                              const char *name, size_t offset) {
     size_t len = strlen(name);
@@ -441,7 +475,7 @@ static void fat16_lfn_encode(struct fat16_dirent *e, uint8_t seq, uint8_t checks
     memset(e, 0, sizeof(*e));
     for (int i = 0; i < 13; i++) {
         size_t ci = offset + (size_t)i;
-        chars[i] = (ci < len) ? (uint16_t)(uint8_t)name[ci] : 0xFFFF;
+        chars[i] = (ci < len) ? (uint16_t)(uint8_t)name[ci] : 0xFFFF;   // 0xFFFF pads out-of-range chars
     }
 
     e->name[0] = seq;
@@ -463,15 +497,17 @@ static void fat16_lfn_encode(struct fat16_dirent *e, uint8_t seq, uint8_t checks
     e->size = (chars[11] & 0xFFFF) | ((uint32_t)(chars[12] & 0xFFFF) << 16);
 }
 
+// Locate the dirent for |name|, skipping deleted slots and following LFN runs
 static struct fat16_dirent *fat16_find_dirent(const fat_node *vol, uint16_t dir_cluster, const char *name, struct fat16_dirent *result) {
     for (uint32_t idx = 0; idx < 65536; idx++) {
         struct fat16_dirent entry;
         if (fat16_read_dirent_index(vol, dir_cluster, idx, &entry) != 0)
             return NULL;
         if (entry.name[0] == 0)
-            return NULL;
+            return NULL;   // a full zero name marks the end of the directory
 
         if (entry.attr == FAT16_ATTR_LFN) {
+            // Collect the run of LFN slots, then decode and match the long name
             struct fat16_dirent lfn_entries[21];
             int count = 0;
             uint32_t k = idx;
@@ -499,7 +535,7 @@ static struct fat16_dirent *fat16_find_dirent(const fat_node *vol, uint16_t dir_
         }
 
         if (entry.name[0] == 0xE5)
-            continue;
+            continue;   // 0xE5 = deleted entry, skip it
 
         char entry_name[256];
         fat16_read_dirent(&entry, entry_name, sizeof(entry_name));
@@ -513,6 +549,7 @@ static struct fat16_dirent *fat16_find_dirent(const fat_node *vol, uint16_t dir_
     return NULL;
 }
 
+// Walk the cluster chain of |start_cluster|, copying |size| bytes to |buffer|
 static uint8_t fat16_read_file_core(const fat_node *vol, uint16_t start_cluster, uint32_t size, uint8_t *buffer, uint32_t *bytes_read) {
     uint16_t current = start_cluster;
     uint32_t remaining = size;
@@ -536,6 +573,7 @@ static uint8_t fat16_read_file_core(const fat_node *vol, uint16_t start_cluster,
     return 0;
 }
 
+// Write |size| bytes by allocating a fresh cluster chain; returns the chain head in *start_cluster
 static uint8_t fat16_write_file_core(const fat_node *vol, uint16_t *start_cluster, const uint8_t *buffer, uint32_t size, uint32_t *bytes_written) {
     uint32_t remaining = size;
     uint32_t bytes = 0;
@@ -569,7 +607,7 @@ static uint8_t fat16_write_file_core(const fat_node *vol, uint16_t *start_cluste
         }
         
         uint8_t *cluster_buf = (uint8_t *)phys_to_virt(phys);
-        memset(cluster_buf, 0, cluster_bytes);
+        memset(cluster_buf, 0, cluster_bytes);      // zero-fill the whole cluster first
         memcpy(cluster_buf, buffer + bytes, to_write);
         
         if (fat16_write_cluster(vol, current, cluster_buf) != 0) {
@@ -588,6 +626,7 @@ static uint8_t fat16_write_file_core(const fat_node *vol, uint16_t *start_cluste
     return 0;
 }
 
+// Return the logical index of the dirent for |name| (past any LFN slots)
 static uint8_t fat16_find_entry_index(const fat_node *vol, uint16_t dir_cluster, const char *name, uint32_t *index) {
     for (uint32_t idx = 0; idx < 65536; idx++) {
         struct fat16_dirent entry;
@@ -635,6 +674,7 @@ static uint8_t fat16_find_entry_index(const fat_node *vol, uint16_t dir_cluster,
     return 1;
 }
 
+// Create a directory entry: find a free slot run, then write LFN slots followed by the 8.3 entry
 static uint8_t fat16_create_dirent(const fat_node *vol, uint16_t dir_cluster, const char *name, uint8_t attr, uint16_t start_cluster, uint32_t size) {
     uint8_t short_name[11];
     fat16_short_name(name, short_name);
@@ -645,8 +685,9 @@ static uint8_t fat16_create_dirent(const fat_node *vol, uint16_t dir_cluster, co
         struct fat16_dirent entry;
         int read = fat16_read_dirent_index(vol, dir_cluster, idx, &entry);
         if (read != 0) {
+            // Walked off the cluster chain: grow the directory with a fresh zeroed cluster
             if (dir_cluster == 0)
-                return 7;
+                return 7;   // the fixed root directory cannot grow
             uint16_t last = dir_cluster;
             uint16_t nxt;
             while ((nxt = fat16_get_next_cluster(vol, last)) >= 2 && nxt < FAT16_CLUSTER_BAD)
@@ -689,6 +730,7 @@ static uint8_t fat16_create_dirent(const fat_node *vol, uint16_t dir_cluster, co
             uint8_t checksum = fat16_lfn_checksum(short_name);
             for (uint32_t i = 0; i < n_lfn; i++) {
                 struct fat16_dirent lfn;
+                // Slots are numbered high-to-low; bit 0x40 marks the final (first-read) slot
                 fat16_lfn_encode(&lfn, (uint8_t)((n_lfn - i) | ((i == 0) ? 0x40 : 0)), checksum, name, i * 13);
                 if (fat16_write_dirent_index(vol, dir_cluster, start + i, &lfn) != 0)
                     return 6;
@@ -710,6 +752,7 @@ static uint8_t fat16_create_dirent(const fat_node *vol, uint16_t dir_cluster, co
     return 11;
 }
 
+// Mark a dirent (and its LFN slots) as deleted with 0xE5; frees the file's cluster chain
 static uint8_t fat16_delete_dirent(const fat_node *vol, uint16_t dir_cluster, const char *name) {
     uint32_t index;
     if (fat16_find_entry_index(vol, dir_cluster, name, &index) != 0)
@@ -729,6 +772,7 @@ static uint8_t fat16_delete_dirent(const fat_node *vol, uint16_t dir_cluster, co
 
     uint32_t k = index;
     while (k > 0) {
+        // Delete the LFN slots that run backwards from the entry too
         struct fat16_dirent e;
         if (fat16_read_dirent_index(vol, dir_cluster, k - 1, &e) != 0)
             break;
@@ -743,6 +787,7 @@ static uint8_t fat16_delete_dirent(const fat_node *vol, uint16_t dir_cluster, co
     return 0;
 }
 
+// Dump the parsed BPB/EBR to the kernel console
 static void fat16_debug_print(const fat *f) {
     char oem[9]  = {0};
     char lab[12] = {0};
@@ -761,6 +806,7 @@ static void fat16_debug_print(const fat *f) {
              f->ebr.bsig, f->ebr.vol_id, lab, type);
 }
 
+// Read the boot sector and unpack it into a fat volume struct
 static fat *read_fat(vfs_blockdev_t *dev) {
     uint64_t phys = frame_alloc();
     if (!phys) {
@@ -785,6 +831,7 @@ static fat *read_fat(vfs_blockdev_t *dev) {
     return f;
 }
 
+// Iterate fat_size until the cluster count lands in the FAT16 window (4085..65524)
 static uint16_t fat16_compute_fat_size(uint32_t total_sectors) {
     uint16_t root_dir_sectors = (FAT16_ROOT_ENTRIES * 32 + FAT16_SECTOR_SIZE - 1) / FAT16_SECTOR_SIZE;
     uint16_t fat_size = 1;
@@ -805,6 +852,7 @@ static uint16_t fat16_compute_fat_size(uint32_t total_sectors) {
     }
 }
 
+// Basic sanity checks on a parsed boot sector/extended BPB
 static uint8_t fat16_validate(const fat *f) {
     const struct bpb *b = &f->bpb;
     if (b->bps < 512 || b->bps > 4096 || (b->bps & (b->bps - 1))) {
@@ -834,6 +882,7 @@ static uint8_t fat16_validate(const fat *f) {
     return 0;
 }
 
+// Wipe a drive and write a fresh FAT16 boot sector, FATs, and empty root directory
 uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
     uint16_t fat_size = fat16_compute_fat_size(total_sectors);
     if (!fat_size) {
@@ -848,6 +897,7 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
     uint8_t *sector = (uint8_t *)phys_to_virt(phys);
     memset(sector, 0, FAT16_SECTOR_SIZE);
 
+    // Jump boot instruction + OEM name + BPB fields, byte-by-byte
     sector[0] = 0xEB; sector[1] = 0x3C; sector[2] = 0x90;
     memcpy(sector + 3, FAT16_OEM, 8);
     sector[11] = FAT16_SECTOR_SIZE & 0xFF;
@@ -859,6 +909,7 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
     sector[17] = FAT16_ROOT_ENTRIES & 0xFF;
     sector[18] = FAT16_ROOT_ENTRIES >> 8;
     if (total_sectors <= 0xFFFF) {
+        // 16-bit sector count; larger volumes use the 32-bit field instead
         sector[19] = total_sectors & 0xFF;
         sector[20] = total_sectors >> 8;
     }
@@ -876,9 +927,9 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
         sector[34] = (total_sectors >> 16) & 0xFF;
         sector[35] = (total_sectors >> 24) & 0xFF;
     }
-    sector[36] = 0x80;
+    sector[36] = 0x80;   // drive number (0x80 = first hard disk)
     sector[37] = 0;
-    sector[38] = 0x29;
+    sector[38] = 0x29;   // extended boot signature present
     uint32_t vol_id = 0x12345678;
     sector[39] = vol_id & 0xFF;
     sector[40] = (vol_id >> 8)  & 0xFF;
@@ -886,7 +937,7 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
     sector[42] = (vol_id >> 24) & 0xFF;
     memcpy(sector + 43, FAT16_VOL_LABEL, 11);
     memcpy(sector + 54, FAT16_FS_TYPE,   8);
-    sector[510] = 0x55;
+    sector[510] = 0x55;   // boot record signature 0x55AA
     sector[511] = 0xAA;
 
     if (dev->write(dev, FAT16_LBA, 1, sector) != 0) {
@@ -895,12 +946,14 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
     }
 
     memset(sector, 0, FAT16_SECTOR_SIZE);
+    // FAT entry 0 holds the media byte; entries 1 and 2 mark a reserved and the root's EOF
     sector[0] = FAT16_MEDIA;
     sector[1] = 0xFF;
     sector[2] = 0xFF;
     sector[3] = 0xFF;
 
     for (uint8_t i = 0; i < FAT16_NUM_FATS; i++) {
+        // First FAT sector has the media/reserved entries; the rest are zeroed
         uint32_t base = FAT16_RESERVED_SECTORS + i * fat_size;
         if (dev->write(dev, base, 1, sector) != 0) {
             frame_free(phys);
@@ -917,7 +970,7 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
 
     memset(sector, 0, FAT16_SECTOR_SIZE);
     uint16_t root_dir_sectors = (FAT16_ROOT_ENTRIES * 32 + FAT16_SECTOR_SIZE - 1) / FAT16_SECTOR_SIZE;
-    uint32_t root_base = FAT16_RESERVED_SECTORS + FAT16_NUM_FATS * fat_size;
+    uint32_t root_base = FAT16_RESERVED_SECTORS + FAT16_NUM_FATS * fat_size;   // root sits right after the FATs
     for (uint16_t i = 0; i < root_dir_sectors; i++) {
         if (dev->write(dev, root_base + i, 1, sector) != 0) {
             frame_free(phys);
@@ -929,10 +982,12 @@ uint8_t fat16_format(vfs_blockdev_t *dev, uint32_t total_sectors) {
     return 0;
 }
 
+// Raw passthrough read of |count| sectors starting at |lba|
 uint8_t fat16_read(vfs_blockdev_t *dev, uint32_t lba, uint8_t count, void *buffer) {
     return dev->read(dev, lba, count, buffer);
 }
 
+// Probe |dev| as a FAT16 volume: read the boot sector, validate it, and register the volume
 void *fat16_init(vfs_blockdev_t *dev) {
     if (!fat16_volumes_ready) {
         fat_list_init(&fat16_volumes);
@@ -966,6 +1021,7 @@ void *fat16_init(vfs_blockdev_t *dev) {
     return (void *)node;
 }
 
+// Public wrapper: read |size| bytes from a file's cluster chain
 uint8_t fat16_read_file(const void *vol_ptr, uint16_t start_cluster, uint32_t size, uint8_t *buffer, uint32_t *bytes_read) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -974,6 +1030,7 @@ uint8_t fat16_read_file(const void *vol_ptr, uint16_t start_cluster, uint32_t si
     return fat16_read_file_core(vol, start_cluster, size, buffer, bytes_read);
 }
 
+// Public wrapper: write |size| bytes to a fresh cluster chain
 uint8_t fat16_write_file(const void *vol_ptr, uint16_t *start_cluster, const uint8_t *buffer, uint32_t size, uint32_t *bytes_written) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -982,6 +1039,7 @@ uint8_t fat16_write_file(const void *vol_ptr, uint16_t *start_cluster, const uin
     return fat16_write_file_core(vol, start_cluster, buffer, size, bytes_written);
 }
 
+// Create a file: write its data out, then add a dirent pointing at the new chain
 uint8_t fat16_create_file(const void *vol_ptr, uint16_t dir_cluster, const char *name, const uint8_t *buffer, uint32_t size) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -1007,6 +1065,7 @@ uint8_t fat16_create_file(const void *vol_ptr, uint16_t dir_cluster, const char 
     return 0;
 }
 
+// Public wrapper: free every cluster in |start_cluster|'s chain
 void fat16_free_cluster_chain(const void *vol_ptr, uint16_t start_cluster) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol)
@@ -1014,6 +1073,7 @@ void fat16_free_cluster_chain(const void *vol_ptr, uint16_t start_cluster) {
     fat16_free_cluster_chain_internal(vol, start_cluster);
 }
 
+// Delete a file's dirent and free its clusters
 uint8_t fat16_delete_file(const void *vol_ptr, uint16_t dir_cluster, const char *name) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -1023,6 +1083,7 @@ uint8_t fat16_delete_file(const void *vol_ptr, uint16_t dir_cluster, const char 
     return fat16_delete_dirent(vol, dir_cluster, name);
 }
 
+// Create an empty subdirectory: allocate a cluster and add a dirent for it
 uint8_t fat16_create_directory(const void *vol_ptr, uint16_t parent_cluster, const char *name) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -1059,6 +1120,7 @@ uint8_t fat16_create_directory(const void *vol_ptr, uint16_t parent_cluster, con
     return 0;
 }
 
+// Remove a directory only if it holds no real entries (free slots and LFN slots don't count)
 uint8_t fat16_delete_directory(const void *vol_ptr, uint16_t parent_cluster, const char *name) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -1122,6 +1184,7 @@ uint8_t fat16_delete_directory(const void *vol_ptr, uint16_t parent_cluster, con
     return fat16_delete_dirent(vol, parent_cluster, name);
 }
 
+// Fill |entries| (up to *count) with the directory's name/attr/cluster listing
 uint8_t fat16_list_directory(const void *vol_ptr, uint16_t dir_cluster, fat16_dir_entry *entries, uint16_t *count) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -1187,6 +1250,7 @@ uint8_t fat16_list_directory(const void *vol_ptr, uint16_t dir_cluster, fat16_di
     return 0;
 }
 
+// Look up one entry and return its cluster, size, attrs, and 8.3 name
 uint8_t fat16_find_file(const void *vol_ptr, uint16_t dir_cluster, const char *name, fat16_file_handle *handle) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {
@@ -1209,6 +1273,7 @@ uint8_t fat16_find_file(const void *vol_ptr, uint16_t dir_cluster, const char *n
     return 0;
 }
 
+// Rewrite the stored cluster/size of an existing dirent (used to grow a file)
 uint8_t fat16_create_dirent_update(const void *vol_ptr, uint16_t dir_cluster,
                                    const char *name, uint16_t start_cluster,
                                    uint32_t size) {
@@ -1230,6 +1295,7 @@ uint8_t fat16_create_dirent_update(const void *vol_ptr, uint16_t dir_cluster,
     return (fat16_write_dirent_index(vol, dir_cluster, index, &entry) == 0) ? 0 : 5;
 }
 
+// Return the serial number this volume was formatted with
 uint32_t fat16_get_volume_id(const void *vol_ptr) {
     const fat_node *vol = (const fat_node *)vol_ptr;
     if (!vol) {

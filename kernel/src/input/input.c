@@ -3,18 +3,22 @@
 #include <input/keyboard.h>
 #include <tty.h>
 
+// Ring-buffer capacity for the global input queue.
 #define INPUT_BUF_SIZE 256
 
+// Key codes handled specially before the plain character path.
 #define INPUT_KEY_ESC        0x01
 #define INPUT_KEY_BACKSPACE  0x0E
 #define INPUT_KEY_TAB        0x0F
 #define INPUT_KEY_ENTER      0x1C
 
+// Global keyboard input ring buffer (head = oldest, tail = next write).
 static uint8_t  input_buf[INPUT_BUF_SIZE];
 static uint32_t input_head;
 static uint32_t input_tail;
 static uint32_t input_count;
 
+// US layout: scancode -> [unshifted, shifted] characters.
 static const char input_keymap[128][2] = {
     [0x02] = { '1', '!' },
     [0x03] = { '2', '@' },
@@ -67,6 +71,7 @@ static const char input_keymap[128][2] = {
     [0x39] = { ' ', ' ' },
 };
 
+// Queue a character locally and forward it to the active TTY.
 static void input_push(char c) {
     if (input_count < INPUT_BUF_SIZE) {
         input_buf[input_tail] = (uint8_t)c;
@@ -79,6 +84,7 @@ static void input_push(char c) {
         tty_input(tty, c);
 }
 
+// Translate one keyboard event (key code + modifiers) into characters.
 void input_handle_event(uint8_t key, uint8_t make, uint8_t mods, uint8_t locks) {
     if (!make)
         return;
@@ -86,6 +92,7 @@ void input_handle_event(uint8_t key, uint8_t make, uint8_t mods, uint8_t locks) 
     uint8_t ctrl  = (mods & (KB_MOD_LCTRL | KB_MOD_RCTRL)) != 0;
     uint8_t alt   = (mods & (KB_MOD_LALT | KB_MOD_RALT)) != 0;
 
+    // Ctrl+Alt+F1..F4 switches to virtual console 0..3.
     if (ctrl && alt && !(key & KB_KEY_EXTENDED) && key >= 0x3B && key <= 0x3E) {
         tty_switch((uint8_t)(key - 0x3B));
         return;
@@ -108,6 +115,7 @@ void input_handle_event(uint8_t key, uint8_t make, uint8_t mods, uint8_t locks) 
         return;
     }
 
+    // Extended keys are emitted as ANSI cursor/misc escape sequences.
     if (key & KB_KEY_EXTENDED) {
         switch (key & 0x7F) {
             case 0x47: input_push('\x1B'); input_push('['); input_push('H'); break;
@@ -132,13 +140,16 @@ void input_handle_event(uint8_t key, uint8_t make, uint8_t mods, uint8_t locks) 
 
     char ch = input_keymap[key][shift ? 1 : 0];
 
+    // Ctrl+letter collapses to the matching ASCII control code (e.g. ^C = 0x03).
     if (ctrl && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')))
         ch = (char)(ch & 0x1F);
 
+    // Alt behaves as a Meta key: prefix the character with ESC.
     if (alt && ch) {
         input_push('\x1B');
     }
 
+    // Caps Lock inverts letter case (upper shifts to lower, lower to upper).
     if (locks & KB_LOCK_CAPS) {
         if (ch >= 'a' && ch <= 'z')
             ch = (char)(ch - ('a' - 'A'));
@@ -150,16 +161,19 @@ void input_handle_event(uint8_t key, uint8_t make, uint8_t mods, uint8_t locks) 
         input_push(ch);
 }
 
+// Drop all queued input.
 void input_flush() {
     input_head = 0;
     input_tail = 0;
     input_count = 0;
 }
 
+// Number of characters currently queued.
 int input_available() {
     return (int)input_count;
 }
 
+// Pop the oldest queued character; returns -1 when the queue is empty.
 int input_getchar(char *c) {
     if (input_count == 0)
         return -1;
@@ -169,6 +183,7 @@ int input_getchar(char *c) {
     return 0;
 }
 
+// Reset the input queue and start the keyboard with our event handler.
 void input_init() {
     input_head = 0;
     input_tail = 0;

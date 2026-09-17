@@ -7,6 +7,7 @@
 extern "C" {
 #endif
 
+// File-type bits stored in the upper nibble of st_mode (Linux values)
 #define S_IFMT  0x0F000
 #define S_IFBLK 0x06000
 #define S_IFCHR 0x02000
@@ -21,11 +22,13 @@ struct timespec {
 	int64_t tv_nsec;
 };
 
+// Scatter/gather segment for readv/writev
 struct iovec {
 	void *iov_base;
 	size_t iov_len;
 };
 
+// Identity buffer returned by uname(2): six NUL-terminated fields
 struct utsname {
 	char sysname[65];
 	char nodename[65];
@@ -35,6 +38,7 @@ struct utsname {
 	char domainname[65];
 };
 
+// stat(2) result, laid out like Linux's x86-64 struct stat
 struct stat {
 	uint64_t st_dev;
 	uint64_t st_ino;
@@ -52,7 +56,8 @@ struct stat {
 	struct timespec st_ctim;
 };
 
-struct tinykern_dirent {
+// One entry returned by getdents; d_name is a variable-length tail
+struct eucalypt_dirent {
 	uint64_t d_ino;
 	int64_t  d_off;
 	uint16_t d_reclen;
@@ -60,6 +65,7 @@ struct tinykern_dirent {
 	char     d_name[];
 };
 
+// d_type values carried in eucalypt_dirent
 #define DT_UNKNOWN 0
 #define DT_FIFO    1
 #define DT_CHR     2

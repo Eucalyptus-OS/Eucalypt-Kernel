@@ -148,8 +148,10 @@ void check_all_buses() {
     }
 }
 
+// Read a 64-bit memory BAR; returns 0 if the BAR is I/O space or only 32-bit
 uint64_t pci_read_bar64(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
     uint32_t low = pci_config_read_dword(bus, slot, func, offset);
+    // Bit 0 set means the BAR maps I/O space, which a 64-bit base cannot encode
     if (low & 1)
         return 0;
 
@@ -158,7 +160,9 @@ uint64_t pci_read_bar64(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset)
     return (addr_high << 32) | addr_low;
 }
 
+// True when the function is an AHCI (SATA) controller
 uint8_t pci_is_ahci_device(uint8_t bus, uint8_t slot, uint8_t func) {
+    // Class 0x01 (mass storage), subclass 0x06 (SATA), prog-if 0x01 (AHCI)
     uint8_t class_code = pci_config_read_byte(bus, slot, func, 0x0b);
     uint8_t subclass   = pci_config_read_byte(bus, slot, func, 0x0a);
     uint8_t prog_if    = pci_config_read_byte(bus, slot, func, 0x09);
@@ -166,6 +170,7 @@ uint8_t pci_is_ahci_device(uint8_t bus, uint8_t slot, uint8_t func) {
     return class_code == 0x01 && subclass == 0x06 && prog_if == 0x01;
 }
 
+// Enable memory-mapped access and bus mastering for the device
 void pci_enable_device(uint8_t bus, uint8_t slot, uint8_t func) {
     uint16_t cmd = pci_config_read_word(bus, slot, func, 0x04);
     cmd |= PCI_CMD_MEM_SPACE | PCI_CMD_BUS_MASTER;
@@ -177,11 +182,13 @@ uint8_t pci_get_interrupt_line(uint8_t bus, uint8_t device, uint8_t function) {
     return pci_config_read_byte(bus, device, function, 0x3C);
 }
 
+// Return which INTx pin the device asserts (1-4 = INTA-INTD), or 0 if unknown
 uint8_t pci_get_interrupt_pin(uint8_t bus, uint8_t device, uint8_t function) {
     return pci_config_read_byte(bus, device, function, 0x3D);
 }
 
 
+// Log one function's vendor/product IDs if a device is present there
 static void pci_log_function_id(uint8_t bus, uint8_t device, uint8_t function) {
     uint16_t vendor = pci_check_vendor(bus, device, function);
 
@@ -194,6 +201,7 @@ static void pci_log_function_id(uint8_t bus, uint8_t device, uint8_t function) {
              bus, device, function, vendor, device_id);
 }
 
+// Sweep all 256 buses and log every present device, guarded to run only once
 void pci_log_ids_once() {
     static bool logged = false;
 

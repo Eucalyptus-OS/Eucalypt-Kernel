@@ -6,8 +6,9 @@
 #include <mm/page.h>
 #include <mm/vmm.h>
 
-static linked_list_t list;
+static linked_list_t list; // registry of every mapped virtual region in the current context
 
+// Allocate and map a run of anonymous 4 KiB pages, tracking the region in the registry
 void *vmm_map_region(uint64_t *pml4_phys, void *vaddr, uint64_t flags, int pages_needed) {
     if (!pml4_phys || !vaddr || pages_needed <= 0) {
         print("vmm_map_region: bad args pml4=%X vaddr=%X pages=%d\n", pml4_phys, vaddr, pages_needed);
@@ -30,7 +31,7 @@ void *vmm_map_region(uint64_t *pml4_phys, void *vaddr, uint64_t flags, int pages
     for (int i = 0; i < pages_needed; i++) {
         void *page_vaddr = (void *)((uint64_t)vaddr + (uint64_t)i * PAGE_SIZE);
 
-        uintptr_t frame = frame_alloc();
+        uintptr_t frame = frame_alloc(); // allocate a fresh frame for each page
         if (!frame) {
             print("vmm_map_region: frame_alloc failed at page %d/%d\n", i, pages_needed);
             goto fail;
@@ -46,7 +47,7 @@ void *vmm_map_region(uint64_t *pml4_phys, void *vaddr, uint64_t flags, int pages
         node->len++;
     }
 
-    node->end = (uint64_t)vaddr + node->len * PAGE_SIZE;
+    node->end = (uint64_t)vaddr + node->len * PAGE_SIZE; // region spans [base, end) virtual addresses
 
     node->prev = list.tail;
     if (list.tail) {
@@ -60,6 +61,7 @@ void *vmm_map_region(uint64_t *pml4_phys, void *vaddr, uint64_t flags, int pages
     return (void *)node->base;
 
 fail:
+    // Roll back the pages mapped so far and the tracking node before giving up
     for (uint64_t j = 0; j < node->len; j++) {
         void *page_vaddr = (void *)((uint64_t)vaddr + j * PAGE_SIZE);
         paging_unmap_page(pml4_phys, page_vaddr);
@@ -68,6 +70,7 @@ fail:
     return NULL;
 }
 
+// Unmap every page of a region, drop it from the registry, and free the tracking node's frame
 void vmm_free_region(uint64_t *pml4, linked_list_node_t *node) {
     if (!pml4 || !node) {
         return;
@@ -97,6 +100,7 @@ void vmm_free_region(uint64_t *pml4, linked_list_node_t *node) {
     frame_free((uintptr_t)virt_to_phys((void *)node));
 }
 
+// Look up the tracked region whose base virtual address matches vaddr
 linked_list_node_t *vmm_find_region(uint64_t vaddr) {
     for (linked_list_node_t *n = list.head; n; n = n->next) {
         if (n->base == vaddr) {
@@ -106,6 +110,7 @@ linked_list_node_t *vmm_find_region(uint64_t vaddr) {
     return NULL;
 }
 
+// Reset the virtual region registry to empty
 uint8_t vmm_init() {
     list.count = 0;
     list.head  = NULL;

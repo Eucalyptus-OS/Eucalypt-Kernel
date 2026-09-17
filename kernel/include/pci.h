@@ -77,6 +77,7 @@
 // PCI subclass codes — serial bus (class 0x0C)
 #define PCI_SUBCLASS_USB       0x03
 
+// Shorthand command register bit masks used when enabling devices
 #define PCI_CMD_IO_SPACE     (1u << 0)
 #define PCI_CMD_MEM_SPACE    (1u << 1)
 #define PCI_CMD_BUS_MASTER   (1u << 2)

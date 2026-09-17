@@ -8,17 +8,18 @@
 typedef long ssize_t;
 #endif
 
-#define PIPE_BUF_SIZE 4096
+#define PIPE_BUF_SIZE 4096   // fixed ring-buffer capacity of every pipe
 
+// Byte ring buffer with reader/writer counts and one blocking waiter per side
 typedef struct pipe {
     uint8_t  buf[PIPE_BUF_SIZE];
-    uint32_t head;
-    uint32_t tail;
-    uint32_t count;
-    int      readers;
-    int      writers;
-    struct tcb *read_waiter;
-    struct tcb *write_waiter;
+    uint32_t head;               // index of the next byte to read
+    uint32_t tail;               // index of the next byte to write
+    uint32_t count;              // number of bytes currently buffered
+    int      readers;            // open read-end count (0 => EOF on read)
+    int      writers;            // open write-end count (0 => SIGPIPE on write)
+    struct tcb *read_waiter;     // blocked reader to wake when data is pushed
+    struct tcb *write_waiter;    // blocked writer to wake when space frees up
 } pipe_t;
 
 pipe_t *pipe_create(void);

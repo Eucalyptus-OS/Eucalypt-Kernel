@@ -14,9 +14,11 @@ global keyboard_stub
 global int128_handler
 global syscall_entry_stub
 
+; User-mode code/data segment selectors (DPL 3).
 USER_CS equ 0x20 | 3
 USER_SS equ 0x18 | 3
 
+; Table of stub addresses for exceptions 0-31, consumed by idt_init.
 isr_stub_table:
 %assign i 0
 %rep 32
@@ -24,6 +26,7 @@ isr_stub_table:
 %assign i i+1
 %endrep
 
+; Stub for exceptions without an error code: save GPRs, call C handler, iretq.
 %macro ISR_NOERR 1
 isr_stub_%+%1:
     push 0
@@ -65,6 +68,7 @@ isr_stub_%+%1:
     iretq
 %endmacro
 
+; Stub for exceptions with an error code pushed by the CPU: pass it to the handler.
 %macro ISR_ERR 1
 isr_stub_%+%1:
     push rax
@@ -84,6 +88,7 @@ isr_stub_%+%1:
     push r15
     mov rdx, rsp
     mov rdi, %1
+    ; arg2: fetch the error code stored above all the saved registers.
     mov rsi, [rsp + 120]
     call exception_handler
     pop r15
@@ -105,6 +110,7 @@ isr_stub_%+%1:
     iretq
 %endmacro
 
+; Generate stubs for the 32 CPU exceptions (8, 10-14, 17, 30 push error codes).
 ISR_NOERR 0
 ISR_NOERR 1
 ISR_NOERR 2
@@ -138,6 +144,7 @@ ISR_NOERR 29
 ISR_ERR   30
 ISR_NOERR 31
 
+; IRQ 0x20 (APIC timer): save regs, call timer_handler, iretq.
 apic_stub:
     push rax
     push rbx
@@ -170,6 +177,7 @@ apic_stub:
     pop rax
     iretq
 
+; IRQ 0x21 (AHCI storage): dispatch to ahci_handler.
 ahci_stub:
     push rax
     push rbx
@@ -202,6 +210,7 @@ ahci_stub:
     pop rax
     iretq
 
+; IRQ 0x22 (PS/2 keyboard): dispatch to keyboard_handler.
 keyboard_stub:
     push rax
     push rbx
@@ -234,6 +243,7 @@ keyboard_stub:
     pop rax
     iretq
 
+; int 0x80 from user mode: dispatch to syscall_handler.
 int128_handler:
     push 0
     push rax
@@ -275,17 +285,21 @@ int128_handler:
     add rsp, 8
     iretq
 
+; SYSCALL entry: move to the kernel stack and build a user_context_t frame.
 syscall_entry_stub:
     cli
+    ; Keep user RSP in r11, then load this thread's kernel stack (tcb+16).
     mov r11, rsp
     mov rsp, [rel current_tcb]
     mov rsp, [rsp + 16]
+    ; Push a user iretq frame (SS, RSP, RFLAGS with IF set, CS, RIP=rcx)...
     push USER_SS
     push r11
     pushfq
     or dword [rsp], 0x200
     push USER_CS
     push rcx
+    ; ...plus fake error/vector slots so the layout matches the exception stubs.
     push 0
     push rax
     push rbx
@@ -302,7 +316,9 @@ syscall_entry_stub:
     push r13
     push r14
     push r15
+    ; Run the C handler with interrupts enabled.
     sti
+    ; Extract the syscall number and its arguments from the saved user GPRs.
     mov rdi, [rsp + 112]    ; num
     mov rsi, [rsp + 72]     ; arg1 = user rdi
     mov rdx, [rsp + 80]     ; arg2 = user rsi

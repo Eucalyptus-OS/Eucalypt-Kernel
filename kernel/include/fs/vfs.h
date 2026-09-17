@@ -13,6 +13,7 @@
 typedef long ssize_t;
 typedef long off_t;
 
+// Return codes for vfs_init/vfs_mount and filesystem mount helpers
 #define VFS_OK 0
 #define VFS_ERR_LETTER_IN_USE 1
 #define VFS_ERR_NO_SLOTS 2
@@ -20,6 +21,7 @@ typedef long off_t;
 #define VFS_ERR_ALREADY_MOUNTED 4
 #define VFS_ERR_FS_INIT 5
 
+// Node types stored in vfs_node_t::type
 #define VFS_NODE_FILE 0
 #define VFS_NODE_DIR 1
 #define VFS_NODE_DEV 2
@@ -49,54 +51,59 @@ typedef long off_t;
 
 extern int errno;
 
+// Filesystem layouts a block device can be detected as
 typedef enum { fat12, fat16, fat32, exfat } fs_t;
 
 typedef struct vfs_blockdev {
+    // Raw 512-byte sector read/write interface (lba, count, buffer)
     uint8_t (*read)(struct vfs_blockdev *dev, uint32_t lba, uint8_t count, void *buf);
     uint8_t (*write)(struct vfs_blockdev *dev, uint32_t lba, uint8_t count, const void *buf);
     void *priv;
 } vfs_blockdev_t;
 
+// One directory entry, as produced by readdir-type filesystem ops
 typedef struct {
     char d_name[MAX_NAME_LEN];
     uint32_t d_type;
     uint32_t d_ino;
 } vfs_dirent_t;
 
+// The operation vtable every filesystem implements for its inodes
 typedef struct {
-    struct vfs_node *(*lookup)(struct vfs_node *dir, const char *name);
-    ssize_t (*read)(struct vfs_node *node, void *buf, size_t count, off_t offset);
-    ssize_t (*write)(struct vfs_node *node, const void *buf, size_t count, off_t offset);
-    int (*readdir)(struct vfs_node *dir, uint32_t index, vfs_dirent_t *out);
-    int (*create)(struct vfs_node *dir, const char *name, uint32_t type, uint32_t mode);
-    int (*unlink)(struct vfs_node *dir, const char *name);
-    int (*rmdir)(struct vfs_node *dir, const char *name);
-    int (*rename)(struct vfs_node *old_dir, const char *old_name, struct vfs_node *new_dir, const char *new_name);
-    int (*truncate)(struct vfs_node *node, off_t length);
-    int (*symlink)(struct vfs_node *dir, const char *name, const char *target);
-    ssize_t (*readlink)(struct vfs_node *node, char *buf, size_t bufsiz);
+    struct vfs_node *(*lookup)(struct vfs_node *dir, const char *name);   // find child |name| in |dir|
+    ssize_t (*read)(struct vfs_node *node, void *buf, size_t count, off_t offset);   // read at file |offset|
+    ssize_t (*write)(struct vfs_node *node, const void *buf, size_t count, off_t offset);   // write at file |offset|
+    int (*readdir)(struct vfs_node *dir, uint32_t index, vfs_dirent_t *out);   // fetch index-th dirent of |dir|
+    int (*create)(struct vfs_node *dir, const char *name, uint32_t type, uint32_t mode);   // make a child node
+    int (*unlink)(struct vfs_node *dir, const char *name);   // remove a non-directory child
+    int (*rmdir)(struct vfs_node *dir, const char *name);   // remove an empty child directory
+    int (*rename)(struct vfs_node *old_dir, const char *old_name, struct vfs_node *new_dir, const char *new_name);   // move a child between parents
+    int (*truncate)(struct vfs_node *node, off_t length);   // resize |node| to |length| bytes
+    int (*symlink)(struct vfs_node *dir, const char *name, const char *target);   // create symlink |name| -> |target|
+    ssize_t (*readlink)(struct vfs_node *node, char *buf, size_t bufsiz);   // read a symlink's target
 } vfs_node_ops_t;
 
 typedef struct vfs_node {
-    char name[MAX_NAME_LEN];
-    uint32_t type;
-    uint32_t mode;
+    char name[MAX_NAME_LEN];       // leaf name only, not the full path
+    uint32_t type;                 // VFS_NODE_* type
+    uint32_t mode;                 // file type bits (S_IFMT) | permission bits
     uint32_t uid;
     uint32_t gid;
     uint32_t flags;
-    size_t size;
-    uint32_t ref_count;
-    uint32_t ino;
-    int64_t atime;
+    size_t size;                   // file length in bytes
+    uint32_t ref_count;            // number of open vfs_file_t descriptors
+    uint32_t ino;                  // VFS-wide unique inode number
+    int64_t atime;                 // seconds-since-epoch access/modify/change times
     int64_t mtime;
     int64_t ctime;
-    vfs_node_ops_t *ops;
-    void *priv;
-    struct vfs_node *parent;
+    vfs_node_ops_t *ops;           // filesystem operations for this node
+    void *priv;                    // filesystem-private data (buffer, FAT handle, etc.)
+    struct vfs_node *parent;       // tree linkage: parent, first child, next sibling
     struct vfs_node *children;
     struct vfs_node *next;
 } vfs_node_t;
 
+// Kernel-internal stat result, converted to the ABI struct on syscall return
 typedef struct {
     uint32_t st_ino;
     uint32_t st_mode;
@@ -111,47 +118,58 @@ typedef struct {
     uint32_t st_blocks;
 } vfs_stat_t;
 
+// An open file description; dup() shares this same object across fds
 typedef struct vfs_file {
     vfs_node_t *node;
-    off_t offset;
-    int flags;
+    off_t offset;      // current read/write position
+    int flags;         // open() flags for this descriptor
     uint32_t ref_count;
 } vfs_file_t;
 
+// Directory stream state used by opendir/readdir
 typedef struct {
     vfs_node_t *node;
-    off_t pos;
+    off_t pos;         // index of the next dirent to return
 } vfs_dir_t;
 
+// One entry in the mount table, indexed by mount letter/name
 typedef struct {
     char *name;
-    vfs_blockdev_t blockdev;
-    uint8_t drive_number;
+    vfs_blockdev_t blockdev;   // backing device with sector callbacks
+    uint8_t drive_number;      // AHCI drive number of the backing device
     void *priv;
 } vfs_mount_t;
 
+// Payload of vfs_blockdev_t::priv: just records the drive number
 typedef struct {
     uint8_t drive_number;
 } vfs_blockdev_priv_t;
 
+// Per-node FAT16 state: where the volume and this file's data live
 typedef struct {
-    void *vol;
-    uint16_t start_cluster;
-    uint32_t size;
-    uint16_t dir_cluster;
+    void *vol;                 // fat_node volume handle from fat16_init
+    uint16_t start_cluster;    // first cluster of this file's chain
+    uint32_t size;             // file size in bytes
+    uint16_t dir_cluster;      // parent directory cluster holding this dirent
 } vfs_fat16_priv_t;
 
 vfs_node_t *vfs_node_alloc(const char *name, uint32_t type);
 void vfs_node_link_child(vfs_node_t *parent, vfs_node_t *child);
 void vfs_node_unlink_child(vfs_node_t *parent, vfs_node_t *child);
 vfs_node_t *vfs_node_find_child(vfs_node_t *parent, const char *name);
+// Resolve |path| (absolute or cwd-relative) to a node, following symlinks
 vfs_node_t *vfs_resolve_path(const char *path);
+// Split |path| into its parent node and the leaf component |name_out|
 vfs_node_t *vfs_resolve_parent(const char *path, char *name_out);
 
 uint8_t vfs_init();
+// Probe |drive_number| as FAT16 and mount it at |name| in the VFS tree
 uint8_t vfs_mount(char *name, uint8_t drive_number);
+// Mount block device |dev_path| onto directory |target|, errno-encoded result
 int vfs_mount_by_path(const char *dev_path, const char *target);
+// Format block device |dev_path| as FAT16
 int vfs_mkfs(const char *dev_path);
+// Mount the first FAT16 drive found, exposed as "bins"
 int vfs_autmount_bins(void);
 void vfs_unmount(char *name);
 vfs_mount_t *vfs_get_mount(char *name);
@@ -171,6 +189,7 @@ ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
 ssize_t getdents64(int fd, void *buf, size_t count);
 
 void vfs_fd_table_init(vfs_file_t **table, size_t count);
+// Bind fd table slots 0/1/2 to /dev/stdin, /dev/stdout, /dev/stderr
 void vfs_fd_table_setup_stdio(vfs_file_t **table, size_t count);
 void vfs_fd_table_clone(vfs_file_t **dst, vfs_file_t **src, size_t count);
 void vfs_fd_table_close(vfs_file_t **table, size_t count);
@@ -202,17 +221,21 @@ void rewinddir(vfs_dir_t *dir);
 long telldir(vfs_dir_t *dir);
 void seekdir(vfs_dir_t *dir, long pos);
 
+// Create a node under |path| wired to |ops|/|priv| (used by fs mount helpers)
 vfs_node_t *vfs_register_node(const char *path, uint32_t type, vfs_node_ops_t *ops, void *priv);
 vfs_file_t *vfs_file_create(vfs_node_t *node, int flags);
 fs_t vfs_get_type(vfs_blockdev_t *blockdev);
 
+// Rewrite a directory entry to point at a new cluster/size (post-resize)
 uint8_t fat16_create_dirent_update(const void *vol_ptr, uint16_t dir_cluster, const char *name, uint16_t cluster, uint32_t size);
 
+// Public wrappers over the static tree helpers, used by ramfs/devfs/ustar
 vfs_node_t *vfs_node_alloc_pub(const char *name, uint32_t type);
 void vfs_node_link_child_pub(vfs_node_t *parent, vfs_node_t *child);
 void vfs_node_unlink_child_pub(vfs_node_t *parent, vfs_node_t *child);
 vfs_node_t *vfs_node_find_child_pub(vfs_node_t *parent, const char *name);
 
+// Legacy convenience wrappers around the syscall-style fd functions
 static inline int32_t vfs_filesize(int fd) {
     vfs_stat_t st;
     if (vfs_fstat(fd, &st) != 0) return -1;

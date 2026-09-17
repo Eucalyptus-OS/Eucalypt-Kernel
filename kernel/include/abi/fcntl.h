@@ -1,5 +1,7 @@
 #pragma once
 
+// open(2) flags and fcntl/access constants, matching the Linux ABI
+// Mask that extracts the access-mode bits (O_RDONLY/O_WRONLY/O_RDWR)
 #define O_ACCMODE   0x00000003
 #define O_RDONLY    0x00000000
 #define O_WRONLY    0x00000001
@@ -25,15 +27,18 @@
 #define W_OK        2
 #define R_OK        4
 
+// Sentinel dirfd meaning "relative to the caller's current working directory"
 #define AT_FDCWD            (-100)
 #define AT_SYMLINK_NOFOLLOW 0x0001
 #define AT_SYMLINK_FOLLOW   0x0002
 #define AT_REMOVEDIR        0x0004
 #define AT_EACCESS          0x0008
 
+// fcntl commands implemented by the kernel (see kernel/src/sys/handler.c)
 #define F_DUPFD    0
 #define F_GETFD    1
 #define F_SETFD    2
 #define F_GETFL    3
 #define F_SETFL    4
+// Descriptor flag returned by F_GETFD / set by F_SETFD
 #define FD_CLOEXEC 1

@@ -17,11 +17,12 @@
 #include <fs/pipe.h>
 #include <logging/print.h>
 
-#define MAX_DRIVES  254
-#define MAX_FD      256
+#define MAX_DRIVES  254                     // capacity of the mount table
+#define MAX_FD      256                     // kernel fd table size (processes use MAX_FDS)
 
 int errno = 0;
 
+// Global mount table plus lazy init flags
 static vfs_mount_t  mount_table[MAX_DRIVES];
 static uint8_t      mount_count = 0;
 static uint8_t      vfs_ready   = 0;
@@ -40,15 +41,17 @@ typedef struct {
 } ramfs_priv_t;
 
 static uint32_t alloc_ino() {
-    return next_ino++;
+    return next_ino++;                        // monotonically increasing inode numbers
 }
 
+// Wipe an fd table so every slot reads as unused
 void vfs_fd_table_init(vfs_file_t **table, size_t count) {
     if (!table) return;
     for (size_t i = 0; i < count; i++)
         table[i] = NULL;
 }
 
+// Pick the fd table of the current process, falling back to the kernel's
 static vfs_file_t **current_fd_table(size_t *count) {
     struct tcb *thread = sched_current_thread();
     if (thread && thread->parent) {
@@ -59,6 +62,7 @@ static vfs_file_t **current_fd_table(size_t *count) {
     return kernel_fd_table;
 }
 
+// Return the open file behind |fd|, or NULL if out of range/unused
 static vfs_file_t *fd_get(int fd) {
     size_t count;
     vfs_file_t **table = current_fd_table(&count);
@@ -69,6 +73,7 @@ static vfs_file_t *fd_get(int fd) {
     return table[fd];
 }
 
+// Claim the first free fd slot, or fail with ENFILE when the table is full
 static int fd_alloc(vfs_file_t **table, size_t count) {
     for (size_t i = 0; i < count; i++) {
         if (!table[i]) return (int)i;
@@ -77,6 +82,7 @@ static int fd_alloc(vfs_file_t **table, size_t count) {
     return -1;
 }
 
+// Wrap an open |node| into an open-file description; break-before-start when O_APPEND
 vfs_file_t *vfs_file_create(vfs_node_t *node, int flags) {
     vfs_file_t *file = kmalloc(sizeof(vfs_file_t));
     if (!file) {
@@ -92,11 +98,13 @@ vfs_file_t *vfs_file_create(vfs_node_t *node, int flags) {
     return file;
 }
 
+// Bump the open-file reference count (used by dup and fd table cloning)
 static void vfs_file_ref(vfs_file_t *file) {
     if (file)
         file->ref_count++;
 }
 
+// Drop one reference to an open file; release it and its pipe when the count hits zero
 static void vfs_file_unref(vfs_file_t *file) {
     if (!file)
         return;
@@ -107,15 +115,15 @@ static void vfs_file_unref(vfs_file_t *file) {
     if (file->ref_count == 0) {
         if (file->node && file->node->type == VFS_NODE_PIPE && file->node->priv) {
             pipe_t *p = (pipe_t *)file->node->priv;
-            if ((int)file->offset == 0) {
+            if ((int)file->offset == 0) {       // pipe ends discriminate via offset: 0 = read side
                 if (p->readers > 0) p->readers--;
                 pipe_wake_writers(p);
-            } else {
+            } else {                            // nonzero offset marks the write side
                 if (p->writers > 0) p->writers--;
                 pipe_wake_readers(p);
             }
             if (p->readers == 0 && p->writers == 0) {
-                pipe_destroy(p);
+                pipe_destroy(p);                // both ends closed: reclaim the pipe
             }
         }
         if (file->node && file->node->ref_count > 0)
@@ -124,6 +132,7 @@ static void vfs_file_unref(vfs_file_t *file) {
     }
 }
 
+// Allocate a zeroed node and give it a default permission mode by type
 vfs_node_t *vfs_node_alloc(const char *name, uint32_t type) {
     size_t len = strlen(name);
     if (len >= MAX_NAME_LEN) { errno = ENAMETOOLONG; return NULL; }
@@ -153,12 +162,14 @@ vfs_node_t *vfs_node_alloc(const char *name, uint32_t type) {
     return node;
 }
 
+// Prepend |child| to |parent|'s unsorted sibling list
 void vfs_node_link_child(vfs_node_t *parent, vfs_node_t *child) {
     child->parent    = parent;
     child->next      = parent->children;
     parent->children = child;
 }
 
+// Detach |child| from |parent|'s sibling list
 void vfs_node_unlink_child(vfs_node_t *parent, vfs_node_t *child) {
     vfs_node_t **cur = &parent->children;
     while (*cur) {
@@ -172,6 +183,7 @@ void vfs_node_unlink_child(vfs_node_t *parent, vfs_node_t *child) {
     }
 }
 
+// Linear scan of |parent|'s children for a matching leaf name
 vfs_node_t *vfs_node_find_child(vfs_node_t *parent, const char *name) {
     for (vfs_node_t *c = parent->children; c; c = c->next) {
         if (strcmp(c->name, name) == 0) return c;
@@ -179,6 +191,7 @@ vfs_node_t *vfs_node_find_child(vfs_node_t *parent, const char *name) {
     return NULL;
 }
 
+// Walk a path one component at a time from |start|, resolving symlinks along the way
 static vfs_node_t *resolve_from(vfs_node_t *start, const char *path) {
     vfs_node_t *node = start;
     const char *p    = path;
@@ -200,6 +213,7 @@ static vfs_node_t *resolve_from(vfs_node_t *start, const char *path) {
             if (node->parent) {
                 vfs_node_t *p = node->parent;
                 if (p->type == VFS_NODE_MOUNTPOINT && p->parent)
+                    // Step over the mountpoint wrapper so .. escapes the mounted tree
                     p = p->parent;
                 node = p;
             }
@@ -207,15 +221,16 @@ static vfs_node_t *resolve_from(vfs_node_t *start, const char *path) {
         }
 
         if (node->type == VFS_NODE_MOUNTPOINT) {
+            // Descend through the mountpoint wrapper into the mounted root
             vfs_node_t *inner = (vfs_node_t *)node->priv;
             if (inner) node = inner;
         }
 
         vfs_node_t *child = NULL;
         if (node->ops && node->ops->lookup)
-            child = node->ops->lookup(node, component);
+            child = node->ops->lookup(node, component);   // dynamic fs: ask the driver
         else
-            child = vfs_node_find_child(node, component);
+            child = vfs_node_find_child(node, component); // in-memory fs: scan the sibling list
 
         if (!child) { errno = ENOENT; return NULL; }
 
@@ -225,6 +240,7 @@ static vfs_node_t *resolve_from(vfs_node_t *start, const char *path) {
                 ssize_t n = child->ops->readlink(child, target, sizeof(target) - 1);
                 if (n < 0) return NULL;
                 target[n] = '\0';
+                // Absolute targets restart from vfs_root; relative ones continue from here
                 vfs_node_t *sym_start = (target[0] == '/') ? vfs_root : node;
                 child = resolve_from(sym_start, (target[0] == '/') ? target + 1 : target);
                 if (!child) return NULL;
@@ -236,6 +252,7 @@ static vfs_node_t *resolve_from(vfs_node_t *start, const char *path) {
     return node;
 }
 
+// Resolve a full path against the root (absolute) or cwd (relative)
 vfs_node_t *vfs_resolve_path(const char *path) {
     if (!path) { errno = EINVAL; return NULL; }
     if (path[0] == '\0') { errno = ENOENT; return NULL; }
@@ -247,6 +264,7 @@ vfs_node_t *vfs_resolve_path(const char *path) {
     return NULL;
 }
 
+// Split |path| into the parent node and the final component copied to |name_out|
 vfs_node_t *vfs_resolve_parent(const char *path, char *name_out) {
     if (!path || path[0] == '\0') { errno = EINVAL; return NULL; }
 
@@ -274,6 +292,7 @@ vfs_node_t *vfs_resolve_parent(const char *path, char *name_out) {
     return vfs_resolve_path(buf);
 }
 
+// Change the process cwd to |path|, unwrapping a mountpoint to its mounted root
 int vfs_chdir(const char *path) {
     vfs_node_t *node = vfs_resolve_path(path);
     if (!node) return -1;
@@ -289,6 +308,7 @@ int vfs_chdir(const char *path) {
     return 0;
 }
 
+// Reconstruct the cwd string by walking up parent pointers and reversing the names
 char *vfs_getcwd(char *buf, size_t size) {
     if (!buf || size == 0) { errno = EINVAL; return NULL; }
 
@@ -325,27 +345,32 @@ char *vfs_getcwd(char *buf, size_t size) {
     return buf;
 }
 
+// Locate a mount's table slot by its name
 static int find_letter_slot(char *name) {
     for (int i = 0; i < mount_count; i++)
         if (mount_table[i].name == name) return i;
     return -1;
 }
 
+// Fetch a mount entry by name, or NULL if it is not mounted
 vfs_mount_t *vfs_get_mount(char *name) {
     int slot = find_letter_slot(name);
     return (slot < 0) ? NULL : &mount_table[slot];
 }
 
+// Block read callback: forward LBA reads to the AHCI disk device
 static uint8_t ahci_blockdev_read(vfs_blockdev_t *dev, uint32_t lba, uint8_t count, void *buf) {
     vfs_blockdev_priv_t *priv = (vfs_blockdev_priv_t *)dev->priv;
     return disk_reader(priv->drive_number, lba, count, buf);
 }
 
+// Block write callback: forward LBA writes to the AHCI disk device
 static uint8_t ahci_blockdev_write(vfs_blockdev_t *dev, uint32_t lba, uint8_t count, const void *buf) {
     vfs_blockdev_priv_t *priv = (vfs_blockdev_priv_t *)dev->priv;
     return disk_writer(priv->drive_number, lba, count, buf);
 }
 
+// Detect the on-disk filesystem by matching ASCII type strings in the boot sector
 fs_t vfs_get_type(vfs_blockdev_t *blockdev) {
     uintptr_t frame = frame_alloc();
     if (!frame) return (fs_t)-1;
@@ -356,9 +381,9 @@ fs_t vfs_get_type(vfs_blockdev_t *blockdev) {
         frame_free(frame);
         return (fs_t)-1;
     }
-    if (memcmp(buf + 0x36, "FAT12   ", 8) == 0) type = fat12;
+    if (memcmp(buf + 0x36, "FAT12   ", 8) == 0) type = fat12;   // boot sector offsets: 0x36 FAT12/16
     else if (memcmp(buf + 0x36, "FAT16   ", 8) == 0) type = fat16;
-    else if (memcmp(buf + 0x52, "FAT32   ", 8) == 0) type = fat32;
+    else if (memcmp(buf + 0x52, "FAT32   ", 8) == 0) type = fat32;   // 0x52 FAT32, 0x03 EXFAT
     else if (memcmp(buf + 0x03, "EXFAT   ", 8) == 0) type = exfat;
     else type = (uint8_t)-1;
 
@@ -366,6 +391,7 @@ fs_t vfs_get_type(vfs_blockdev_t *blockdev) {
     return (fs_t)type;
 }
 
+// FAT16 read: slurp the whole cluster chain into a temp buffer, then copy the requested range
 static ssize_t fat16_vfs_read(vfs_node_t *node, void *buf, size_t count, off_t offset) {
     vfs_fat16_priv_t *priv = (vfs_fat16_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -388,6 +414,7 @@ static ssize_t fat16_vfs_read(vfs_node_t *node, void *buf, size_t count, off_t o
     return (ssize_t)count;
 }
 
+// FAT16 write: rewrite the file from scratch and update both dirent and node metadata
 static ssize_t fat16_vfs_write(vfs_node_t *node, const void *buf, size_t count, off_t offset) {
     vfs_fat16_priv_t *priv = (vfs_fat16_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -405,7 +432,7 @@ static ssize_t fat16_vfs_write(vfs_node_t *node, const void *buf, size_t count, 
     memcpy(tmp + offset, buf, count);
 
     if (priv->start_cluster) {
-        fat16_free_cluster_chain(priv->vol, priv->start_cluster);
+        fat16_free_cluster_chain(priv->vol, priv->start_cluster);   // drop the old chain before reallocating
         priv->start_cluster = 0;
     }
 
@@ -430,6 +457,7 @@ static ssize_t fat16_vfs_write(vfs_node_t *node, const void *buf, size_t count, 
     return (ssize_t)bytes_written;
 }
 
+// FAT16 readdir: list the directory once and pick the index-th entry
 static int fat16_vfs_readdir(vfs_node_t *node, uint32_t index, vfs_dirent_t *out) {
     vfs_fat16_priv_t *priv = (vfs_fat16_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -443,11 +471,12 @@ static int fat16_vfs_readdir(vfs_node_t *node, uint32_t index, vfs_dirent_t *out
     if (nlen >= MAX_NAME_LEN) nlen = MAX_NAME_LEN - 1;
     memcpy(out->d_name, entries[index].name, nlen);
     out->d_name[nlen] = '\0';
-    out->d_type = (entries[index].attr & 0x10) ? VFS_NODE_DIR : VFS_NODE_FILE;
+    out->d_type = (entries[index].attr & 0x10) ? VFS_NODE_DIR : VFS_NODE_FILE;   // FAT attr bit 0x10 = subdirectory
     out->d_ino = 0;
     return 0;
 }
 
+// FAT16 lookup: create a lazily-cached vfs node for an on-disk file or subdirectory
 static vfs_node_t *fat16_vfs_lookup(vfs_node_t *dir, const char *name) {
     vfs_node_t *existing = vfs_node_find_child(dir, name);
     if (existing) return existing;
@@ -461,7 +490,7 @@ static vfs_node_t *fat16_vfs_lookup(vfs_node_t *dir, const char *name) {
         return NULL;
     }
 
-    uint32_t type = (handle.attr & 0x10) ? VFS_NODE_DIR : VFS_NODE_FILE;
+    uint32_t type = (handle.attr & 0x10) ? VFS_NODE_DIR : VFS_NODE_FILE;   // FAT attr bit 0x10 = subdirectory
     vfs_node_t *child = vfs_node_alloc(name, type);
     if (!child) return NULL;
 
@@ -480,6 +509,7 @@ static vfs_node_t *fat16_vfs_lookup(vfs_node_t *dir, const char *name) {
     return child;
 }
 
+// FAT16 create: make an empty file or subdirectory in |dir| on disk
 static int fat16_vfs_create(vfs_node_t *dir, const char *name, uint32_t type, uint32_t mode) {
     (void)mode;
     vfs_fat16_priv_t *dpriv = (vfs_fat16_priv_t *)dir->priv;
@@ -490,18 +520,21 @@ static int fat16_vfs_create(vfs_node_t *dir, const char *name, uint32_t type, ui
     return (fat16_create_file(dpriv->vol, dpriv->start_cluster, name, NULL, 0) == 0) ? 0 : -1;
 }
 
+// FAT16 unlink: remove a regular file from disk
 static int fat16_vfs_unlink(vfs_node_t *dir, const char *name) {
     vfs_fat16_priv_t *dpriv = (vfs_fat16_priv_t *)dir->priv;
     if (!dpriv) { errno = EBADF; return -1; }
     return (fat16_delete_file(dpriv->vol, dpriv->start_cluster, name) == 0) ? 0 : -1;
 }
 
+// FAT16 rmdir: remove an empty subdirectory from disk
 static int fat16_vfs_rmdir(vfs_node_t *dir, const char *name) {
     vfs_fat16_priv_t *dpriv = (vfs_fat16_priv_t *)dir->priv;
     if (!dpriv) { errno = EBADF; return -1; }
     return (fat16_delete_directory(dpriv->vol, dpriv->start_cluster, name) == 0) ? 0 : -1;
 }
 
+// FAT16 truncate: reuse the write path to rebuild the file at the new length
 static int fat16_vfs_truncate(vfs_node_t *node, off_t length) {
     vfs_fat16_priv_t *priv = (vfs_fat16_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -518,7 +551,7 @@ static int fat16_vfs_truncate(vfs_node_t *node, off_t length) {
     }
 
     if (priv->start_cluster) {
-        fat16_free_cluster_chain(priv->vol, priv->start_cluster);
+        fat16_free_cluster_chain(priv->vol, priv->start_cluster);   // drop the old chain before reallocating
         priv->start_cluster = 0;
     }
 
@@ -557,6 +590,7 @@ static vfs_node_ops_t fat16_ops = {
     .readlink = NULL,
 };
 
+// ramfs read from the kmalloc'd buffer, clamped to the recorded size
 static ssize_t ramfs_read(vfs_node_t *node, void *buf, size_t count, off_t offset) {
     ramfs_priv_t *priv = (ramfs_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -567,6 +601,7 @@ static ssize_t ramfs_read(vfs_node_t *node, void *buf, size_t count, off_t offse
     return (ssize_t)count;
 }
 
+// ramfs write, doubling the backing allocation as needed (starts at 4096)
 static ssize_t ramfs_write(vfs_node_t *node, const void *buf, size_t count, off_t offset) {
     ramfs_priv_t *priv = (ramfs_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -591,6 +626,7 @@ static ssize_t ramfs_write(vfs_node_t *node, const void *buf, size_t count, off_
     return (ssize_t)count;
 }
 
+// ramfs truncate: grow the buffer (zero-filling) or just shrink node->size
 static int ramfs_truncate(vfs_node_t *node, off_t length) {
     ramfs_priv_t *priv = (ramfs_priv_t *)node->priv;
     if (!priv) { errno = EBADF; return -1; }
@@ -630,6 +666,7 @@ static vfs_node_ops_t ramfs_ops = {
     .readlink = NULL,
 };
 
+// Allocate an in-memory file node with a lazily-grown ramfs buffer
 static vfs_node_t *vfs_create_ramfs_file(vfs_node_t *parent, const char *name, uint32_t mode) {
     vfs_node_t *node = vfs_node_alloc(name, VFS_NODE_FILE);
     if (!node) return NULL;
@@ -646,6 +683,7 @@ static vfs_node_t *vfs_create_ramfs_file(vfs_node_t *parent, const char *name, u
     return node;
 }
 
+// Probe |drive_number|, init the FAT16 volume, and hook its root into the tree at |name|
 uint8_t vfs_mount(char *name, uint8_t drive_number) {
     if (mount_count >= MAX_DRIVES) return VFS_ERR_NO_SLOTS;
 
@@ -671,15 +709,16 @@ uint8_t vfs_mount(char *name, uint8_t drive_number) {
     void *vol_ptr = fat16_init(&blockdev);
     if (!vol_ptr) { kfree(priv); return VFS_ERR_FS_INIT; }
 
+    // Two-layer node: an outer MOUNTPOINT wrapper whose priv points at the mounted "/" root
     vfs_node_t *mp_outer = vfs_node_alloc(name, VFS_NODE_MOUNTPOINT);
     if (!mp_outer) { kfree(priv); return VFS_ERR_NO_SLOTS; }
 
     vfs_fat16_priv_t *fat_priv = kmalloc(sizeof(vfs_fat16_priv_t));
     if (!fat_priv) { kfree(mp_outer); kfree(priv); return VFS_ERR_NO_SLOTS; }
-    fat_priv->vol = vol_ptr;
+    fat_priv->vol = vol_ptr;                          // fat16 volume handle shared by every node on this mount
     fat_priv->start_cluster = 0;
     fat_priv->size = 0;
-    fat_priv->dir_cluster = 0;
+    fat_priv->dir_cluster = 0;                    // dir_cluster 0 selects the fixed root directory
 
     vfs_node_t *root_dir = vfs_node_alloc("/", VFS_NODE_DIR);
     if (!root_dir) { kfree(fat_priv); kfree(mp_outer); kfree(priv); return VFS_ERR_NO_SLOTS; }
@@ -701,6 +740,7 @@ uint8_t vfs_mount(char *name, uint8_t drive_number) {
     return VFS_OK;
 }
 
+// Convert a VFS status code into a negative errno for syscall return paths
 static int vfs_err_to_errno(uint8_t vfs_err) {
     switch (vfs_err) {
         case VFS_OK:                  return 0;
@@ -713,6 +753,7 @@ static int vfs_err_to_errno(uint8_t vfs_err) {
     }
 }
 
+// Construct a vfs_blockdev_t bound to an AHCI drive number
 static vfs_blockdev_t vfs_make_blockdev(uint8_t drive_number) {
     vfs_blockdev_priv_t *priv = kmalloc(sizeof(vfs_blockdev_priv_t));
     vfs_blockdev_t blockdev = {0};
@@ -724,6 +765,7 @@ static vfs_blockdev_t vfs_make_blockdev(uint8_t drive_number) {
     return blockdev;
 }
 
+// Format the block device named by |dev_path| (e.g. /dev/sda) as FAT16
 int vfs_mkfs(const char *dev_path) {
     uint8_t drive_number;
     if (devfs_resolve_drive(dev_path, &drive_number) != 0) return -ENODEV;
@@ -740,12 +782,14 @@ int vfs_mkfs(const char *dev_path) {
     return 0;
 }
 
+// Mount the device at |dev_path| onto directory |target| (e.g. "mount /dev/sda /bin")
 int vfs_mount_by_path(const char *dev_path, const char *target) {
     uint8_t drive_number;
     if (devfs_resolve_drive(dev_path, &drive_number) != 0) return -ENODEV;
     return vfs_err_to_errno(vfs_mount((char *)target, drive_number));
 }
 
+// Automount the first drive containing a FAT16 volume as "bins"
 int vfs_autmount_bins(void) {
     for (uint8_t i = 0; i < drive_map_count(); i++) {
         drive_t *d = drive_map_get(i);
@@ -763,6 +807,7 @@ int vfs_autmount_bins(void) {
     return -1;
 }
 
+// Detach a mount: free its table slot, wrapper node, and blockdev, and clear the AHCI name
 void vfs_unmount(char *name) {
     int slot = find_letter_slot(name);
     vfs_mount_t *m = &mount_table[slot];
@@ -786,12 +831,14 @@ void vfs_unmount(char *name) {
     mount_count--;
 }
 
+// True when a bare path ends in '/', used to reject file paths with a trailing slash
 static int path_ends_with_slash(const char *path) {
     if (!path || *path == '\0') return 0;
     size_t len = strlen(path);
     return path[len - 1] == '/';
 }
 
+// Materialize a vfs_stat_t from a node; block count rounds up to 512-byte units
 static void node_to_stat(vfs_node_t *node, vfs_stat_t *st) {
     st->st_ino = node->ino;
     st->st_mode = node->mode;
@@ -806,11 +853,13 @@ static void node_to_stat(vfs_node_t *node, vfs_stat_t *st) {
     st->st_blocks = (node->size + 511) / 512;
 }
 
+// open(): resolve the path, optionally create it, then bind a new fd to an open file
 int open(const char *path, int flags, ...) {
     if (!vfs_ready || !fd_ready) { errno = EBADF; return -1; }
 
     uint32_t mode = 0644;
     if (flags & O_CREAT) {
+        // O_CREAT pulls the creation mode from the trailing variadic argument
         va_list ap;
         va_start(ap, flags);
         mode = va_arg(ap, unsigned int);
@@ -834,7 +883,7 @@ int open(const char *path, int flags, ...) {
         if (parent->ops && parent->ops->create) {
             if (parent->ops->create(parent, name, VFS_NODE_FILE, mode) != 0) return -1;
         } else {
-            vfs_node_t *new_node = vfs_create_ramfs_file(parent, name, mode);
+            vfs_node_t *new_node = vfs_create_ramfs_file(parent, name, mode);   // ramfs-backed default
             if (!new_node) return -1;
         }
 
@@ -850,7 +899,7 @@ int open(const char *path, int flags, ...) {
 
     if ((flags & O_TRUNC) && node->type == VFS_NODE_FILE) {
         if (node->ops && node->ops->truncate) node->ops->truncate(node, 0);
-        else node->size = 0;
+        else node->size = 0;   // no fs support: shorten the metadata field directly
     }
 
     size_t fd_count;
@@ -865,6 +914,7 @@ int open(const char *path, int flags, ...) {
     return fd;
 }
 
+// close(): release the fd slot and drop its reference on the open file
 int close(int fd) {
     size_t fd_count;
     vfs_file_t **fd_table = current_fd_table(&fd_count);
@@ -875,6 +925,7 @@ int close(int fd) {
     return 0;
 }
 
+// read(): char devices bypass node ops; everything else dispatches to the fs read
 ssize_t read(int fd, void *buf, size_t count) {
     vfs_file_t *file = fd_get(fd);
     if (!file) { errno = EBADF; return -1; }
@@ -906,6 +957,7 @@ ssize_t read(int fd, void *buf, size_t count) {
     return n;
 }
 
+// write(): enforce access mode and O_APPEND, then dispatch to the fs write
 ssize_t write(int fd, const void *buf, size_t count) {
     extern struct pcb *sched_current_proc(void);
     struct pcb *wproc = sched_current_proc();
@@ -931,7 +983,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
 
     if (node->type == VFS_NODE_DIR) { errno = EISDIR; return -1; }
 
-    if (file->flags & O_APPEND) file->offset = (off_t)node->size;
+    if (file->flags & O_APPEND) file->offset = (off_t)node->size;   // append = seek to EOF before every write
 
     if (node->type == VFS_NODE_DEV) {
         devfs_dev_t *ddev = (devfs_dev_t *)node->priv;
@@ -951,6 +1003,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
     return n;
 }
 
+// lseek(): reposition the fd cursor relative to SET/CUR/END, never before 0
 off_t lseek(int fd, off_t offset, int whence) {
     vfs_file_t *file = fd_get(fd);
     if (!file) { errno = EBADF; return -1; }
@@ -970,6 +1023,7 @@ off_t lseek(int fd, off_t offset, int whence) {
     return new_offset;
 }
 
+// stat a path, following symlinks to their target
 int vfs_stat(const char *path, vfs_stat_t *st) {
     if (!st) { errno = EINVAL; return -1; }
     vfs_node_t *node = vfs_resolve_path(path);
@@ -978,6 +1032,7 @@ int vfs_stat(const char *path, vfs_stat_t *st) {
     return 0;
 }
 
+// lstat resolves only the parent; the final component is read without following symlinks
 int vfs_lstat(const char *path, vfs_stat_t *st) {
     if (!st || !path) { errno = EINVAL; return -1; }
 
@@ -1012,6 +1067,7 @@ int vfs_lstat(const char *path, vfs_stat_t *st) {
     return 0;
 }
 
+// stat an already-open fd
 int vfs_fstat(int fd, vfs_stat_t *st) {
     vfs_file_t *file = fd_get(fd);
     if (!file || !st) { errno = EBADF; return -1; }
@@ -1021,6 +1077,7 @@ int vfs_fstat(int fd, vfs_stat_t *st) {
     return 0;
 }
 
+// Convert the kernel stat buffer into the userspace ABI layout
 static void stat_to_abi(const vfs_stat_t *in, struct stat *out) {
     out->st_dev = 0;
     out->st_ino = in->st_ino;
@@ -1068,6 +1125,7 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     return stat(path, st);
 }
 
+// mkdir(): resolve the parent, refuse duplicates, and create a directory node
 int mkdir(const char *path, uint32_t mode) {
     char name[MAX_NAME_LEN];
     vfs_node_t *parent = vfs_resolve_parent(path, name);
@@ -1092,6 +1150,7 @@ int mkdir(const char *path, uint32_t mode) {
     return 0;
 }
 
+// rmdir(): remove an empty directory through the fs driver or the raw tree
 int rmdir(const char *path) {
     char name[MAX_NAME_LEN];
     vfs_node_t *parent = vfs_resolve_parent(path, name);
@@ -1125,6 +1184,7 @@ int rmdir(const char *path) {
     return 0;
 }
 
+// unlink(): remove a non-directory; keep the node alive while fds still reference it
 int unlink(const char *path) {
     char name[MAX_NAME_LEN];
     vfs_node_t *parent = vfs_resolve_parent(path, name);
@@ -1156,6 +1216,7 @@ int unlink(const char *path) {
     return 0;
 }
 
+// rename(): delegate to the fs driver, else move/re-dub the node in memory
 int rename(const char *old_path, const char *new_path) {
     char old_name[MAX_NAME_LEN], new_name[MAX_NAME_LEN];
     vfs_node_t *old_parent = vfs_resolve_parent(old_path, old_name);
@@ -1183,6 +1244,7 @@ int rename(const char *old_path, const char *new_path) {
     return 0;
 }
 
+// Truncate a file by path, via the fs driver or by resizing metadata directly
 int truncate(const char *path, off_t length) {
     if (length < 0) { errno = EINVAL; return -1; }
     vfs_node_t *node = vfs_resolve_path(path);
@@ -1193,6 +1255,7 @@ int truncate(const char *path, off_t length) {
     return 0;
 }
 
+// Truncate an already-open file
 int ftruncate(int fd, off_t length) {
     vfs_file_t *file = fd_get(fd);
     if (!file) { errno = EBADF; return -1; }
@@ -1205,6 +1268,7 @@ int ftruncate(int fd, off_t length) {
     return 0;
 }
 
+// chmod(): rewrite permission bits while preserving the file-type bits
 int chmod(const char *path, uint32_t mode) {
     vfs_node_t *node = vfs_resolve_path(path);
     if (!node) return -1;
@@ -1241,6 +1305,7 @@ int symlink(const char *target, const char *linkpath) {
     return 0;
 }
 
+// Symlink path follows: readlink() returns the stored target, never touching the link target
 ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
     if (!buf || bufsiz == 0) { errno = EINVAL; return -1; }
 
@@ -1273,6 +1338,7 @@ ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
     return (ssize_t)slen;
 }
 
+// access(): existence-only check, no mode bits are actually evaluated
 int access(const char *path, int mode) {
     (void)mode;
     vfs_node_t *node = vfs_resolve_path(path);
@@ -1280,6 +1346,7 @@ int access(const char *path, int mode) {
     return 0;
 }
 
+// Open a directory stream, pinning the node until closedir
 vfs_dir_t *opendir(const char *path) {
     vfs_node_t *node = vfs_resolve_path(path);
     if (!node) { errno = ENOENT; return NULL; }
@@ -1299,11 +1366,12 @@ vfs_dir_t *opendir(const char *path) {
     return dir;
 }
 
+// Fetch the next dirent: fs drivers are indexed by pos, in-memory trees are scanned
 vfs_dirent_t *readdir(vfs_dir_t *dir) {
     if (!dir || !dir->node) { errno = EBADF; return NULL; }
     if (dir->node->type != VFS_NODE_DIR) { errno = ENOTDIR; return NULL; }
 
-    static vfs_dirent_t ent;
+    static vfs_dirent_t ent;   // single shared buffer returned to callers (not reentrant)
 
     if (dir->node->ops && dir->node->ops->readdir) {
         if (dir->node->ops->readdir(dir->node, (uint32_t)dir->pos, &ent) != 0) return NULL;
@@ -1328,6 +1396,7 @@ vfs_dirent_t *readdir(vfs_dir_t *dir) {
     return NULL;
 }
 
+// readv(): gather-read from one fd across several buffers
 ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
     if (!iov || iovcnt < 0) { errno = EINVAL; return -1; }
     if (iovcnt > 1024) { errno = EINVAL; return -1; }
@@ -1341,6 +1410,7 @@ ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
     return total;
 }
 
+// writev(): scatter-write several buffers into one fd
 ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
     if (!iov || iovcnt < 0) { errno = EINVAL; return -1; }
     if (iovcnt > 1024) { errno = EINVAL; return -1; }
@@ -1353,6 +1423,7 @@ ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
     return total;
 }
 
+// Map VFS node types to the d_type values of the userspace dirent ABI
 static uint8_t dirent_type_to_dt(uint32_t type) {
     switch (type) {
         case VFS_NODE_DIR:      return DT_DIR;
@@ -1362,6 +1433,7 @@ static uint8_t dirent_type_to_dt(uint32_t type) {
     }
 }
 
+// getdents64(): emit linux-style dirents via the fd offset, not a vfs_dir_t
 ssize_t getdents64(int fd, void *buf, size_t count) {
     vfs_file_t *file = fd_get(fd);
     if (!file || !file->node) { errno = EBADF; return -1; }
@@ -1385,12 +1457,12 @@ ssize_t getdents64(int fd, void *buf, size_t count) {
         if (!ent) break;
 
         size_t namelen = strlen(ent->d_name);
-        size_t reclen = offsetof(struct tinykern_dirent, d_name) + namelen + 1;
-        reclen = (reclen + 7) & ~(size_t)7;
+        size_t reclen = offsetof(struct eucalypt_dirent, d_name) + namelen + 1;
+        reclen = (reclen + 7) & ~(size_t)7;   // each record is 8-byte aligned
 
         if (written + reclen > count) break;
 
-        struct tinykern_dirent *de = (struct tinykern_dirent *)(out + written);
+        struct eucalypt_dirent *de = (struct eucalypt_dirent *)(out + written);
         de->d_ino = ent->d_ino;
         de->d_off = dir.pos;
         de->d_reclen = (uint16_t)reclen;
@@ -1405,6 +1477,7 @@ ssize_t getdents64(int fd, void *buf, size_t count) {
     return written ? (ssize_t)written : 0;
 }
 
+// Close a directory stream, dropping the pin on its node
 int closedir(vfs_dir_t *dir) {
     if (!dir) { errno = EBADF; return -1; }
     dir->node->ref_count--;
@@ -1412,19 +1485,23 @@ int closedir(vfs_dir_t *dir) {
     return 0;
 }
 
+// Reset a directory stream to the first entry
 void rewinddir(vfs_dir_t *dir) {
     if (dir) dir->pos = 0;
 }
 
+// Report the current offset of a directory stream
 long telldir(vfs_dir_t *dir) {
     if (!dir) { errno = EBADF; return -1; }
     return (long)dir->pos;
 }
 
+// Reposition a directory stream to a previously told offset
 void seekdir(vfs_dir_t *dir, long pos) {
     if (dir) dir->pos = (off_t)pos;
 }
 
+// dup(): alias an fd to the lowest free slot, sharing the same open file
 int dup(int fd) {
     size_t fd_count;
     vfs_file_t **fd_table = current_fd_table(&fd_count);
@@ -1437,6 +1514,7 @@ int dup(int fd) {
     return new_fd;
 }
 
+// dup2(): alias |old_fd| onto the caller-chosen |new_fd|, closing any occupant
 int dup2(int old_fd, int new_fd) {
     size_t fd_count;
     vfs_file_t **fd_table = current_fd_table(&fd_count);
@@ -1450,6 +1528,7 @@ int dup2(int old_fd, int new_fd) {
     return new_fd;
 }
 
+// Populate the standard fd table slots from the /dev character devices
 void vfs_fd_table_setup_stdio(vfs_file_t **table, size_t count) {
     if (!table || count < 3) return;
 
@@ -1471,6 +1550,7 @@ void vfs_fd_table_setup_stdio(vfs_file_t **table, size_t count) {
     }
 }
 
+// Copy an fd table entry-for-entry, bumping the shared open-file ref counts
 void vfs_fd_table_clone(vfs_file_t **dst, vfs_file_t **src, size_t count) {
     if (!dst || !src) return;
     for (size_t i = 0; i < count; i++) {
@@ -1479,6 +1559,7 @@ void vfs_fd_table_clone(vfs_file_t **dst, vfs_file_t **src, size_t count) {
     }
 }
 
+// Close every open file in a table and clear it (process exit path)
 void vfs_fd_table_close(vfs_file_t **table, size_t count) {
     if (!table) return;
     for (size_t i = 0; i < count; i++) {
@@ -1489,6 +1570,7 @@ void vfs_fd_table_close(vfs_file_t **table, size_t count) {
     }
 }
 
+// Late-init the VFS: root node, kernel fd table, devfs, and stdio descriptors
 uint8_t vfs_init() {
     if (vfs_ready) return 0;
 
@@ -1508,10 +1590,12 @@ uint8_t vfs_init() {
     return VFS_OK;
 }
 
+// Return the global root node
 vfs_node_t *vfs_get_root() {
     return vfs_root;
 }
 
+// Public helper: attach a new node (with ops/priv) under |path|
 vfs_node_t *vfs_register_node(const char *path, uint32_t type, vfs_node_ops_t *ops, void *priv) {
     char name[MAX_NAME_LEN];
     vfs_node_t *parent = vfs_resolve_parent(path, name);
@@ -1524,6 +1608,7 @@ vfs_node_t *vfs_register_node(const char *path, uint32_t type, vfs_node_ops_t *o
     return node;
 }
 
+// Public wrappers of the static helpers, exported for in-memory filesystems
 vfs_node_t *vfs_node_alloc_pub(const char *name, uint32_t type) {
     return vfs_node_alloc(name, type);
 }

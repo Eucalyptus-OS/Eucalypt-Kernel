@@ -1,5 +1,6 @@
 #pragma once
 
+// Auxiliary-vector ids placed on the user stack between envp and the terminator
 #define AT_NULL    0
 #define AT_IGNORE  1
 #define AT_EXECFD  2

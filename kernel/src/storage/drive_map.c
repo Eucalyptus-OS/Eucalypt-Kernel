@@ -7,6 +7,7 @@
 static drive_map_entry_t g_drive_map[DRIVE_MAP_MAX_DRIVES];
 static uint8_t g_drive_count = 0;
 
+// Enumerate all present drives and assign each one a sequential drive number
 void drive_map_init() {
     g_drive_count = 0;
 
@@ -25,6 +26,7 @@ void drive_map_init() {
                 continue;
             }
 
+            // Register this (controller, port) as the next drive number
             g_drive_map[g_drive_count].controller = c;
             g_drive_map[g_drive_count].port = port;
             g_drive_map[g_drive_count].valid = 1;
@@ -38,10 +40,12 @@ void drive_map_init() {
     print("total drives: %u\n", g_drive_count);
 }
 
+// Return the number of mapped drives
 uint8_t drive_map_count() {
     return g_drive_count;
 }
 
+// Translate a drive number into its physical (controller, port); -1 if invalid
 int drive_map_resolve(uint8_t drive_number, uint8_t *controller, uint8_t *port) {
     if (drive_number >= g_drive_count || !g_drive_map[drive_number].valid)
         return -1;
@@ -51,6 +55,7 @@ int drive_map_resolve(uint8_t drive_number, uint8_t *controller, uint8_t *port) 
     return 0;
 }
 
+// Return geometry info for a drive number, or NULL when invalid
 drive_t *drive_map_get(uint8_t drive_number) {
     uint8_t controller, port;
     if (drive_map_resolve(drive_number, &controller, &port) != 0)

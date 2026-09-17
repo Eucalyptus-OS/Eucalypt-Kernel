@@ -3,12 +3,14 @@
 #include <stdint.h>
 #include <abi/signal.h>
 
+// Per-process signal state: one action per signal plus the pending/blocked sets
 typedef struct sigstate {
     sigaction_t actions[NSIG];
     sigset_t pending;
     sigset_t blocked;
 } sigstate_t;
 
+// The five dispositions a signal can have when not installed with a handler
 typedef enum {
     SIG_ACTION_TERMINATE,
     SIG_ACTION_IGNORE,
@@ -17,6 +19,7 @@ typedef enum {
     SIG_ACTION_CONTINUE,
 } sig_default_action_t;
 
+// Full user register save as pushed by the syscall/interrupt entry path
 typedef struct user_context {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
@@ -24,6 +27,7 @@ typedef struct user_context {
     uint64_t rip, cs, rflags, rsp, ss;
 } user_context_t;
 
+// On-stack save area; sigreturn pops it to resume the interrupted user code
 typedef struct sigframe {
     user_context_t ctx;
     sigset_t old_mask;
@@ -62,6 +66,7 @@ static inline int sigfillset(sigset_t *set) {
 
 static inline int sigaddset(sigset_t *set, int sig) {
     if (sig <= 0 || sig >= NSIG) return -1;
+    // Signal n occupies bit (n-1), matching the kernel's pending/blocked layout
     *set |= (sigset_t)1 << (sig - 1);
     return 0;
 }

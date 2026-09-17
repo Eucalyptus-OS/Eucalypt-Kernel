@@ -1,5 +1,6 @@
 #pragma once
 
+// Syscall numbers shared between kernel and libc, ordered like Linux's table
 #define SYS_READ            0
 #define SYS_WRITE           1
 #define SYS_OPEN            2
@@ -55,7 +56,9 @@
 #define SYS_GETPGID          52
 #define SYS_GETPGRP          53
 
+// One past the highest syscall number: usable as a table size or bounds check
 #define SYS_MAX             54
 
+// Sub-commands for the arch_prctl syscall
 #define ARCH_SET_FS         1
 #define ARCH_GET_FS         2

@@ -1,10 +1,13 @@
 #pragma once
 
+// mmap/mprotect protection and mapping flags, matching the Linux values
+// Protection bits for mmap/mprotect
 #define PROT_READ   0x01
 #define PROT_WRITE  0x02
 #define PROT_EXEC   0x04
 #define PROT_NONE   0x00
 
+// Mapping flags: shareability, placement and backing store
 #define MAP_SHARED     0x01
 #define MAP_PRIVATE    0x02
 #define MAP_FIXED      0x04

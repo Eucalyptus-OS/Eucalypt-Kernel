@@ -1,5 +1,6 @@
 #pragma once
 
+// Kernel errno values, matching Linux so userspace error mapping lines up
 #define EPERM            1
 #define ENOENT           2
 #define ESRCH            3
