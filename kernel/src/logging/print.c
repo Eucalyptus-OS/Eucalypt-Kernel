@@ -2,11 +2,9 @@
 #include <stdarg.h>
 #include <portio.h>
 #include <sync/spinlock.h>
-#include <multitasking/sched.h>
 #include <logging/format.h>
 #include <logging/print.h>
 
-// Debugcon port: QEMU prints anything written here to the -debugcon device.
 #define DEBUG_PORT 0xE9
 
 static spinlock_t print_lock = 0;
@@ -36,9 +34,6 @@ static void print_uint(uint64_t n) {
 }
 
 void print_impl(const char *file, const char *caller, int line, const char *fmt, ...) {
-    preempt_disable();
-
-    // irqsave so an interrupt during a print can't deadlock or interleave output
     uint64_t flags = spinlock_acquire_irqsave(&print_lock);
 
     print_string(file);
@@ -54,6 +49,4 @@ void print_impl(const char *file, const char *caller, int line, const char *fmt,
     va_end(list);
 
     spinlock_release_irqrestore(&print_lock, flags);
-
-    preempt_enable();
 }

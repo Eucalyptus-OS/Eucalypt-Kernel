@@ -1,175 +1,208 @@
-#include <stdint.h>
 #include <stddef.h>
-#include <memory.h>
+#include <limine.h>
+#include <mm/frame.h>
+#include <mm/memory.h>
 #include <mm/hhdm.h>
-#include <mm/paging.h>
-#include <acpi.h>
 #include <logging/print.h>
+#include <acpi.h>
 
 uint64_t lapic_addr = 0;
 uint64_t ioapic_addr = 0;
 
-static uint32_t ioapic_gsi_base = 0;
-
-// ISA IRQ -> GSI overrides parsed from MADT type-2 entries. Stored for later
-// use when routing device IRQs; not applied yet.
-struct irq_override {
-    uint8_t irq;
-    uint32_t gsi;
-    uint16_t flags;
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+	.id = LIMINE_RSDP_REQUEST_ID,
+	.revision = 0
 };
 
-static struct irq_override overrides[16];
-static uint8_t override_count = 0;
+struct rsdp {
+	char signature[8];
+	uint8_t checksum;
+	char oem_id[6];
+	uint8_t rev;
+	uint32_t rsdt;
+} __attribute__ ((packed));
+
+struct xsdp {
+	char signature[8];
+	uint8_t checksum;
+	char oem_id[6];
+	uint8_t rev;
+	uint32_t rsdt;
+
+	uint32_t length;
+	uint64_t xsdt;
+	uint8_t xchecksum;
+	uint8_t reserved[3];
+} __attribute__ ((packed));
 
 struct sdt_header {
-    char signature[4];
-    uint32_t len;
-    uint8_t rev;
-    uint8_t checksum;
-    char oem_id[6];
-    char oem_table_id[8];
-    uint32_t oem_rev;
-    uint32_t creator_id;
-    uint32_t creator_rev;
-} __attribute__((packed));
+	char signature[4];
+	uint32_t len;
+	uint8_t rev;
+	uint8_t checksum;
+	char oem_id[6];
+	char oem_table_id[8];
+	uint32_t oem_rev;
+	uint32_t creator_id;
+	uint32_t creator_rev;
+} __attribute__ ((packed));
 
-// Root table: RSDT holds 32-bit entry pointers, XSDT 64-bit.
 struct rsdt {
-    struct sdt_header header;
-    uint32_t entries[];
+	struct sdt_header header;
+	uint32_t entries[];
+} __attribute__ ((packed));
+
+struct madt_entry_header {
+	uint8_t type;
+	uint8_t length;
 } __attribute__((packed));
 
-struct xsdt {
-    struct sdt_header header;
-    uint64_t entries[];
+struct madt_local_apic {
+	uint8_t type;      // 0
+	uint8_t length;
+	uint8_t processor_id;
+	uint8_t apic_id;
+	uint32_t flags;
+} __attribute__((packed));
+
+struct madt_ioapic {
+	uint8_t type;      // 1
+	uint8_t length;
+	uint8_t ioapic_id;
+	uint8_t reserved;
+	uint32_t ioapic_addr;
+	uint32_t gsi_base;
+} __attribute__((packed));
+
+struct madt_iso {
+	uint8_t type;      // 2, interrupt source override
+	uint8_t length;
+	uint8_t bus_source;
+	uint8_t irq_source;
+	uint32_t gsi;
+	uint16_t flags;
+} __attribute__((packed));
+
+struct madt_nmi {
+	uint8_t type;      // 4, non-maskable interrupts
+	uint8_t length;
+	uint8_t processor_id;
+	uint16_t flags;
+	uint8_t lint;
 } __attribute__((packed));
 
 struct madt {
-    struct sdt_header header;
-    uint32_t local_apic_addr;
-    uint32_t flags;
-    uint8_t entries[];
-} __attribute__((packed));
+	char signature[4];
+	uint32_t len;
+	uint8_t rev;
+	uint8_t checksum;
+	char oem_id[6];
+	char oem_table_id[8];
+	uint32_t oem_rev;
+	uint32_t creator_id;
+	uint32_t creator_rev;
 
-struct madt_entry_header {
-    uint8_t type;
-    uint8_t length;
-} __attribute__((packed));
+	uint32_t lapic_addr;
+	uint32_t flags;
+	uint8_t entries[];
+} __attribute__ ((packed));
 
-static void parse_madt(struct madt *madt) {
-    lapic_addr = madt->local_apic_addr;
+void *find_table(struct rsdt *rsdt, const char *sig) {
+	int num_entries = (rsdt->header.len - sizeof(struct sdt_header)) / 4;
 
-    uintptr_t end = (uintptr_t)madt + madt->header.len;
-    uint8_t *p = madt->entries;
-
-    while ((uintptr_t)p < end) {
-        struct madt_entry_header *eh = (struct madt_entry_header *)p;
-
-        switch (eh->type) {
-        case 0: { // Local APIC
-            // p+2: proc_id, p+3: apic_id, p+4: flags — logged only for now
-            break;
-        }
-        case 1: { // IO APIC: id(1) reserved(1) addr(4) gsi_base(4)
-            // First IOAPIC wins; multiple-IOAPIC routing is out of scope.
-            if (!ioapic_addr) {
-                ioapic_addr = *(uint32_t *)(p + 4);
-                ioapic_gsi_base = *(uint32_t *)(p + 8);
-            }
-            break;
-        }
-        case 2: { // Interrupt Source Override: bus(1) irq(1) gsi(4) flags(2)
-            if (override_count < sizeof(overrides) / sizeof(overrides[0])) {
-                overrides[override_count].irq   = *(p + 3);
-                overrides[override_count].gsi   = *(uint32_t *)(p + 4);
-                overrides[override_count].flags = *(uint16_t *)(p + 8);
-                override_count++;
-            }
-            break;
-        }
-        case 4: { // Local APIC NMI — accepted, unused
-            break;
-        }
-        default:
-            // Unknown entry types are skipped via their length field.
-            break;
-        }
-
-        // Zero-length entries would loop forever; bail instead of hanging.
-        if (!eh->length) {
-            print("MADT: zero-length entry, aborting parse");
-            return;
-        }
-        p += eh->length;
-    }
+	for (int i = 0; i < num_entries; i++) {
+		struct sdt_header *header = (struct sdt_header *)phys_to_virt(rsdt->entries[i]);
+		if (!strncmp(header->signature, sig, strlen(sig))) {
+			return (void *)header;
+		}
+	}
+	return NULL;
 }
 
-static struct sdt_header *find_table(uintptr_t root_phys, int use_xsdt) {
-    size_t header_bytes = use_xsdt ? offsetof(struct xsdt, entries)
-                                   : offsetof(struct rsdt, entries);
-    void *root = phys_to_virt(root_phys);
-    struct sdt_header *root_hdr = (struct sdt_header *)root;
-    size_t entry_size = use_xsdt ? 8 : 4;
-    size_t count = (root_hdr->len - header_bytes) / entry_size;
+void parse_madt_entries(struct madt *madt) {
+	uint8_t *p = madt->entries;
+	uint8_t *end = (uint8_t *)madt + madt->len;
 
-    for (size_t i = 0; i < count; i++) {
-        uintptr_t entry_phys = use_xsdt
-            ? (uintptr_t)((struct xsdt *)root)->entries[i]
-            : (uintptr_t)((struct rsdt *)root)->entries[i];
+	while (p < end) {
+		struct madt_entry_header *eh = (struct madt_entry_header *)p;
 
-        struct sdt_header *hdr = (struct sdt_header *)phys_to_virt(entry_phys);
-        if (hdr->signature[0] == 'A' && hdr->signature[1] == 'P' &&
-            hdr->signature[2] == 'I' && hdr->signature[3] == 'C') {
-            return hdr;
-        }
-    }
-    return NULL;
+		if (eh->length == 0) {
+			print("MADT: zero-length entry, aborting parse\n");
+			break;
+		}
+
+		switch (eh->type) {
+			case 0: {
+				struct madt_local_apic *lapic = (struct madt_local_apic *)p;
+				print("MADT: Local APIC - proc_id: %d, apic_id: %d, flags: 0x%X\n",
+				      lapic->processor_id, lapic->apic_id, lapic->flags);
+				break;
+			}
+			case 1: {
+				struct madt_ioapic *ioapic = (struct madt_ioapic *)p;
+				print("MADT: IOAPIC - id: %d, addr: 0x%X, gsi_base: %d\n",
+				      ioapic->ioapic_id, ioapic->ioapic_addr, ioapic->gsi_base);
+				ioapic_addr = ioapic->ioapic_addr;
+				break;
+			}
+			case 2: {
+				struct madt_iso *iso = (struct madt_iso *)p;
+				print("MADT: Interrupt Source Override - bus: %d, irq: %d, gsi: %d, flags: 0x%X\n",
+				      iso->bus_source, iso->irq_source, iso->gsi, iso->flags);
+				break;
+			}
+			case 4: {
+				struct madt_nmi *nmi = (struct madt_nmi *)p;
+				print("MADT: NMI - proc_id: %d, flags: 0x%X, lint: %d\n",
+				      nmi->processor_id, nmi->flags, nmi->lint);
+				break;
+			}
+			default:
+				print("MADT: unhandled entry type %d, len %d\n", eh->type, eh->length);
+				break;
+		}
+
+		p += eh->length;
+	}
 }
 
-uint8_t acpi_init(uint64_t rsdp) {
-    if (!rsdp) {
-        print("ACPI: no RSDP provided by bootloader");
-        return 1;
-    }
+void acpi_parse_tables() {
+	void *rsdp_addr = rsdp_request.response->address;
+	struct xsdp *rsdp = (struct xsdp *)phys_to_virt(frame_alloc());
 
-    // Limine's rsdp response gives an HHDM-virtual pointer, unlike the
-    // physical table pointers stored inside the XSDT/RSDT.
-    // RSDP rev >= 2 carries an XSDT pointer; older ones only an RSDT.
-    uint8_t acpi_rev = *(uint8_t *)(rsdp + 15);
+	print("Filling struct\n");
+	uint8_t acpi_rev = *(uint8_t *)((char *)rsdp_addr + 15);
+	size_t rsdp_size = acpi_rev >= 2 ? sizeof(struct xsdp) : sizeof(struct xsdp) - 16;
+	memcpy(rsdp, rsdp_addr, rsdp_size);
 
-    struct madt *madt;
-    if (acpi_rev >= 2) {
-        uintptr_t xsdt_phys = *(uint64_t *)(rsdp + 24);
-        madt = (struct madt *)find_table(xsdt_phys, 1);
-    } else {
-        uintptr_t rsdt_phys = *(uint32_t *)(rsdp + 16);
-        madt = (struct madt *)find_table(rsdt_phys, 0);
-    }
+	print("RSDP_ADDR: 0x%X\nACPI_REV: %d, RSDP_SIG: %s\nRSDT_ADDR: 0x%X\n", rsdp_addr, acpi_rev, rsdp->signature, rsdp->rsdt);
 
-    if (!madt) {
-        print("ACPI: MADT not found");
-        return 1;
-    }
+	struct sdt_header temp_header;
+	memcpy(&temp_header, (void *)phys_to_virt(rsdp->rsdt), sizeof(struct sdt_header));
+	struct rsdt *rsdt = (struct rsdt *)phys_to_virt(frame_alloc());
+	memcpy(rsdt, phys_to_virt(rsdp->rsdt), temp_header.len);
 
-    parse_madt(madt);
+	void *madt_addr = find_table(rsdt, "APIC");
+	if (!madt_addr) {
+		print("MADT not found\n");
+		return;
+	}
 
-    if (!lapic_addr || !ioapic_addr) {
-        print("ACPI: MADT missing LAPIC/IOAPIC addresses");
-        return 1;
-    }
+	struct sdt_header *madt_hdr = (struct sdt_header *)madt_addr;
+	uint32_t madt_len = madt_hdr->len;
 
-    print("ACPI: MADT found, LAPIC @ 0x%lx, IOAPIC @ 0x%lx (gsi base %u)",
-          lapic_addr, ioapic_addr, ioapic_gsi_base);
-    print("ACPI: %u IRQ overrides", override_count);
+	if (madt_len > 0x1000) {
+		print("MADT too large for one frame (%d bytes), aborting\n", madt_len);
+		return;
+	}
 
-    // Both are page-aligned MMIO regions; map them uncached through the HHDM.
-    // kernel_pml4 is physical, so wrap it before handing it to map_page().
-    uint64_t *pml4 = (uint64_t *)phys_to_virt((uintptr_t)kernel_pml4);
-    uint64_t flags = PAGE_PRESENT | PAGE_WRITABLE | PAGE_DISABLE_CACHE | PAGE_NXE;
+	struct madt *madt = (struct madt *)phys_to_virt(frame_alloc());
+	memcpy(madt, madt_addr, madt_len);
 
-    if (map_page(pml4, phys_to_virt(lapic_addr), lapic_addr, flags)) return 1;
-    if (map_page(pml4, phys_to_virt(ioapic_addr), ioapic_addr, flags)) return 1;
+	print("MADT_ADDR: 0x%X, LAPIC_ADDR: 0x%X, FLAGS: 0x%X\n", madt_addr, madt->lapic_addr, madt->flags);
+	lapic_addr = madt->lapic_addr;
 
-    return 0;
+	parse_madt_entries(madt);
+	print("APIC_ADDR: 0x%X, IOAPIC_ADDR: 0x%X\n", lapic_addr, ioapic_addr);
 }

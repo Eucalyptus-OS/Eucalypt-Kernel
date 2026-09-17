@@ -1,160 +1,106 @@
 #include <stddef.h>
 #include <stdint.h>
-#include <memory.h>
-#include <mm/heap.h>
-#include <mm/paging.h>
-#include <mm/frame.h>
-#include <mm/hhdm.h>
-#include <sync/spinlock.h>
-#include <multitasking/sched.h>
 #include <logging/print.h>
+#include <sync/spinlock.h>
+#include <mm/hhdm.h>
+#include <mm/page.h>
+#include <mm/frame.h>
+#include <mm/memory.h>
+#include <mm/heap.h>
 
-// Every allocation is preceded by a header; the free list is kept sorted by
-// address (growth always appends above existing blocks, splits stay in place),
-// which makes coalescing in kfree a single pass.
-struct block_header {
-    uint64_t size;             // payload bytes, excluding this header
-    uint64_t is_free;
-    uint64_t _pad;             // header must stay a multiple of 16 so
-                               // payloads are 16-byte aligned (FXSAVE et al.)
-    struct block_header *next;
-};
+typedef struct kmalloc_header {
+    size_t size;
+    int is_free;
+    struct kmalloc_header *next;
+    uint64_t frames;
+} kmalloc_header_t;
 
-static struct block_header *free_head = NULL;
-static size_t mapped_pages = 0;
+static kmalloc_header_t *free_list_head = NULL;
 static spinlock_t heap_lock = 0;
 
-static uint8_t heap_grow(size_t pages) {
-    if (mapped_pages + pages > HEAP_MAX_PAGES) {
-        return 1;
-    }
-
-    void *bump = (void *)(HEAP_VIRT_BASE + mapped_pages * PAGE_SIZE);
-    // pml4 stored by paging.c is physical — wrap it for map_page().
-    uint64_t *pml4 = (uint64_t *)phys_to_virt((uintptr_t)kernel_pml4);
-
-    for (size_t i = 0; i < pages; i++) {
-        uintptr_t frame = frame_alloc();
-        if (!frame) {
-            return 1;
-        }
-        if (map_page(pml4, (uint8_t *)bump + i * PAGE_SIZE, frame,
-                     PAGE_PRESENT | PAGE_WRITABLE | PAGE_NXE)) {
-            frame_free(frame);
-            return 1;
-        }
-    }
-
-    mapped_pages += pages;
-    return 0;
-}
-
-static struct block_header *heap_tail() {
-    struct block_header *curr = free_head;
-    while (curr && curr->next) {
-        curr = curr->next;
-    }
-    return curr;
-}
-
-static void heap_append(struct block_header *block) {
-    struct block_header *tail = heap_tail();
-    if (tail) {
-        tail->next = block;
-    } else {
-        free_head = block;
-    }
-    block->next = NULL;
-}
-
-uint8_t heap_init() {
-    if (heap_grow(16)) {
-        return 1;
-    }
-
-    // One big free block covering everything just mapped.
-    struct block_header *block = (struct block_header *)HEAP_VIRT_BASE;
-    block->size = mapped_pages * PAGE_SIZE - sizeof(struct block_header);
-    block->is_free = 1;
-    block->next = NULL;
-    free_head = block;
-
-    print("Heap initialized: %u pages at 0x%lx",
-          (unsigned)mapped_pages, HEAP_VIRT_BASE);
-    return 0;
-}
-
 void *kmalloc(uintptr_t size) {
-    if (!size) {
+    if (size == 0) {
         return NULL;
     }
 
-    // Keep payloads 16-byte aligned: headers are a multiple of 16 on x86_64.
     size = (size + 15) & ~15UL;
 
-    preempt_disable();
     uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
 
-    size_t total_needed = size + sizeof(struct block_header);
-
-    // First fit over the free list.
-    struct block_header *curr = free_head;
-    while (curr) {
-        if (curr->is_free && curr->size >= size) {
-            break;
-        }
-        curr = curr->next;
-    }
-
-    if (!curr) {
-        // Nothing fits: grow the region and carve the new block off the bump.
-        size_t pages = (total_needed + PAGE_SIZE - 1) / PAGE_SIZE;
-        if (heap_grow(pages)) {
+    size_t total_needed = size + sizeof(kmalloc_header_t);
+    if (total_needed > PAGE_SIZE) {
+        uint64_t frames = (total_needed + PAGE_SIZE - 1) / PAGE_SIZE;
+        uintptr_t phys = frame_alloc_contig(frames);
+        if (!phys) {
+            print("kmalloc: failed to allocate %d contiguous frames\n", (int)frames);
             spinlock_release_irqrestore(&heap_lock, flags);
             return NULL;
         }
 
-        struct block_header *block =
-            (struct block_header *)(HEAP_VIRT_BASE + (mapped_pages - pages) * PAGE_SIZE);
-        size_t span = pages * PAGE_SIZE - sizeof(struct block_header);
+        uintptr_t start = phys;
+        kmalloc_header_t *chunk = (kmalloc_header_t *)phys_to_virt(start);
+        memset(chunk, 0, PAGE_SIZE * frames);
+        chunk->size = size;
+        chunk->is_free = 0;
+        chunk->next = NULL;
+        chunk->frames = frames;
 
-        // If the leftover after the request can hold another block, split it
-        // into a trailing free block; otherwise hand the whole span over so
-        // internal fragmentation stays bounded to one header's slack.
-        if (span >= size + sizeof(struct block_header) + 16) {
-            block->size = size;
-            block->is_free = 0;
-
-            struct block_header *rest =
-                (struct block_header *)((uintptr_t)block + sizeof(struct block_header) + size);
-            rest->size = span - size - sizeof(struct block_header);
-            rest->is_free = 1;
-            rest->next = NULL;
-
-            heap_append(block);     // block first...
-            heap_append(rest);      // ...then rest keeps list address-sorted
-        } else {
-            block->size = span;
-            block->is_free = 0;
-            heap_append(block);
-        }
-
-        curr = block;
-    } else if (curr->size >= size + sizeof(struct block_header) + 16) {
-        // Split in place: shrink the hit, insert a free remainder after it.
-        struct block_header *rest =
-            (struct block_header *)((uintptr_t)curr + sizeof(struct block_header) + size);
-        rest->size = curr->size - size - sizeof(struct block_header);
-        rest->is_free = 1;
-        rest->next = curr->next;
-        curr->next = rest;
-        curr->size = size;
+        void *payload = (void *)((uintptr_t)chunk + sizeof(kmalloc_header_t));
+        spinlock_release_irqrestore(&heap_lock, flags);
+        return payload;
     }
 
-    curr->is_free = 0;
-    void *payload = (void *)((uintptr_t)curr + sizeof(struct block_header));
+    kmalloc_header_t *curr = free_list_head;
+
+    while (curr) {
+        if (curr->is_free && curr->size >= size) {
+            if (curr->size >= size + sizeof(kmalloc_header_t) + 16) {
+                kmalloc_header_t *new_block = (kmalloc_header_t*)((uintptr_t)curr + sizeof(kmalloc_header_t) + size);
+                new_block->size = curr->size - size - sizeof(kmalloc_header_t);
+                new_block->is_free = 1;
+                new_block->next = curr->next;
+                new_block->frames = 1;
+
+                curr->size = size;
+                curr->next = new_block;
+            }
+            curr->is_free = 0;
+            void *payload = (void*)((uintptr_t)curr + sizeof(kmalloc_header_t));
+            spinlock_release_irqrestore(&heap_lock, flags);
+            return payload;
+        }
+        curr = curr->next;
+    }
+
+    uintptr_t phys_frame = frame_alloc(); 
+    if (!phys_frame) {
+        print("frame_alloc failed, out of physical memory\n");
+        spinlock_release_irqrestore(&heap_lock, flags);
+        return NULL;
+    }
+
+    kmalloc_header_t *new_chunk = (kmalloc_header_t*)phys_to_virt(phys_frame);
+    new_chunk->size = PAGE_SIZE - sizeof(kmalloc_header_t);
+    new_chunk->is_free = 0;
+    new_chunk->next = NULL;
+    new_chunk->frames = 1;
+
+    new_chunk->next = free_list_head;
+    free_list_head = new_chunk;
+
+    if (new_chunk->size >= size + sizeof(kmalloc_header_t) + 16) {
+        kmalloc_header_t *split_block = (kmalloc_header_t*)((uintptr_t)new_chunk + sizeof(kmalloc_header_t) + size);
+        split_block->size = new_chunk->size - size - sizeof(kmalloc_header_t);
+        split_block->is_free = 1;
+        split_block->next = new_chunk->next;
+        split_block->frames = 1;
+
+        new_chunk->size = size;
+        new_chunk->next = split_block;
+    }
+
+    void *payload = (void*)((uintptr_t)new_chunk + sizeof(kmalloc_header_t));
     spinlock_release_irqrestore(&heap_lock, flags);
-    preempt_enable();
     return payload;
 }
 
@@ -163,25 +109,36 @@ void kfree(void *addr) {
         return;
     }
 
-    preempt_disable();
     uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
 
-    struct block_header *header = (struct block_header *)((uintptr_t)addr - sizeof(struct block_header));
+    kmalloc_header_t *header = (kmalloc_header_t*)((uintptr_t)addr - sizeof(kmalloc_header_t));
     header->is_free = 1;
 
-    // Single coalescing pass: merge any run of adjacent-by-address free blocks.
-    struct block_header *curr = free_head;
-    while (curr && curr->next) {
-        if (curr->is_free && curr->next->is_free &&
-            (uintptr_t)curr + sizeof(struct block_header) + curr->size ==
-                (uintptr_t)curr->next) {
-            curr->size += sizeof(struct block_header) + curr->next->size;
-            curr->next = curr->next->next;
-            continue;   // re-check same block against its new successor
+    if (header->frames > 1) {
+        kmalloc_header_t **pp = &free_list_head;
+        while (*pp && *pp != header) pp = &(*pp)->next;
+        if (*pp == header) *pp = header->next;
+
+        uintptr_t phys = virt_to_phys((void *)header);
+        for (uint64_t i = 0; i < header->frames; i++)
+            frame_free(phys + i * PAGE_SIZE);
+        spinlock_release_irqrestore(&heap_lock, flags);
+        return;
+    }
+
+    kmalloc_header_t *curr = free_list_head;
+    while (curr) {
+        if (curr->is_free && curr->next && curr->next->is_free) {
+            uintptr_t expected_next = (uintptr_t)curr + sizeof(kmalloc_header_t) + curr->size;
+            
+            if (expected_next == (uintptr_t)curr->next) {
+                curr->size += sizeof(kmalloc_header_t) + curr->next->size;
+                curr->next = curr->next->next;
+                continue; 
+            }
         }
         curr = curr->next;
     }
 
     spinlock_release_irqrestore(&heap_lock, flags);
-    preempt_enable();
 }

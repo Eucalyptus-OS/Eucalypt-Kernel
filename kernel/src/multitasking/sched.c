@@ -1,147 +1,201 @@
-#include <multitasking/sched.h>
+#include <stddef.h>
+#include <logging/print.h>
 #include <multitasking/thread.h>
 #include <multitasking/proc.h>
-#include <mm/heap.h>
-#include <mm/frame.h>
-#include <mm/hhdm.h>
-#include <logging/print.h>
-#include <sync/spinlock.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <multitasking/sched.h>
+#include <apic.h>
 
 extern void switch_task(struct tcb *t);
 
-spinlock_t sched_lock = 0;
-
 struct tcb *current_tcb = NULL;
 
-volatile uint32_t preempt_depth = 0;
-
-#define THREAD_STACK_SIZE 4096
-
-static void reap_thread(struct tcb *t) {
-    if (t->parent) {
-        struct tcb *pc = NULL;
-        struct tcb *pt = t->parent->threads;
-        while (pt && pt != t) {
-            pc = pt;
-            pt = pt->pthread_next;
-        }
-        if (pt == t) {
-            if (pc) {
-                pc->pthread_next = t->pthread_next;
-            } else {
-                t->parent->threads = t->pthread_next;
-            }
-            if (t->parent->t_count) {
-                t->parent->t_count--;
-            }
-        }
+static int proc_in_list(struct pcb *p) {
+    if (!proc_list || !p) {
+        return 0;
     }
-    frame_free(virt_to_phys(t->kstack_top - THREAD_STACK_SIZE));
-    kfree(t);
+    struct pcb *r = proc_list;
+    do {
+        if (r == p) {
+            return 1;
+        }
+        r = r->next;
+    } while (r != proc_list);
+    return 0;
+}
+
+static void reap_exited() {
+    if (!thread_list) {
+        return;
+    }
+
+    struct tcb *r = thread_list;
+    do {
+        struct tcb *next = r->next;
+        if (r->state == Exited && r != current_tcb) {
+            struct pcb *owner = r->parent;
+            int all_exited = 0;
+            if (owner) {
+                all_exited = 1;
+                if (owner->t) {
+                    struct tcb *u = owner->t;
+                    do {
+                        if (u->state != Exited) {
+                            all_exited = 0;
+                            break;
+                        }
+                        u = u->proc_next;
+                    } while (u != owner->t);
+                }
+            }
+            if (owner && all_exited && owner->is_zombie) {
+                r = next;
+                continue;
+            }
+            if (owner && all_exited && owner->ppcb && proc_in_list(owner->ppcb) &&
+                !owner->ppcb->is_zombie) {
+                owner->is_zombie = 1;
+                zombie_enqueue(owner);
+                r = next;
+                continue;
+            }
+            destroy_thread(r);
+            if (owner && owner->t_count == 0 && owner->t == NULL) {
+                proc_destroy(owner);
+            }
+            if (!thread_list) {
+                return;
+            }
+            r = next;
+        } else {
+            r = next;
+        }
+    } while (r != thread_list);
 }
 
 void schedule() {
-    if (__atomic_load_n(&preempt_depth, __ATOMIC_RELAXED)) {
-        return;
-    }
+    uint64_t flags;
+    asm volatile ("pushfq; pop %0" : "=r"(flags));
+    asm volatile ("cli");
 
-    uint64_t flags = spinlock_acquire_irqsave(&sched_lock);
+    reap_exited();
 
     if (!thread_list) {
-        spinlock_release_irqrestore(&sched_lock, flags);
+        print("No threads to switch to\n");
+        asm volatile ("push %0; popfq" :: "r"(flags));
         return;
     }
 
-    struct tcb *prev = current_tcb;
-    struct tcb *next = prev ? prev->next : thread_list;
-    struct tcb *ready = NULL;
-
-    // Bounded by the pre-reap count: strips Dead nodes while hunting for a
-    // Ready one. Removals only shrink the circular list, so bounds iterations
-    // visit every distinct node. The scan never touches current_tcb itself
-    // (the `next != current_tcb` guard), so an exiting thread's stack is
-    // always safe until it has actually switched away.
-    uint64_t bounds = thread_count;
-    for (uint64_t i = 0; i < bounds && ready == NULL && next != NULL; i++) {
-        if (next->state == Dead && next != current_tcb) {
-            struct tcb *victim = next;
-            if (prev) {
-                prev->next = next->next;
-            } else {
-                thread_list = next->next;
+    if (!current_tcb) {
+        struct tcb *t = thread_list;
+        do {
+            if (t->state == Ready) {
+                t->state = Running;
+                print("Switching to first task %d\n", t->tid);
+                switch_task(t);
+                asm volatile ("push %0; popfq" :: "r"(flags));
+                return;
             }
-            if (next->next == next) {
-                thread_list = NULL;
-                next = NULL;
-            } else {
-                next = next->next;
-            }
-            thread_count--;
-            reap_thread(victim);
-            continue;
-        }
-        if (next->state == Ready) {
-            ready = next;
-            break;
-        }
-        prev = next;
-        next = next->next;
-    }
-
-    if (!ready) {
-        spinlock_release_irqrestore(&sched_lock, flags);
+            t = t->next;
+        } while (t != thread_list);
+        asm volatile ("push %0; popfq" :: "r"(flags));
         return;
     }
 
-    ready->state = Running;
-    if (prev && prev->state == Running) {
-        prev->state = Ready;
+    struct tcb *t = current_tcb->next;
+    for (uint64_t i = 0; i < thread_count; i++) {
+        if (t->state == Ready) {
+            if (current_tcb->state == Running) {
+                current_tcb->state = Ready;
+            }
+            t->state = Running;
+            switch_task(t);
+            asm volatile ("push %0; popfq" :: "r"(flags));
+            return;
+        }
+        t = t->next;
     }
 
-    spinlock_release(&sched_lock);
-    switch_task(ready);
-    restore_irq(flags);
+    asm volatile ("push %0; popfq" :: "r"(flags));
 }
 
-struct tcb *get_current_thread() {
+struct tcb *sched_current_thread() {
     if (!current_tcb) {
+        print("Couldn't get the current TCB\n");
+        return NULL;
+    }
+    /* TEST: print("Current TCB\nTID: %d\n", current_tcb->tid); */
+    return current_tcb;
+}
+
+struct pcb *sched_current_proc() {
+    if (!current_tcb || !current_tcb->parent) {
+        print("Couldn't get the current PCB\n");
         return NULL;
     }
 
-    return current_tcb;
+    return current_tcb->parent;
 }
 
 struct tcb *block_current() {
     asm volatile ("cli");
     current_tcb->state = Blocked;
-    asm volatile ("sti");
 
     struct tcb *t = current_tcb;
-    print("Blocking %d\n", t->tid);
     schedule();
 
     while (current_tcb == t && t->state == Blocked) {
         asm volatile ("sti");
         asm volatile ("hlt");
+        asm volatile ("cli");
     }
     return t;
 }
 
 void sched_sleep_thread(struct tcb *t) {
     t->state = Sleeping;
-    print("Sleeping thread: %d\n", t->tid);
 }
 
 void sched_wake_thread(struct tcb *t) {
     t->state = Ready;
-    print("Waking thread: %d\n", t->tid);
 }
 
 void unblock(struct tcb *t) {
+    uint64_t flags;
+    asm volatile ("pushfq; pop %0" : "=r"(flags));
     asm volatile ("cli");
     t->state = Ready;
-    asm volatile ("sti");
-    print("Unblocking %d\n", t->tid);
+    asm volatile ("push %0; popfq" :: "r"(flags));
+}
+
+struct tcb *block_current_timeout(uint64_t wake_tick) {
+    asm volatile ("cli");
+    current_tcb->state = Blocked;
+    current_tcb->timed = 1;
+    current_tcb->wake_tick = wake_tick;
+
+    struct tcb *t = current_tcb;
+    schedule();
+
+    while (current_tcb == t && t->state == Blocked) {
+        asm volatile ("sti");
+        asm volatile ("hlt");
+        asm volatile ("cli");
+    }
+    current_tcb->timed = 0;
+    return t;
+}
+
+void sched_check_timeouts() {
+    if (!thread_list) {
+        return;
+    }
+    struct tcb *r = thread_list;
+    do {
+        struct tcb *next = r->next;
+        if (r->state == Blocked && r->timed && system_ticks >= r->wake_tick) {
+            r->timed = 0;
+            unblock(r);
+        }
+        r = next;
+    } while (r != thread_list);
 }

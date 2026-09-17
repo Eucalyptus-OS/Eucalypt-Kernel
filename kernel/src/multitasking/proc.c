@@ -1,378 +1,261 @@
-#include <multitasking/proc.h>
-#include <multitasking/thread.h>
-#include <multitasking/sched.h>
-#include <drivers/elf.h>
-#include <mm/paging.h>
-#include <mm/heap.h>
-#include <mm/frame.h>
-#include <mm/hhdm.h>
-#include <mm/vmm.h>
-#include <lib/list.h>
-#include <memory.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <sync/spinlock.h>
+#include <mm/page.h>
+#include <mm/frame.h>
+#include <mm/vmm.h>
+#include <mm/heap.h>
+#include <mm/memory.h>
+#include <fs/vfs.h>
+#include <multitasking/thread.h>
+#include <multitasking/proc.h>
+
+#define USER_HEAP_START 0x0000600000000000UL
+#define USER_STACK_TOP 0x0000700000000000UL
+#define USER_MMAP_START 0x0000620000000000UL
+#define USTACK_SIZE 0x10000
 
 struct pcb *proc_list = NULL;
+uint64_t proc_count = 0;
+struct pcb *zombie_head = NULL;
+static struct pcb *zombie_tail = NULL;
+static spinlock_t lock = 0;
+static spinlock_t proc_lock = 0;
 
-static uint64_t next_pid = 0;
-
-struct pcb *proc_create(void *entry, void *stack) {
-    struct pcb *proc = (struct pcb *)kmalloc(sizeof(struct pcb));
-    if (!proc) {
-        return NULL;
+void zombie_enqueue(struct pcb *p) {
+    uint64_t flags = spinlock_acquire_irqsave(&lock);
+    if (p->z_next || p->z_prev) {
+        spinlock_release_irqrestore(&lock, flags);
+        return;
     }
-    memset(proc, 0, sizeof(struct pcb));
-
-    struct tcb *cur = get_current_thread();
-    struct pcb *caller = cur ? cur->parent : NULL;
-
-    proc->pid = ++next_pid;
-    if (vmm_create_space_into(&proc->space)) {
-        kfree(proc);
-        return NULL;
-    }
-
-    struct tcb *t = thread_create(entry, stack, proc);
-    if (!t) {
-        vmm_destroy_space(&proc->space);
-        kfree(proc);
-        return NULL;
-    }
-
-    proc->parent = caller;
-    if (caller) {
-        proc->sibling_next = caller->children;
-        caller->children = proc;
-    }
-
-    if (!proc_list) {
-        proc_list = proc;
+    if (zombie_head == NULL) {
+        zombie_head = zombie_tail = p;
+        p->z_next = p->z_prev = NULL;
     } else {
-        struct pcb *curr = proc_list;
-        while (curr->next) {
-            curr = curr->next;
-        }
-        curr->next = proc;
+        zombie_tail->z_next = p;
+        p->z_prev = zombie_tail;
+        p->z_next = NULL;
+        zombie_tail = p;
     }
-
-    return proc;
+    spinlock_release_irqrestore(&lock, flags);
 }
 
-struct pcb *proc_find(uint64_t pid) {
-    for (struct pcb *p = proc_list; p; p = p->next) {
-        if (p->pid == pid) {
-            return p;
-        }
+static void zombie_remove_locked(struct pcb *p) {
+    if (!p || !zombie_head) {
+        return;
     }
-    return NULL;
+    struct pcb *z = zombie_head;
+    int found = 0;
+    do {
+        if (z == p) {
+            found = 1;
+            break;
+        }
+        z = z->z_next;
+    } while (z && z != zombie_head);
+    if (!found) {
+        return;
+    }
+    struct pcb *n = p->z_next;
+    struct pcb *pr = p->z_prev;
+    if (pr) {
+        pr->z_next = n;
+    } else {
+        zombie_head = n;
+    }
+    if (n) {
+        n->z_prev = pr;
+    } else {
+        zombie_tail = pr;
+    }
+    p->z_next = p->z_prev = NULL;
 }
 
-struct pcb *proc_add_thread(struct pcb *p, void *entry, void *stack) {
-    if (!p || !entry) {
+void zombie_remove(struct pcb *p) {
+    uint64_t flags = spinlock_acquire_irqsave(&lock);
+    zombie_remove_locked(p);
+    spinlock_release_irqrestore(&lock, flags);
+}
+
+struct pcb *zombie_pop() {
+    uint64_t flags = spinlock_acquire_irqsave(&lock);
+    if (!zombie_head) {
+        spinlock_release_irqrestore(&lock, flags);
         return NULL;
     }
-    if (!thread_create(entry, stack, p)) {
-        return NULL;
-    }
+    struct pcb *p = zombie_head;
+    zombie_remove_locked(p);   // no re-acquire
+    spinlock_release_irqrestore(&lock, flags);
     return p;
 }
 
-void proc_remove_thread(struct pcb *p, struct tcb *t) {
-    if (!p || !t) {
+static void reparent_children(struct pcb *p) {
+    struct pcb *target = proc_find(1);
+    uint64_t flags = spinlock_acquire_irqsave(&lock);
+    if (!target || target == p) {
+        struct pcb *r = proc_list;
+        if (r == p) {
+            r = r->next;
+        }
+        target = (r && r != p) ? r : NULL;
+    }
+    if (!target || !proc_list) {
+        spinlock_release_irqrestore(&lock, flags);
         return;
     }
-    t->state = Dead;
-    if (p->t_count) {
-        p->t_count--;
-    }
-}
-
-void proc_exit(int code) {
-    struct tcb *cur = get_current_thread();
-    struct pcb *p = cur ? cur->parent : NULL;
-    if (!p) {
-        for (;;) {
-            asm volatile ("cli; hlt");
+    struct pcb *r = proc_list;
+    do {
+        if (r->ppcb == p) {
+            r->ppcb = target;
         }
-    }
-
-    p->exit_code = code;
-    struct tcb *t = p->threads;
-    while (t) {
-        struct tcb *nt = t->pthread_next;
-        // parent is cleared so the reaper never touches the soon-freed PCB
-        t->state = Dead;
-        t->parent = NULL;
-        t = nt;
-    }
-    p->zombie = 1;
-
-    if (p->parent && p->parent->waiter) {
-        unblock(p->parent->waiter);
-        p->parent->waiter = NULL;
-    }
-
-    schedule();
-    for (;;) {
-        asm volatile ("hlt");
-    }
+        r = r->next;
+    } while (r != proc_list);
+    spinlock_release_irqrestore(&lock, flags);
 }
 
-struct pcb *proc_wait(struct pcb *p) {
+struct pcb *proc_create(void *entry) {
+    struct pcb *p = (struct pcb *)kmalloc(sizeof(struct pcb));
+    uint64_t flags = spinlock_acquire_irqsave(&lock);
     if (!p) {
+        spinlock_release_irqrestore(&lock, flags);
         return NULL;
     }
-    for (;;) {
-        struct pcb *c = p->children;
-        if (!c) {
-            return NULL;
-        }
-        struct pcb *pc = NULL;
-        while (c) {
-            if (c->zombie) {
-                if (pc) {
-                    pc->sibling_next = c->sibling_next;
-                } else {
-                    p->children = c->sibling_next;
-                }
-                c->sibling_next = NULL;
-                c->parent = NULL;
-                return c;
-            }
-            pc = c;
-            c = c->sibling_next;
-        }
-        p->waiter = get_current_thread();
-        block_current();
-        p->waiter = NULL;
-    }
-}
 
-struct pcb *proc_kill(uint64_t pid) {
-    struct tcb *cur = get_current_thread();
-    struct pcb *caller = cur ? cur->parent : NULL;
-    if (!caller) {
+    p->pid = ++proc_count;
+    p->pgid = p->pid;
+    p->t_count = 0;
+    p->addr_space = paging_create_pml4();
+    p->t = NULL;
+    p->heap_begin = USER_HEAP_START;
+    p->heap_end = USER_HEAP_START;
+    p->exit_code = 0;
+    p->stopped = 0;
+    p->is_zombie = 0;
+    p->wait_events = 0;
+    p->wait_stop_sig = 0;
+    p->ppcb = NULL;
+    p->z_prev = NULL;
+    p->z_next = NULL;
+    p->umask = 0022;
+    p->mmaps = NULL;
+    p->mmap_cursor = USER_MMAP_START;
+    memset(&p->sigstate, 0, sizeof(p->sigstate));
+
+    vfs_fd_table_init(p->fd_table, MAX_FDS);
+    vfs_fd_table_setup_stdio(p->fd_table, MAX_FDS);
+
+    void *ustack = vmm_map_region(
+        (uint64_t *)p->addr_space,
+        (void *)(USER_STACK_TOP - USTACK_SIZE),
+        PAGE_WRITABLE | PAGE_USER,
+        USTACK_SIZE / PAGE_SIZE
+    );
+
+    if (!ustack) {
+        kfree(p);
+        spinlock_release_irqrestore(&lock, flags);
         return NULL;
     }
-    struct pcb *c = caller->children;
-    struct pcb *pc = NULL;
-    while (c) {
-        if (c->pid == pid) {
-            struct tcb *t = c->threads;
-            while (t) {
-                struct tcb *nt = t->pthread_next;
-                t->state = Dead;
-                t->parent = NULL;
-                t = nt;
-            }
-            c->exit_code = 1;
-            c->zombie = 1;
-            if (pc) {
-                pc->sibling_next = c->sibling_next;
-            } else {
-                caller->children = c->sibling_next;
-            }
-            c->sibling_next = NULL;
-            c->parent = NULL;
-            return c;
-        }
-        pc = c;
-        c = c->sibling_next;
+
+    if (proc_list == NULL) {
+        proc_list = p;
+        p->next = p;
+    } else {
+        p->next = proc_list->next;
+        proc_list->next = p;
     }
+
+    struct tcb *t = create_thread(entry, p, ustack);
+    if (!t) {
+        kfree(p);
+        spinlock_release_irqrestore(&lock, flags);
+        return NULL;
+    }
+    spinlock_release_irqrestore(&lock, flags);
+    return p;
+}
+
+struct pcb *proc_find(uint64_t pid) {
+    uint64_t flags = spinlock_acquire_irqsave(&proc_lock);
+    if (!proc_list) {
+        spinlock_release_irqrestore(&proc_lock, flags);
+        return NULL;
+    }
+    struct pcb *p = proc_list;
+    do {
+        if (p->pid == pid) {
+            spinlock_release_irqrestore(&proc_lock, flags);
+            return p;
+        }
+        p = p->next;
+    } while (p != proc_list);
+    spinlock_release_irqrestore(&proc_lock, flags);
     return NULL;
 }
 
-void proc_reap(struct pcb *z) {
-    if (!z) {
-        return;
-    }
-    struct tcb *cur = get_current_thread();
-    if (cur && cur->parent == z) {
-        return;
+uintptr_t proc_sbrk(struct pcb *p, intptr_t increment) {
+    uintptr_t old_end = p->heap_end;
+
+    if (increment == 0) {
+        return old_end;
     }
 
-    if (proc_list == z) {
-        proc_list = z->next;
+    if (increment > 0) {
+        uint64_t bytes_needed = (uint64_t)increment;
+        int pages_needed = (bytes_needed + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        void *mapped = vmm_map_region(
+            (uint64_t *)p->addr_space,
+            (void *)p->heap_end,
+            PAGE_WRITABLE | PAGE_USER,
+            pages_needed
+        );
+
+        if (!mapped) {
+            return (uintptr_t)-1;
+        }
+
+        p->heap_end += pages_needed * PAGE_SIZE;
     } else {
-        struct pcb *p = proc_list;
-        while (p && p->next != z) {
-            p = p->next;
+        uintptr_t shrink_target = old_end + increment;
+
+        linked_list_node_t *node = vmm_find_region(p->heap_end);
+        if (node) {
+            vmm_free_region((uint64_t *)p->addr_space, node);
         }
-        if (p) {
-            p->next = z->next;
-        }
+
+        p->heap_end = shrink_target;
     }
 
-    z->next = NULL;
-    vmm_destroy_space(&z->space);
-    kfree(z);
+    return old_end;
 }
 
 void proc_destroy(struct pcb *p) {
-    if (!p) {
-        return;
-    }
-    struct tcb *t = p->threads;
-    while (t) {
-        struct tcb *nt = t->pthread_next;
-        t->state = Dead;
-        t->parent = NULL;
-        t = nt;
-    }
-    p->zombie = 1;
-    proc_reap(p);
-}
+    reparent_children(p);
+    zombie_remove(p);
+    vfs_fd_table_close(p->fd_table, MAX_FDS);
 
-#define STACK_SIZE 4096
-
-extern int fork_call(void);
-
-int proc_fork(void) {
-    return fork_call();
-}
-
-int proc_fork_c(void *frame, uint64_t resume_rip) {
-    (void)resume_rip;
-    struct tcb *cur = get_current_thread();
-    if (!cur || !cur->parent) {
-        return -1;
-    }
-    struct pcb *parent = cur->parent;
-
-    uint64_t frame_addr = (uint64_t)frame;
-    uint64_t stack_base = (uint64_t)cur->kstack_top - STACK_SIZE;
-    if (frame_addr < stack_base || frame_addr >= (uint64_t)cur->kstack_top) {
-        return -1;
+    while (p->t != NULL) {
+        destroy_thread(p->t);
     }
 
-    struct pcb *child = (struct pcb *)kmalloc(sizeof(struct pcb));
-    if (!child) {
-        return -1;
-    }
-    memset(child, 0, sizeof(struct pcb));
-    if (vmm_create_space_into(&child->space)) {
-        kfree(child);
-        return -1;
-    }
-    child->pid = ++next_pid;
-
-    uint64_t *cpml4 = phys_to_virt((uintptr_t)child->space.pml4);
-    uint64_t *ppml4 = phys_to_virt((uintptr_t)parent->space.pml4);
-    list_foreach(&parent->space.regions, n) {
-        struct vm_region *r = container_of(n, struct vm_region, link);
-        int npages = (r->end - r->base) / PAGE_SIZE;
-        if (!vmm_map_at(&child->space, (void *)r->base, r->flags, npages)) {
-            vmm_destroy_space(&child->space);
-            kfree(child);
-            return -1;
-        }
-        for (int i = 0; i < npages; i++) {
-            void *va = (void *)(r->base + (uint64_t)i * PAGE_SIZE);
-            uintptr_t cp = vmm_walk_phys(cpml4, va);
-            uintptr_t pp = vmm_walk_phys(ppml4, va);
-            if (cp && pp) {
-                memcpy(phys_to_virt(cp), phys_to_virt(pp), PAGE_SIZE);
+    uint64_t flags = spinlock_acquire_irqsave(&proc_lock);
+    if (proc_list) {
+        if (proc_list->next == proc_list) {
+            proc_list = NULL;
+        } else {
+            struct pcb *prev = proc_list;
+            while (prev->next != p) {
+                prev = prev->next;
+            }
+            prev->next = p->next;
+            if (proc_list == p) {
+                proc_list = p->next;
             }
         }
     }
+    spinlock_release_irqrestore(&proc_lock, flags);
 
-    uint64_t slice_len = (uint64_t)cur->kstack_top - frame_addr;
-    uint64_t child_off = frame_addr - stack_base;
-
-    uintptr_t child_kstack_phys = frame_alloc();
-    if (!child_kstack_phys) {
-        vmm_destroy_space(&child->space);
-        kfree(child);
-        return -1;
-    }
-    uint8_t *child_kstack = phys_to_virt(child_kstack_phys);
-    memcpy(child_kstack + child_off, (void *)frame_addr, slice_len);
-
-    uint64_t *child_frame = (uint64_t *)(child_kstack + child_off);
-    child_frame[14] = 0;
-
-    struct tcb *tc = (struct tcb *)kmalloc(sizeof(struct tcb));
-    if (!tc) {
-        frame_free(child_kstack_phys);
-        vmm_destroy_space(&child->space);
-        kfree(child);
-        return -1;
-    }
-    memset(tc, 0, sizeof(struct tcb));
-    tc->tid = thread_count++;
-    tc->ksp = child_frame;
-    tc->kstack_top = child_kstack + STACK_SIZE;
-    tc->tsp = cur->tsp;
-    tc->addr_space = (uintptr_t)child->space.pml4;
-    tc->state = Ready;
-    tc->parent = child;
-
-    if (thread_list == NULL) {
-        thread_list = tc;
-        tc->next = tc;
-    } else {
-        struct tcb *tail = thread_list;
-        while (tail->next != thread_list) {
-            tail = tail->next;
-        }
-        tail->next = tc;
-        tc->next = thread_list;
-    }
-
-    child->threads = tc;
-    child->t_count = 1;
-
-    child->parent = parent;
-    child->sibling_next = parent->children;
-    parent->children = child;
-
-    if (!proc_list) {
-        proc_list = child;
-    } else {
-        struct pcb *pl = proc_list;
-        while (pl->next) {
-            pl = pl->next;
-        }
-        pl->next = child;
-    }
-
-    return (int)child->pid;
-}
-
-int proc_exec(void *elf, uintptr_t size, void *stack) {
-    struct tcb *cur = get_current_thread();
-    if (!cur || !cur->parent) {
-        return -1;
-    }
-    struct pcb *p = cur->parent;
-
-    uint64_t old_regions = p->space.regions.count;
-    void *entry = NULL;
-    if (elf_load(p, elf, size, &entry)) {
-        return -1;
-    }
-
-    struct tcb *nt = thread_create(entry, stack, p);
-    if (!nt) {
-        uint64_t new_regions = p->space.regions.count - old_regions;
-        for (uint64_t k = 0; k < new_regions; k++) {
-            struct vm_region *r = container_of(p->space.regions.tail,
-                                               struct vm_region, link);
-            vmm_free_region(&p->space, r);
-        }
-        return -1;
-    }
-    (void)nt;
-
-    for (uint64_t i = 0; i < old_regions; i++) {
-        struct vm_region *r = container_of(p->space.regions.head,
-                                           struct vm_region, link);
-        vmm_free_region(&p->space, r);
-    }
-
-    cur->state = Dead;
-    schedule();
-    for (;;) {
-        asm volatile ("hlt");
-    }
+    paging_destroy_address_space(p->addr_space);
+    kfree(p);
 }

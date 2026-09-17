@@ -10,7 +10,6 @@ struct tss {
     uint64_t rsp0;
     uint64_t rsp1;
     uint64_t rsp2;
-    uint64_t reserved1;
     uint64_t ist1;
     uint64_t ist2;
     uint64_t ist3;
@@ -18,10 +17,9 @@ struct tss {
     uint64_t ist5;
     uint64_t ist6;
     uint64_t ist7;
-    uint64_t reserved2;
-    uint16_t reserved3;
+    uint64_t reserved1;
     uint16_t iomap_base;
-} __attribute__((packed));
+} __attribute__ ((packed));
 
 struct gdtr {
     uint16_t limit;
@@ -30,11 +28,6 @@ struct gdtr {
 
 // Global for the CPU
 static struct tss global_tss = {0};
-
-void tss_set_kernel_stack(uint64_t rsp0) {
-    // Per-CPU once SMP lands; switch.asm calls this on every context swap.
-    global_tss.rsp0 = rsp0;
-}
 
 static inline void set_descriptor(uint8_t index, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags) {
     uint8_t *target = gdt_table[index];
@@ -75,7 +68,7 @@ static inline void write_tss() {
     set_tss_descriptor(5, base, limit, 0x89); // TSS Descriptor
 }
 
-uint8_t gdt_init() {
+void gdt_init() {
     set_descriptor(0, 0, 0, 0, 0);
     set_descriptor(1, 0, 0xFFFFFFFF, 0x9A, 0xA);
     set_descriptor(2, 0, 0xFFFFFFFF, 0x92, 0xC);
@@ -93,5 +86,29 @@ uint8_t gdt_init() {
     uint16_t tss_selector = 0x28;
     asm volatile ("ltr %0" :: "r"(tss_selector));
     reload();
-    return 0;
+}
+
+void tss_set_kernel_stack(uintptr_t rsp0) {
+    global_tss.rsp0 = rsp0;
+}
+
+extern void syscall_entry_stub();
+
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    asm volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t value) {
+    asm volatile ("wrmsr" : : "c"(msr), "a"((uint32_t)(value & 0xFFFFFFFF)),
+                  "d"((uint32_t)(value >> 32)) : "memory");
+}
+
+void syscall_setup() {
+    uint64_t efer = rdmsr(0xC0000080);
+    wrmsr(0xC0000080, efer | 1);
+    wrmsr(0xC0000081, 0x0008000800000000ULL);
+    wrmsr(0xC0000082, (uint64_t)&syscall_entry_stub);
+    wrmsr(0xC0000084, 0);
 }

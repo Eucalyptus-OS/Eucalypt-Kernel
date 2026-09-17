@@ -42,7 +42,7 @@ ifeq ($(TOOLCHAIN),llvm)
 endif
 
 # User controllable C flags.
-CFLAGS := -g -O2 -pipe
+CFLAGS := -g -O2 -pipe -Wall
 
 # User controllable C preprocessor flags. We set none by default.
 CPPFLAGS :=
@@ -81,8 +81,8 @@ override CFLAGS += \
 
 # Internal C preprocessor flags that should not be changed by the user.
 override CPPFLAGS := \
-    -I include \
     -I src \
+    -I include \
     -I limine-protocol/include \
     -isystem freestanding-c-hdrs/include \
     $(CPPFLAGS) \
@@ -185,23 +185,7 @@ override HEADER_DEPS := $(addprefix obj-$(ARCH)/,$(CFILES:.c=.c.d) $(ASFILES:.S=
 
 # Default target. This must come first, before header dependencies.
 .PHONY: all
-all: compile_commands.json bin-$(ARCH)/$(OUTPUT)
-
-# Generate compile_commands.json so clangd works without running bear.
-# Uses the same source discovery and flags as the real build above.
-override CCDB_FLAGS := $(filter-out -MMD -MP,$(CPPFLAGS) $(CFLAGS))
-
-.PHONY: compile_commands.json
-compile_commands.json: GNUmakefile
-	@printf '[\n' > $@
-	@first=1; \
-	for f in $(CFILES); do \
-		if [ $$first -eq 0 ]; then printf ',\n' >> $@; fi; \
-		first=0; \
-		printf '{"directory": "%s", "file": "%s/%s", "command": "%s %s -c %s/%s"}' \
-			"$(CURDIR)" "$(CURDIR)" "$$f" "$(CC)" "$(CCDB_FLAGS)" "$(CURDIR)" "$$f" >> $@; \
-	done; \
-	printf '\n]\n' >> $@
+all: bin-$(ARCH)/$(OUTPUT)
 
 # Include header dependencies.
 -include $(HEADER_DEPS)

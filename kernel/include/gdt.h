@@ -2,5 +2,6 @@
 
 #include <stdint.h>
 
-uint8_t gdt_init();
-void tss_set_kernel_stack(uint64_t rsp0);
+void gdt_init();
+void tss_set_kernel_stack(uintptr_t rsp0);
+void syscall_setup();

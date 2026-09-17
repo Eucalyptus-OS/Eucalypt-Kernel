@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-// Incremented by the LAPIC timer handler on every tick.
 extern volatile uint64_t system_ticks;
 
 uint32_t apic_read(uint32_t reg);

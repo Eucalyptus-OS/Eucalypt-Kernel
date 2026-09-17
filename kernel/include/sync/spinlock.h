@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-// Header-only spinlock + irqsave helpers (ported from tiny-kern).
 typedef volatile int spinlock_t;
 
 static inline void spinlock_acquire(spinlock_t *lock) {
@@ -16,7 +15,6 @@ static inline void spinlock_release(spinlock_t *lock) {
 }
 
 static inline uint64_t save_irq() {
-    // Save RFLAGS.IF then mask interrupts; paired with restore_irq().
     uint64_t flags;
     __asm__ volatile ("pushfq; pop %0" : "=r"(flags));
     __asm__ volatile ("cli");
