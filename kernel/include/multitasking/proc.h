@@ -1,55 +1,79 @@
 #pragma once
 
 #include <stdint.h>
-#include <stdbool.h>
-#include <ipc/signal.h>
-#include <multitasking/thread.h>
-#include <drivers/fs/vfs/vfs.h>
+#include <stddef.h>
+#include <signal.h>
 
-#define MAX_FDS  64
-#define NSIG     32
+#define MAX_FDS 256
 
-#define USER_HEAP_BASE 0x0000000000400000ULL
+// Wait event bits: set on a child when it exits/stops/continues.
+#define WAIT_EVT_EXITED    1
+#define WAIT_EVT_STOPPED   2
+#define WAIT_EVT_CONTINUED 4
 
-typedef enum {
-    PROC_RUNNING,
-    PROC_ZOMBIE,
-    PROC_STOPPED,
-} proc_state_t;
+extern uint64_t process_count;
 
-struct tcb;
-
-struct pcb {
-    int32_t  pid;
-    int32_t  parent_pid;
-    int32_t  pgid;
-    int32_t  sid;
-    bool     user;
-    proc_state_t state;
-    int      exit_code;
-
-    uintptr_t heap_start;
-    uintptr_t heap_end;
-    uintptr_t cr3;
-
-    void (*signal_handler[NSIG])(int);
-    uint32_t signal_pending;
-
-    vfs_file_t *fd_table[MAX_FDS];
-
-    struct tcb *threads[MAX_THREADS];
+// A single mmap() allocation tracked by the process.
+struct mmap_region {
+    uintptr_t base;
+    size_t len;
+    uint32_t prot;
+    struct mmap_region *next;
 };
 
-struct pcb *proc_create(void *entry, bool user);
-struct pcb *proc_create_loaded_user(uintptr_t entry, uintptr_t cr3,
-                                    char **argv, char **envp,
-                                    const elf_load_info_t *info);
-struct pcb *proc_fork(void);
-int         proc_exec(const char *path, char **argv, char **envp);
-void        proc_exit(int code);
-void        proc_exit_group(int code);
-int32_t     proc_waitpid(int32_t pid, int *status, int flags);
-int         proc_signal(int32_t pid, int sig);
-struct pcb *proc_get(int32_t pid);
-struct pcb *add_thread(struct pcb *proc, void *entry);
-void        proc_destroy(struct pcb *proc);
+struct pcb {
+    uint64_t pid;
+    uint64_t pgid;
+    uint64_t t_count;
+    // Root paging table (PML4) this process executes under.
+    uintptr_t addr_space;
+    // First thread of the process; threads are a circular list off this.
+    struct tcb *t;
+    // sbrk heap bounds: the break lives in [heap_begin, heap_end).
+    uintptr_t heap_begin;
+    uintptr_t heap_end;
+    uint64_t exit_code;
+    uint8_t stopped;
+    uint8_t is_zombie;
+    uint8_t wait_events;
+    int wait_stop_sig;
+    // Parent PCB; children are re-parented here when this process dies.
+    struct pcb *ppcb;
+    // Links in the zombie reap list.
+    struct pcb *z_prev;
+    struct pcb *z_next;
+    // Pending/ignored signals and signal handlers, inherited by children.
+    sigstate_t sigstate;
+    uint32_t umask;
+    // Outstanding mmap() allocations and the next placement hint.
+    struct mmap_region *mmaps;
+    uintptr_t mmap_cursor;
+    // Link in the global circular process list.
+    struct pcb *next;
+    // Open file descriptors, indexed by fd number.
+    struct vfs_file *fd_table[MAX_FDS];
+};
+
+// Global circular list of all live processes, with the pid counter.
+extern struct pcb *proc_list;
+extern uint64_t proc_count;
+
+// Spawn a new process whose first thread runs the given entry function.
+struct pcb *proc_create(void *entry);
+// Return the live process with the given pid, or NULL.
+struct pcb *proc_find(uint64_t pid);
+// Free all resources of a dead process and clear it from the process list.
+void proc_destroy(struct pcb *p);
+// Reserve or release user heap memory; returns the previous break address.
+uintptr_t proc_sbrk(struct pcb *p, intptr_t increment);
+// Wait for a child to exit/stop/continue and collect its status.
+int waitpid(int pid, int *status, int options);
+
+// Queue an exited process onto the zombie reap list.
+void zombie_enqueue(struct pcb *p);
+// Take a process off the zombie reap list.
+void zombie_remove(struct pcb *p);
+// Remove and return the oldest zombie (used by reaping logic).
+struct pcb *zombie_pop();
+// Head of the zombie reap list.
+extern struct pcb *zombie_head;

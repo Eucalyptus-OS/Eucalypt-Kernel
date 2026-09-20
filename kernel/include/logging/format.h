@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 
+// Callback that consumes one character of formatted output.
 typedef void (*format_writer_t)(char ch);
 
 /// Format a string as described by the C specification.

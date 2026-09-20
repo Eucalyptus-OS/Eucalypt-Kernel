@@ -1,377 +1,222 @@
 #include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
-
-#include <smp.h>
-#include <interrupts/apic.h>
-#include <sync/spinlock.h>
-#include <logging/printk.h>
-#include <gdt/gdt.h>
-#include <mm/heap.h>
-#include <mm/hhdm.h>
-#include <mm/paging.h>
+#include <logging/print.h>
 #include <multitasking/thread.h>
 #include <multitasking/proc.h>
 #include <multitasking/sched.h>
+#include <apic.h>
 
-#define MAX_CPUS 100
+extern void switch_task(struct tcb *t);
 
-typedef struct {
-    struct tcb *threads[MAX_THREADS];
-    int         front;
-    int         rear;
-    int         count;
-} threads_t;
+// The thread currently executing (or the next to run) on this CPU.
+struct tcb *current_tcb = NULL;
 
-typedef struct cpu_sched {
-    struct tcb *current;
-    struct tcb *reap;
-    threads_t   run_queue;
-    spinlock_t  lock;
-} cpu_sched_t;
-
-static threads_t  ready_queue_data;
-static bool       enabled = false;
-threads_t *tq = &ready_queue_data;
-struct cpu_sched   sched_cpus[MAX_CPUS];
-
-static spinlock_t sched_lock;
-static struct tcb  idle_tcbs[MAX_CPUS];
-static bool        idle_ready[MAX_CPUS];
-
-static uintptr_t kernel_stack_top(struct tcb *thread) {
-    uintptr_t aligned = ((uintptr_t)thread->stack_base + 0xFFF) & ~0xFFFULL;
-    return aligned + KERNEL_STACK_SIZE;
-}
-
-static uint64_t irq_save(void) {
-    uint64_t flags;
-    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
-    return flags;
-}
-
-static void irq_restore(uint64_t flags) {
-    if (flags & (1ULL << 9)) {
-        __asm__ volatile("sti" ::: "memory");
+// Confirm p is still linked into the live process list before using it.
+static int proc_in_list(struct pcb *p) {
+    if (!proc_list || !p) {
+        return 0;
     }
+    struct pcb *r = proc_list;
+    do {
+        if (r == p) {
+            return 1;
+        }
+        r = r->next;
+    } while (r != proc_list);
+    return 0;
 }
 
-static void lock_sched(uint64_t *flags) {
-    *flags = irq_save();
-    spinlock_acquire(&sched_lock);
-}
-
-static void unlock_sched(uint64_t flags) {
-    spinlock_release(&sched_lock);
-    irq_restore(flags);
-}
-
-static uint64_t setup_idle_stack(uint8_t *stack_base, uint64_t stack_size, void *entry) {
-    uint64_t *stack_top = (uint64_t *)(stack_base + stack_size);
-    uint64_t *rsp       = stack_top;
-
-    *--rsp = 0x10;
-    *--rsp = (uint64_t)stack_top;
-    *--rsp = 0x202;
-    *--rsp = 0x08;
-    *--rsp = (uint64_t)entry;
-
-    for (int i = 0; i < 15; i++) {
-        *--rsp = 0;
-    }
-
-    return (uint64_t)rsp;
-}
-
-static void idle_entry(void) {
-    for (;;) {
-        __asm__ volatile("sti\nhlt" ::: "memory");
-    }
-}
-
-static bool is_idle_thread(struct tcb *thread) {
-    return thread &&
-           thread->owning_cpu < MAX_CPUS &&
-           idle_ready[thread->owning_cpu] &&
-           thread == &idle_tcbs[thread->owning_cpu];
-}
-
-static void update_rsp0(uint8_t id, struct tcb *thread) {
-    uintptr_t rsp0 = kernel_stack_top(thread);
-    if (id < MAX_CPUS && per_cpu_data[id]) {
-        per_cpu_data[id]->tss.rsp0 = rsp0;
-    } else {
-        tss.rsp0 = rsp0;
-    }
-}
-
-static bool enqueue_locked(struct tcb *thread) {
-    if (!thread || is_idle_thread(thread)) {
-        return false;
-    }
-
-    if (tq->count == MAX_THREADS) {
-        log_error("sched: enqueue FAILED, queue full (count=%d) tid=%d\n",
-                  tq->count, thread ? thread->tid : -1);
-        return false;
-    }
-
-    tq->threads[tq->rear] = thread;
-    tq->rear = (tq->rear + 1) % MAX_THREADS;
-    tq->count++;
-
-    return true;
-}
-
-static struct tcb *dequeue_locked(void) {
-    if (tq->count == 0) {
-        return NULL;
-    }
-
-    struct tcb *thread = tq->threads[tq->front];
-    tq->threads[tq->front] = NULL;
-    tq->front = (tq->front + 1) % MAX_THREADS;
-    tq->count--;
-
-    return thread;
-}
-
-static void reap_dead_thread(struct tcb *thread) {
-    if (!thread || is_idle_thread(thread)) {
+// Destroy exited threads and turn fully-dead processes into zombies/reap them.
+static void reap_exited() {
+    if (!thread_list) {
         return;
     }
 
-    if (thread->ustack_base) {
-        kfree(thread->ustack_base);
-    }
-    if (thread->stack_base) {
-        kfree(thread->stack_base);
-    }
-    kfree(thread);
-}
-
-static void reap_cpu_deferred(uint8_t id) {
-    if (id >= MAX_CPUS) {
-        return;
-    }
-
-    struct tcb *thread = sched_cpus[id].reap;
-    if (!thread) {
-        return;
-    }
-
-    sched_cpus[id].reap = NULL;
-    reap_dead_thread(thread);
-}
-
-static void init_idle_thread(uint8_t id) {
-    if (id >= MAX_CPUS || idle_ready[id]) {
-        return;
-    }
-
-    void *raw = kmalloc(KERNEL_STACK_SIZE + 0x1000);
-    if (!raw) {
-        return;
-    }
-
-    uintptr_t aligned = ((uintptr_t)raw + 0xFFF) & ~0xFFFULL;
-    struct tcb *idle = &idle_tcbs[id];
-
-    idle->tid         = UINT16_MAX;
-    idle->parent      = NULL;
-    idle->cr3         = (paddr)((uintptr_t)kernel_pml4 - offset);
-    idle->state       = running;
-    idle->stack_base  = raw;
-    idle->ustack_base = NULL;
-    idle->entry       = idle_entry;
-    idle->rsp         = setup_idle_stack((uint8_t *)aligned, KERNEL_STACK_SIZE, idle_entry);
-    idle->owning_cpu  = id;
-
-    idle_ready[id] = true;
-}
-
-void enable_sched(void) {
-    __atomic_store_n(&enabled, true, __ATOMIC_RELEASE);
-}
-
-void disable_sched(void) {
-    __atomic_store_n(&enabled, false, __ATOMIC_RELEASE);
-}
-
-void scheduler_init(void) {
-    tq->front = 0;
-    tq->rear  = 0;
-    tq->count = 0;
-    for (int i = 0; i < MAX_CPUS; i++) {
-        sched_cpus[i].current = NULL;
-        sched_cpus[i].reap = NULL;
-        sched_cpus[i].run_queue.front = 0;
-        sched_cpus[i].run_queue.rear = 0;
-        sched_cpus[i].run_queue.count = 0;
-        sched_cpus[i].lock = 0;
-        idle_ready[i] = false;
-        init_idle_thread((uint8_t)i);
-    }
-    disable_sched();
-}
-
-bool enqueue(struct tcb *thread) {
-    uint64_t flags;
-    lock_sched(&flags);
-    bool ok = enqueue_locked(thread);
-    unlock_sched(flags);
-    return ok;
-}
-
-struct tcb *dequeue(void) {
-    uint64_t flags;
-    lock_sched(&flags);
-    struct tcb *thread = dequeue_locked();
-    unlock_sched(flags);
-    return thread;
-}
-
-void sched_yield(void) {
-    __asm__ volatile("int $0x20");
-}
-
-void sched_sleep(struct tcb *t) {
-    if (!t || is_idle_thread(t)) {
-        return;
-    }
-
-    uint64_t flags;
-    lock_sched(&flags);
-    t->state = blocked;
-    uint8_t id = smp_current_cpu_id();
-    bool should_yield = (id < MAX_CPUS && t == sched_cpus[id].current);
-    unlock_sched(flags);
-
-    if (should_yield) {
-        sched_yield();
-    }
-}
-
-void sched_wake(struct tcb *t) {
-    if (!t || is_idle_thread(t)) {
-        return;
-    }
-
-    uint64_t flags;
-    lock_sched(&flags);
-    if (t->state != blocked) {
-        unlock_sched(flags);
-        return;
-    }
-
-    t->state = ready;
-    enqueue_locked(t);
-    unlock_sched(flags);
-}
-
-uintptr_t schedule(uintptr_t rsp) {
-    if (!__atomic_load_n(&enabled, __ATOMIC_ACQUIRE)) {
-        return rsp;
-    }
-
-    uint8_t id = smp_current_cpu_id();
-    if (id >= MAX_CPUS || !idle_ready[id]) {
-        return rsp;
-    }
-
-    reap_cpu_deferred(id);
-
-    uint64_t flags;
-    lock_sched(&flags);
-
-    struct tcb *prev = sched_cpus[id].current;
-
-    if (prev && rsp != 0) {
-        prev->rsp = rsp;
-    }
-
-    if (prev && !is_idle_thread(prev)) {
-        if (prev->state == dead) {
-            sched_cpus[id].reap = prev;
-            sched_cpus[id].current = NULL;
-        } else if (prev->state == blocked) {
-            sched_cpus[id].current = NULL;
+    struct tcb *r = thread_list;
+    do {
+        struct tcb *next = r->next;
+        if (r->state == Exited && r != current_tcb) {
+            struct pcb *owner = r->parent;
+            int all_exited = 0;
+            // Walk the owner's threads: all_exited = every one has finished.
+            if (owner) {
+                all_exited = 1;
+                if (owner->t) {
+                    struct tcb *u = owner->t;
+                    do {
+                        if (u->state != Exited) {
+                            all_exited = 0;
+                            break;
+                        }
+                        u = u->proc_next;
+                    } while (u != owner->t);
+                }
+            }
+            // Owner was already zombie: leave it for the waiting parent to reap.
+            if (owner && all_exited && owner->is_zombie) {
+                r = next;
+                continue;
+            }
+            // All threads gone and a live parent exists: turn the owner into a zombie.
+            if (owner && all_exited && owner->ppcb && proc_in_list(owner->ppcb) &&
+                !owner->ppcb->is_zombie) {
+                owner->is_zombie = 1;
+                zombie_enqueue(owner);
+                r = next;
+                continue;
+            }
+            destroy_thread(r);
+            // No threads left at all: release the process outright.
+            if (owner && owner->t_count == 0 && owner->t == NULL) {
+                proc_destroy(owner);
+            }
+            if (!thread_list) {
+                return;
+            }
+            r = next;
         } else {
-            prev->state = ready;
-            enqueue_locked(prev);
+            r = next;
         }
-    }
-
-    struct tcb *next = dequeue_locked();
-    if (!next) {
-        next = &idle_tcbs[id];
-    }
-
-    next->state = running;
-    sched_cpus[id].current = next;
-    next->owning_cpu = id;
-    update_rsp0(id, next);
-
-    unlock_sched(flags);
-
-    paddr current_cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
-    if (next->cr3 != current_cr3) {
-        __asm__ volatile("mov %0, %%cr3" :: "r"(next->cr3));
-    }
-    return next->rsp;
+    } while (r != thread_list);
 }
 
-int32_t get_current_pid(void) {
-    struct tcb *t = get_current_thread();
-    if (!t || !t->parent) return -1;
-    return t->parent->pid;
+// Round-robin scheduler: hand the CPU over to the next Ready thread.
+void schedule() {
+    uint64_t flags;
+    asm volatile ("pushfq; pop %0" : "=r"(flags));
+    asm volatile ("cli");
+
+    reap_exited();
+
+    if (!thread_list) {
+        print("No threads to switch to\n");
+        asm volatile ("push %0; popfq" :: "r"(flags));
+        return;
+    }
+
+    if (!current_tcb) {
+        // Very first switch: just start the first thread found in the Ready state.
+        struct tcb *t = thread_list;
+        do {
+            if (t->state == Ready) {
+                t->state = Running;
+                print("Switching to first task %d\n", t->tid);
+                switch_task(t);
+                asm volatile ("push %0; popfq" :: "r"(flags));
+                return;
+            }
+            t = t->next;
+        } while (t != thread_list);
+        asm volatile ("push %0; popfq" :: "r"(flags));
+        return;
+    }
+
+    // Fair scan: start looking for a Ready thread just past the current one.
+    struct tcb *t = current_tcb->next;
+    for (uint64_t i = 0; i < thread_count; i++) {
+        if (t->state == Ready) {
+            // Put the outgoing thread back on the ready list for its next turn.
+            if (current_tcb->state == Running) {
+                current_tcb->state = Ready;
+            }
+            t->state = Running;
+            switch_task(t);
+            asm volatile ("push %0; popfq" :: "r"(flags));
+            return;
+        }
+        t = t->next;
+    }
+
+    asm volatile ("push %0; popfq" :: "r"(flags));
 }
 
-int32_t get_current_ppid(void) {
-    struct tcb *t = get_current_thread();
-    if (!t || !t->parent) return -1;
-
-    struct pcb *proc = proc_get(t->parent->pid);
-    if (!proc) return -1;
-
-    return proc->parent_pid;
-}
-
-struct tcb *get_current_thread(void) {
-    uint8_t id = smp_current_cpu_id();
-    if (id >= MAX_CPUS) {
+// Return the thread that currently owns the CPU.
+struct tcb *sched_current_thread() {
+    if (!current_tcb) {
+        print("Couldn't get the current TCB\n");
         return NULL;
     }
-    return sched_cpus[id].current;
+    /* TEST: print("Current TCB\nTID: %d\n", current_tcb->tid); */
+    return current_tcb;
 }
 
-struct tcb *get_thread_copy(uint16_t tid) {
-    uint64_t flags;
-    lock_sched(&flags);
-    for (int i = 0; i < tq->count; i++) {
-        int idx = (tq->front + i) % MAX_THREADS;
-        if (tq->threads[idx]->tid == tid) {
-            struct tcb *thread = tq->threads[idx];
-            unlock_sched(flags);
-            return thread;
-        }
+// Return the process that owns the currently running thread.
+struct pcb *sched_current_proc() {
+    if (!current_tcb || !current_tcb->parent) {
+        print("Couldn't get the current PCB\n");
+        return NULL;
     }
-    unlock_sched(flags);
-    return NULL;
+
+    return current_tcb->parent;
 }
 
-struct tcb **get_thread(uint16_t tid) {
-    uint64_t flags;
-    lock_sched(&flags);
-    for (int i = 0; i < tq->count; i++) {
-        int idx = (tq->front + i) % MAX_THREADS;
-        if (tq->threads[idx]->tid == tid) {
-            struct tcb **thread = &tq->threads[idx];
-            unlock_sched(flags);
-            return thread;
-        }
+// Sleep the current thread until somebody explicitly wakes it.
+struct tcb *block_current() {
+    asm volatile ("cli");
+    current_tcb->state = Blocked;
+
+    struct tcb *t = current_tcb;
+    schedule();
+
+    // Halt here until the thread is woken and scheduled back onto the CPU.
+    while (current_tcb == t && t->state == Blocked) {
+        asm volatile ("sti");
+        asm volatile ("hlt");
+        asm volatile ("cli");
     }
-    unlock_sched(flags);
-    return NULL;
+    return t;
+}
+
+// Flag t as sleeping; sched_wake_thread() makes it runnable again.
+void sched_sleep_thread(struct tcb *t) {
+    t->state = Sleeping;
+}
+
+// Put t back on the ready list; it will resume on the next scheduling pass.
+void sched_wake_thread(struct tcb *t) {
+    t->state = Ready;
+}
+
+// Thread-safe wake: mark t Ready and restore the caller's interrupt state.
+void unblock(struct tcb *t) {
+    uint64_t flags;
+    asm volatile ("pushfq; pop %0" : "=r"(flags));
+    asm volatile ("cli");
+    t->state = Ready;
+    asm volatile ("push %0; popfq" :: "r"(flags));
+}
+
+// Sleep the current thread until system_ticks passes wake_tick.
+struct tcb *block_current_timeout(uint64_t wake_tick) {
+    asm volatile ("cli");
+    current_tcb->state = Blocked;
+    current_tcb->timed = 1;
+    current_tcb->wake_tick = wake_tick;
+
+    struct tcb *t = current_tcb;
+    schedule();
+
+    while (current_tcb == t && t->state == Blocked) {
+        asm volatile ("sti");
+        asm volatile ("hlt");
+        asm volatile ("cli");
+    }
+    // Deadline reached: clear the timeout flag before returning.
+    current_tcb->timed = 0;
+    return t;
+}
+
+// Wake every blocked thread whose wake_tick has now been reached (timer tick).
+void sched_check_timeouts() {
+    if (!thread_list) {
+        return;
+    }
+    struct tcb *r = thread_list;
+    do {
+        struct tcb *next = r->next;
+        if (r->state == Blocked && r->timed && system_ticks >= r->wake_tick) {
+            r->timed = 0;
+            unblock(r);
+        }
+        r = next;
+    } while (r != thread_list);
 }

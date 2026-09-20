@@ -1,167 +1,148 @@
 #include <stddef.h>
 #include <stdint.h>
-#include <mem.h>
-#include <logging/printk.h>
+#include <logging/print.h>
+#include <sync/spinlock.h>
 #include <mm/hhdm.h>
+#include <mm/page.h>
 #include <mm/frame.h>
-#include <mm/paging.h>
+#include <mm/memory.h>
 #include <mm/heap.h>
 
-#define HEAP_START 0xFFFF900000000000ULL
-#define HEAP_END   0xFFFF980000000000ULL
-#define HEAP_MAGIC 0xDEADBEEFCAFEBABEULL
-#define ALIGN(x)   (((x) + 15) & ~(size_t)15)
+typedef struct kmalloc_header {
+    size_t size;                // payload size available to the caller
+    int is_free;                // 1 = free block on the free list, 0 = handed out
+    struct kmalloc_header *next; // next block in the free list
+    uint64_t frames;            // physical frames backing the block (1 for a normal page-sized block)
+} kmalloc_header_t;
 
-typedef struct block {
-    uint64_t     magic;
-    size_t       size;
-    bool         free;
-    struct block *next;
-    struct block *prev;
-} block_t;
+static kmalloc_header_t *free_list_head = NULL; // head of the heap's free block list
+static spinlock_t heap_lock = 0;                // guards all heap book-keeping
 
-static block_t  *free_list = NULL;
-static uint64_t  heap_top  = HEAP_START;
-
-static block_t *expand(size_t min_size) {
-    size_t pages = (min_size + sizeof(block_t) + 0xFFF) / 0x1000;
-    size_t bytes = pages * 0x1000;
-
-    if (heap_top + bytes > HEAP_END) {
-        log_info("kmalloc: out of heap space\n");
+// Allocate size bytes; small blocks come from the free list, large ones use contiguous frames
+void *kmalloc(uintptr_t size) {
+    if (size == 0) {
         return NULL;
     }
 
-    for (size_t i = 0; i < pages; i++) {
-        uint64_t phys = frame_alloc();
+    size = (size + 15) & ~15UL; // round the request up to a 16-byte boundary
+
+    uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
+
+    size_t total_needed = size + sizeof(kmalloc_header_t);
+    if (total_needed > PAGE_SIZE) { // oversized requests bypass the free list entirely
+        uint64_t frames = (total_needed + PAGE_SIZE - 1) / PAGE_SIZE; // pages needed to back the whole block
+        uintptr_t phys = frame_alloc_contig(frames);
         if (!phys) {
-            log_info("kmalloc: frame_alloc failed\n");
+            print("kmalloc: failed to allocate %d contiguous frames\n", (int)frames);
+            spinlock_release_irqrestore(&heap_lock, flags);
             return NULL;
         }
-        paging_map_page(kernel_pml4, heap_top + i * 0x1000, phys, 0x1000,
-                        ENTRY_FLAG_PRESENT | ENTRY_FLAG_RW);
+
+        uintptr_t start = phys;
+        kmalloc_header_t *chunk = (kmalloc_header_t *)phys_to_virt(start);
+        memset(chunk, 0, PAGE_SIZE * frames);
+        chunk->size = size;
+        chunk->is_free = 0;
+        chunk->next = NULL;
+        chunk->frames = frames;
+
+        void *payload = (void *)((uintptr_t)chunk + sizeof(kmalloc_header_t));
+        spinlock_release_irqrestore(&heap_lock, flags);
+        return payload;
     }
 
-    block_t *blk = (block_t *)heap_top;
-    blk->magic   = HEAP_MAGIC;
-    blk->size    = bytes - sizeof(block_t);
-    blk->free    = true;
-    blk->next    = NULL;
-    blk->prev    = NULL;
+    kmalloc_header_t *curr = free_list_head;
 
-    heap_top += bytes;
+    while (curr) {
+        if (curr->is_free && curr->size >= size) { // reuse the first free block large enough
+            if (curr->size >= size + sizeof(kmalloc_header_t) + 16) { // split only if the remainder can hold a header
+                kmalloc_header_t *new_block = (kmalloc_header_t*)((uintptr_t)curr + sizeof(kmalloc_header_t) + size);
+                new_block->size = curr->size - size - sizeof(kmalloc_header_t);
+                new_block->is_free = 1;
+                new_block->next = curr->next;
+                new_block->frames = 1;
 
-    // coalesce with previous block if it's free
-    if (free_list) {
-        block_t *last = free_list;
-        while (last->next) last = last->next;
-        if (last->free &&
-            (uint8_t *)last + sizeof(block_t) + last->size == (uint8_t *)blk) {
-            last->size += sizeof(block_t) + blk->size;
-            return last;
-        }
-        last->next = blk;
-        blk->prev  = last;
-    } else {
-        free_list = blk;
-    }
-
-    return blk;
-}
-
-void heap_init(void) {
-    expand(0x1000);
-}
-
-void *kmalloc(size_t size) {
-    if (!size) {
-        return NULL;
-    }
-    size = ALIGN(size);
-
-    block_t *cur = free_list;
-    while (cur) {
-        if (cur->free && cur->size >= size) {
-            // split if remainder is large enough
-            if (cur->size >= size + sizeof(block_t) + 16) {
-                block_t *split = (block_t *)((uint8_t *)cur + sizeof(block_t) + size);
-                split->magic   = HEAP_MAGIC;
-                split->size    = cur->size - size - sizeof(block_t);
-                split->free    = true;
-                split->next    = cur->next;
-                split->prev    = cur;
-                if (cur->next) {
-                    cur->next->prev = split;
-                }
-                cur->next = split;
-                cur->size = size;
+                curr->size = size;
+                curr->next = new_block;
             }
-            cur->free = false;
-            return (void *)((uint8_t *)cur + sizeof(block_t));
+            curr->is_free = 0;
+            void *payload = (void*)((uintptr_t)curr + sizeof(kmalloc_header_t));
+            spinlock_release_irqrestore(&heap_lock, flags);
+            return payload;
         }
-        cur = cur->next;
+        curr = curr->next;
     }
 
-    block_t *blk = expand(size);
-    if (!blk) {
+    // No reusable block found: pull a fresh page and carve it into the free list
+    uintptr_t phys_frame = frame_alloc(); 
+    if (!phys_frame) {
+        print("frame_alloc failed, out of physical memory\n");
+        spinlock_release_irqrestore(&heap_lock, flags);
         return NULL;
     }
-    return kmalloc(size);
+
+    kmalloc_header_t *new_chunk = (kmalloc_header_t*)phys_to_virt(phys_frame);
+    new_chunk->size = PAGE_SIZE - sizeof(kmalloc_header_t);
+    new_chunk->is_free = 0;
+    new_chunk->next = NULL;
+    new_chunk->frames = 1;
+
+    new_chunk->next = free_list_head;
+    free_list_head = new_chunk;
+
+    if (new_chunk->size >= size + sizeof(kmalloc_header_t) + 16) { // split the fresh page the same way
+        kmalloc_header_t *split_block = (kmalloc_header_t*)((uintptr_t)new_chunk + sizeof(kmalloc_header_t) + size);
+        split_block->size = new_chunk->size - size - sizeof(kmalloc_header_t);
+        split_block->is_free = 1;
+        split_block->next = new_chunk->next;
+        split_block->frames = 1;
+
+        new_chunk->size = size;
+        new_chunk->next = split_block;
+    }
+
+    void *payload = (void*)((uintptr_t)new_chunk + sizeof(kmalloc_header_t));
+    spinlock_release_irqrestore(&heap_lock, flags);
+    return payload;
 }
 
-void kfree(void *ptr) {
-    if (!ptr) {
+// Free a pointer from kmalloc; multi-frame chunks go back to the frame allocator, others are coalesced
+void kfree(void *addr) {
+    if (!addr) {
         return;
     }
 
-    block_t *blk = (block_t *)((uint8_t *)ptr - sizeof(block_t));
-    if (blk->magic != HEAP_MAGIC) {
-        log_info("kfree: bad magic at %llX\n", (uint64_t)ptr);
+    uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
+
+    kmalloc_header_t *header = (kmalloc_header_t*)((uintptr_t)addr - sizeof(kmalloc_header_t)); // header sits just before the payload
+    header->is_free = 1;
+
+    if (header->frames > 1) { // large chunk: unlink from the list and release every frame
+        kmalloc_header_t **pp = &free_list_head;
+        while (*pp && *pp != header) pp = &(*pp)->next;
+        if (*pp == header) *pp = header->next;
+
+        uintptr_t phys = virt_to_phys((void *)header);
+        for (uint64_t i = 0; i < header->frames; i++)
+            frame_free(phys + i * PAGE_SIZE);
+        spinlock_release_irqrestore(&heap_lock, flags);
         return;
     }
 
-    blk->free = true;
-
-    // coalesce next
-    if (blk->next && blk->next->free) {
-        blk->size += sizeof(block_t) + blk->next->size;
-        blk->next  = blk->next->next;
-        if (blk->next) {
-            blk->next->prev = blk;
+    kmalloc_header_t *curr = free_list_head;
+    while (curr) {
+        // Coalesce neighbouring free blocks when the next header lies immediately after this one
+        if (curr->is_free && curr->next && curr->next->is_free) {
+            uintptr_t expected_next = (uintptr_t)curr + sizeof(kmalloc_header_t) + curr->size;
+            
+            if (expected_next == (uintptr_t)curr->next) {
+                curr->size += sizeof(kmalloc_header_t) + curr->next->size;
+                curr->next = curr->next->next;
+                continue; 
+            }
         }
+        curr = curr->next;
     }
 
-    // coalesce prev
-    if (blk->prev && blk->prev->free) {
-        blk->prev->size += sizeof(block_t) + blk->size;
-        blk->prev->next  = blk->next;
-        if (blk->next) {
-            blk->next->prev = blk->prev;
-        }
-    }
-}
-
-void *krealloc(void *ptr, size_t size) {
-    if (!ptr) {
-        return kmalloc(size);
-    }
-    if (!size) {
-        kfree(ptr);
-        return NULL;
-    }
-
-    block_t *blk = (block_t *)((uint8_t *)ptr - sizeof(block_t));
-    size = ALIGN(size);
-
-    if (blk->size >= size) {
-        return ptr;
-    }
-
-    void *new = kmalloc(size);
-    if (!new) {
-        return NULL;
-    }
-    memcpy(new, ptr, blk->size);
-    kfree(ptr);
-    return new;
+    spinlock_release_irqrestore(&heap_lock, flags);
 }

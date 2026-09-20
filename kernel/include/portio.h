@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+// x86 port I/O wrappers: outb/inb are 8-bit, outw/inw 16-bit, outl/inl 32-bit
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port) : "memory");
 }
@@ -32,6 +33,7 @@ static inline uint32_t inl(uint16_t port) {
     return val;
 }
 
-static inline void io_wait(void) {
+// Wait a short time by writing to the unused port 0x80, a common I/O delay hack
+static inline void io_wait() {
     outb(0x80, 0x00);
 }

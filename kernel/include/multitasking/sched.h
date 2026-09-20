@@ -1,20 +1,23 @@
 #pragma once
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <multitasking/thread.h>
+// The thread currently running (or about to run) on this CPU.
+extern struct tcb *current_tcb;
 
-void        scheduler_init(void);
-void        enable_sched(void);
-void        disable_sched(void);
-bool        enqueue(struct tcb *thread);
-struct tcb *dequeue(void);
-uintptr_t schedule(uintptr_t rsp);
-void        sched_yield(void);
-void        sched_sleep(struct tcb *t);
-void        sched_wake(struct tcb *t);
-int32_t     get_current_pid(void);
-int32_t     get_current_ppid(void);
-struct tcb *get_current_thread(void);
-struct tcb *get_thread_copy(uint16_t tid);
-struct tcb **get_thread(uint16_t tid);
+// Pick the next Ready thread and context-switch to it.
+void schedule();
+// Return the thread that owns the CPU.
+struct tcb *sched_current_thread();
+// Return the process owning the running thread.
+struct pcb *sched_current_proc();
+// Sleep the current thread until it is explicitly woken.
+struct tcb *block_current();
+// Sleep the current thread until the system clock passes wake_tick.
+struct tcb *block_current_timeout(uint64_t wake_tick);
+// Wake all blocked threads whose deadline has passed (timer tick hook).
+void sched_check_timeouts();
+// Mark t asleep without blocking the calling thread.
+void sched_sleep_thread(struct tcb *t);
+// Wake a sleeping thread; it resumes on the next scheduling pass.
+void sched_wake_thread(struct tcb *t);
+// Make t Ready again, safe to call from any context.
+void unblock(struct tcb *t);
