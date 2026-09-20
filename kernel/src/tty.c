@@ -23,12 +23,10 @@ static tty_t   ttys[TTY_MAX];
 static uint8_t active_tty = 0;
 static void  (*global_output_fn)(tty_t *tty, char c) = NULL;
 
-// Return the TTY's off-screen pixel buffer.
 static uint32_t *tty_fb(tty_t *tty) {
     return tty->backbuf;
 }
 
-// Framebuffer stride in pixels (pitch is measured in bytes).
 static uint32_t tty_fb_stride(void) {
     return framebuffer_request.response->framebuffers[0]->pitch / 4;
 }
@@ -37,7 +35,6 @@ static void tty_blit(tty_t *tty);
 static void tty_blit_region(tty_t *tty, uint32_t start_row, uint32_t end_row);
 static void tty_fill_cell(tty_t *tty, uint32_t row, uint32_t col, uint32_t color);
 
-// 8x8 bitmap glyphs (one byte per row, bit 7 = leftmost pixel) for ASCII.
 static uint8_t tty_font[128][8] = {
     ['!'] = { 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00 },
     ['"'] = { 0x66, 0x66, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00 },
@@ -135,9 +132,7 @@ static uint8_t tty_font[128][8] = {
     ['~'] = { 0x76, 0xDC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 };
 
-// Advance to the next row, scrolling the whole screen up one line at the bottom.
 static void tty_new_line(tty_t *tty) {
-    // Wrap the cursor back to the left edge.
     tty->col = 0;
 
     if (tty->row + 1 >= tty->max_rows) {
@@ -145,18 +140,15 @@ static void tty_new_line(tty_t *tty) {
         uint32_t *fb = tty_fb(tty);
         uint32_t row_bytes = stride * GLYPH_H;
 
-        // Shift every existing glyph row up by one (8 pixels per row).
         uint32_t *dst = &fb[tty->origin_y * stride];
         uint32_t *src = &fb[(tty->origin_y + GLYPH_H) * stride];
         uint32_t rows_to_move = (tty->max_rows - 1) * GLYPH_H;
 
         memmove(dst, src, rows_to_move * stride * sizeof(uint32_t));
 
-        // Blank the row newly exposed at the bottom after the shift.
         uint32_t *last_row = &fb[(tty->origin_y + (tty->max_rows - 1) * GLYPH_H) * stride];
         memset(last_row, 0, row_bytes * sizeof(uint32_t));
 
-        // After scrolling, the cursor stays on the last row.
         tty->row = tty->max_rows - 1;
         tty_blit(tty);
     } else {
@@ -164,17 +156,14 @@ static void tty_new_line(tty_t *tty) {
     }
 }
 
-// Scroll if the cursor has been pushed past the last visible row.
 static void tty_scroll_if_needed(tty_t *tty) {
     if (tty->row >= tty->max_rows) {
         tty_new_line(tty);
     }
 }
 
-// Draw one character at the cursor, handling spaces, newlines and control chars.
 void putchar(tty_t *tty, char c) {
     if (c == ' ') {
-        // Blank the whole cell: glyph area plus the letter-spacing column.
         tty_scroll_if_needed(tty);
         uint32_t stride = tty_fb_stride();
         uint32_t *fb = tty_fb(tty);
@@ -201,7 +190,6 @@ void putchar(tty_t *tty, char c) {
         tty->col = 0;
         return;
     } else if (c == '\b') {
-        // Backspace: step back (wrapping across rows) and erase that cell.
         if (tty->col > 0) {
             tty->col--;
         } else if (tty->row > 0) {
@@ -213,7 +201,6 @@ void putchar(tty_t *tty, char c) {
         return;
     }
 
-    // Only ASCII has glyphs in the font table; drop everything above 127.
     uint8_t ch = (uint8_t)c;
     if (ch >= 128) return;
 
@@ -227,7 +214,6 @@ void putchar(tty_t *tty, char c) {
     uint32_t origin_x = tty->origin_x + (tty->col * cell_w);
     uint32_t origin_y = tty->origin_y + (tty->row * GLYPH_H);
 
-    // Paint each glyph row; bit 7 of a font byte is the leftmost pixel.
     for (uint8_t i = 0; i < GLYPH_H; i++) {
         uint8_t row_bits = glyph_rows[i];
         uint32_t *row = &fb[(origin_y + i) * stride + origin_x];
@@ -245,7 +231,6 @@ void putchar(tty_t *tty, char c) {
     tty_blit_region(tty, tty->row, tty->row);
 }
 
-// Fill one text cell (glyph area plus letter spacing) with a solid color.
 static void tty_fill_cell(tty_t *tty, uint32_t row, uint32_t col, uint32_t color) {
     if (row >= tty->max_rows || col >= tty->max_cols) return;
 
@@ -263,14 +248,12 @@ static void tty_fill_cell(tty_t *tty, uint32_t row, uint32_t col, uint32_t color
     }
 }
 
-// Paint every cell on the screen with the background color.
 static void tty_clear_screen(tty_t *tty) {
     for (uint32_t r = 0; r < tty->max_rows; r++)
         for (uint32_t c = 0; c < tty->max_cols; c++)
             tty_fill_cell(tty, r, c, tty->bg);
 }
 
-// Clear a column range [from,to] on the current row with the background color.
 static void tty_clear_line(tty_t *tty, int from, int to) {
     if (to < from) {
         int t = from; from = to; to = t;
@@ -281,7 +264,6 @@ static void tty_clear_line(tty_t *tty, int from, int to) {
         tty_fill_cell(tty, tty->row, (uint32_t)c, tty->bg);
 }
 
-// Copy a range of glyph rows from the back buffer into the real framebuffer.
 static void tty_blit_region(tty_t *tty, uint32_t start_row, uint32_t end_row) {
     if (!tty->backbuf) return;
     uint32_t stride = tty_fb_stride();
@@ -295,18 +277,15 @@ static void tty_blit_region(tty_t *tty, uint32_t start_row, uint32_t end_row) {
            num_rows * stride * sizeof(uint32_t));
 }
 
-// Blit every text row (the whole screen) to the framebuffer.
 static void tty_blit(tty_t *tty) {
     tty_blit_region(tty, 0, tty->max_rows - 1);
 }
 
-// Set the cursor, clamping the position into the visible grid.
 static void tty_set_cursor(tty_t *tty, uint32_t row, uint32_t col) {
     tty->row = (row >= tty->max_rows) ? tty->max_rows - 1 : row;
     tty->col = (col >= tty->max_cols) ? tty->max_cols - 1 : col;
 }
 
-// Move the cursor by a signed row/column offset, clamped to the grid.
 static void tty_move_cursor(tty_t *tty, int drow, int dcol) {
     if (drow < 0) {
         int n = -drow;
@@ -324,12 +303,10 @@ static void tty_move_cursor(tty_t *tty, int drow, int dcol) {
     }
 }
 
-// Return an ANSI CSI parameter, defaulting to 1 when unset/zero.
 static int tty_esc_param(tty_t *tty, int i) {
     return tty->esc_param[i] ? tty->esc_param[i] : 1;
 }
 
-// Reset the ANSI escape sequence parser to its idle state.
 static void tty_esc_reset(tty_t *tty) {
     tty->esc_state = 0;
     tty->esc_priv = 0;
@@ -340,7 +317,6 @@ static void tty_esc_reset(tty_t *tty) {
     tty->esc_param[3] = 0;
 }
 
-// Standard ANSI 8-color palette (dark shades).
 static const uint32_t ansi_colors[8] = {
     0x00000000, /* 0: black   */
     0x00AA0000, /* 1: red     */
@@ -352,7 +328,6 @@ static const uint32_t ansi_colors[8] = {
     0x00AAAAAA, /* 7: white   */
 };
 
-// Execute a complete ANSI CSI sequence (cursor moves, clears, SGR colors).
 static void tty_esc_finish(tty_t *tty, char c) {
     switch (c) {
         case 'A': tty_move_cursor(tty, -(int)tty_esc_param(tty, 0), 0); break;
@@ -422,7 +397,6 @@ static void tty_esc_finish(tty_t *tty, char c) {
     tty_esc_reset(tty);
 }
 
-// Feed one byte into the ANSI escape sequence state machine.
 static void tty_esc_input(tty_t *tty, char c) {
     if (tty->esc_state == 1) {
         if (c == '[') {
@@ -470,7 +444,6 @@ static void tty_esc_input(tty_t *tty, char c) {
     }
 }
 
-// Append one byte to the ring buffer, dropping the write when it is full.
 static void ring_push(tty_ring_t *r, uint8_t c) {
     if (r->count >= TTY_BUF_SIZE) return;
     r->data[r->tail] = c;
@@ -478,7 +451,6 @@ static void ring_push(tty_ring_t *r, uint8_t c) {
     r->count++;
 }
 
-// Remove the oldest byte from the ring buffer; returns 0 when it is empty.
 static int ring_pop(tty_ring_t *r, uint8_t *out) {
     if (r->count == 0) return 0;
     *out = r->data[r->head];
@@ -487,7 +459,6 @@ static int ring_pop(tty_ring_t *r, uint8_t *out) {
     return 1;
 }
 
-// Wake the process currently blocked reading from this TTY, if any.
 static void tty_wake(tty_t *tty) {
     if (tty->waiter) {
         unblock(tty->waiter);
@@ -495,7 +466,6 @@ static void tty_wake(tty_t *tty) {
     }
 }
 
-// Write a char to the display (expanding \n to \r\n) and mirror it on the debug port.
 static void tty_putchar_raw(tty_t *tty, char c) {
     if ((tty->termios.c_oflag & OPOST) && (tty->termios.c_oflag & ONLCR) && c == '\n')
         tty->putchar(tty, '\r');
@@ -505,14 +475,12 @@ static void tty_putchar_raw(tty_t *tty, char c) {
     outb(0xE9, (uint8_t)c);
 }
 
-// Feed one input character into the TTY line discipline (signals, echo, buffering).
 void tty_input(tty_t *tty, char c) {
     if (c == '\r' || c == '\n' || c == 0x1b)
         print("TTYIN c=0x%x iflag=0x%x lflag=0x%x\n", (unsigned)c, tty->termios.c_iflag, tty->termios.c_lflag);
     if (tty->termios.c_iflag & ICRNL && c == '\r')
         c = '\n';
 
-    // Signal-generating chars (^C, ^\, ^Z) are sent to the foreground process group.
     if (tty->termios.c_lflag & ISIG) {
         if (c == tty->termios.c_cc[VINTR]) {
             if (tty->fg_pgrp) {
@@ -543,7 +511,6 @@ void tty_input(tty_t *tty, char c) {
         }
     }
 
-    // Canonical mode: echo and allow editing; readers wake once a full line arrives.
     if (tty->termios.c_lflag & ICANON) {
         if (c == tty->termios.c_cc[VERASE]) {
             if (tty->raw.count > 0) {
@@ -558,17 +525,31 @@ void tty_input(tty_t *tty, char c) {
             return;
         }
 
-        if (tty->termios.c_lflag & ECHO)
-            tty_putchar_raw(tty, c);
-
-        ring_push(&tty->raw, (uint8_t)c);
-
-        if (c == '\n' || c == tty->termios.c_cc[VEOF]) {
+        if (c == '\n') {
+            if (tty->termios.c_lflag & ECHO)
+                tty_putchar_raw(tty, c);
+            ring_push(&tty->raw, (uint8_t)c);
+            tty->eof_pending = 0;
             uint8_t byte;
             while (ring_pop(&tty->raw, &byte))
                 ring_push(&tty->cooked, byte);
             tty_wake(tty);
+            return;
         }
+
+        if (c == tty->termios.c_cc[VEOF]) {
+            tty->eof_pending = 1;
+            uint8_t byte;
+            while (ring_pop(&tty->raw, &byte))
+                ring_push(&tty->cooked, byte);
+            tty_wake(tty);
+            return;
+        }
+
+        if (tty->termios.c_lflag & ECHO)
+            tty_putchar_raw(tty, c);
+
+        ring_push(&tty->raw, (uint8_t)c);
     } else {
         if (tty->termios.c_lflag & ECHO)
             tty_putchar_raw(tty, c);
@@ -577,7 +558,6 @@ void tty_input(tty_t *tty, char c) {
     }
 }
 
-// Write a byte buffer to the TTY, dispatching ANSI escapes vs plain text.
 int32_t tty_write(tty_t *tty, const uint8_t *buf, uint32_t count) {
     if (!tty || !tty->putchar) return -1;
     for (uint32_t i = 0; i < count; i++) {
@@ -593,15 +573,17 @@ int32_t tty_write(tty_t *tty, const uint8_t *buf, uint32_t count) {
     return (int32_t)count;
 }
 
-// Block until cooked input is ready, then copy up to count bytes into buf.
 int32_t tty_read(tty_t *tty, uint8_t *buf, uint32_t count) {
     if (!tty || !buf || count == 0) return -1;
 
-    // Adopt the TTY for the calling process's group when nothing owns it yet.
     if (current_tcb && current_tcb->parent && tty->fg_pgrp == 0)
         tty->fg_pgrp = current_tcb->parent->pgid;
 
     while (tty->cooked.count == 0) {
+        if (tty->eof_pending) {
+            tty->eof_pending = 0;
+            return 0;
+        }
         struct pcb *p = current_tcb ? current_tcb->parent : NULL;
         if (p && (p->sigstate.pending & ~p->sigstate.blocked)) {
             return -EINTR;
@@ -613,12 +595,10 @@ int32_t tty_read(tty_t *tty, uint8_t *buf, uint32_t count) {
             asm volatile ("sti");
             break;
         }
-        // Register as the waiter and sleep until the TTY has data to give us.
         tty->waiter = current_tcb;
         block_current();
     }
 
-    // Drain cooked bytes, stopping at a newline in canonical mode.
     uint32_t n = 0;
     while (n < count) {
         uint8_t c;
@@ -629,18 +609,15 @@ int32_t tty_read(tty_t *tty, uint8_t *buf, uint32_t count) {
     return (int32_t)n;
 }
 
-// Return the TTY that is currently on screen.
 tty_t *tty_get_active() {
     return &ttys[active_tty];
 }
 
-// Return the TTY at index, or NULL when the index is out of range.
 tty_t *tty_get(uint8_t index) {
     if (index >= TTY_MAX) return NULL;
     return &ttys[index];
 }
 
-// Make index the active TTY and restore its previously saved render target.
 void tty_switch(uint8_t index) {
     if (index >= TTY_MAX) return;
     ttys[active_tty].saved_render_target = ttys[active_tty].render_target;
@@ -653,31 +630,26 @@ void tty_switch(uint8_t index) {
     tty_blit(&ttys[active_tty]);
 }
 
-// devfs read hook for a specific console device node.
 static ssize_t devfs_tty_read(devfs_dev_t *dev, void *buf, size_t count) {
     tty_t *tty = (tty_t *)dev->priv;
     return (ssize_t)tty_read(tty, (uint8_t *)buf, (uint32_t)count);
 }
 
-// devfs write hook for a specific console device node.
 static ssize_t devfs_tty_write(devfs_dev_t *dev, const void *buf, size_t count) {
     tty_t *tty = (tty_t *)dev->priv;
     return (ssize_t)tty_write(tty, (const uint8_t *)buf, (uint32_t)count);
 }
 
-// devfs read hook for /dev/tty: operates on whichever TTY is active.
 static ssize_t devfs_tty_alias_read(devfs_dev_t *dev, void *buf, size_t count) {
     (void)dev;
     return (ssize_t)tty_read(tty_get_active(), (uint8_t *)buf, (uint32_t)count);
 }
 
-// devfs write hook for /dev/tty: operates on whichever TTY is active.
 static ssize_t devfs_tty_alias_write(devfs_dev_t *dev, const void *buf, size_t count) {
     (void)dev;
     return (ssize_t)tty_write(tty_get_active(), (const uint8_t *)buf, (uint32_t)count);
 }
 
-// Size the grid from the framebuffer, configure each TTY and register /dev nodes.
 void tty_init(void (*output_fn)(tty_t *tty, char c)) {
     global_output_fn = output_fn;
 
@@ -695,11 +667,9 @@ void tty_init(void (*output_fn)(tty_t *tty, char c)) {
         t->index  = i;
         t->active = (i == 0);
 
-        // Default termios: canonical echo, CR->NL, and ISIG signal handling.
         t->termios.c_iflag = ICRNL;
         t->termios.c_oflag = OPOST | ONLCR;
         t->termios.c_lflag = ECHO | ECHOE | ICANON | ISIG;
-        // Control chars: ^C intr, ^\ quit, DEL erase, ^D eof, ^Z susp.
         t->termios.c_cc[VINTR]  = 0x03;
         t->termios.c_cc[VQUIT]  = 0x1C;
         t->termios.c_cc[VERASE] = 0x7F;
@@ -725,7 +695,6 @@ void tty_init(void (*output_fn)(tty_t *tty, char c)) {
         t->backbuf_mode = 0;
         t->fg_pgrp = 0;
 
-        // Publish each console as /dev/tty0..tty3.
         char name[8];
         name[0] = 't'; name[1] = 't'; name[2] = 'y';
         name[3] = '0' + i; name[4] = '\0';
@@ -736,7 +705,6 @@ void tty_init(void (*output_fn)(tty_t *tty, char c)) {
     devfs_register("tty", devfs_tty_alias_read, devfs_tty_alias_write, NULL);
 }
 
-// Convert the 11-entry kernel c_cc array into the user-space 32-byte layout.
 static void tty_cc_kernel_to_user(const uint8_t *k, uint8_t *u) {
     for (int i = 0; i < 32; i++) u[i] = 0;
     u[0] = k[0];
@@ -750,7 +718,6 @@ static void tty_cc_kernel_to_user(const uint8_t *k, uint8_t *u) {
     u[10] = k[10];
 }
 
-// Convert the user-space c_cc layout back into the kernel's internal array.
 static void tty_cc_user_to_kernel(const uint8_t *u, uint8_t *k) {
     for (int i = 0; i < 8; i++) k[i] = 0;
     k[0] = u[0];
@@ -766,7 +733,6 @@ static void tty_cc_user_to_kernel(const uint8_t *u, uint8_t *k) {
     k[9] = 0;
 }
 
-// Service TIOCGPGRP / TIOCSPGRP requests on the active TTY.
 int tty_ioctl(devfs_dev_t *dev, unsigned long req, void *arg) {
     (void)dev;
     tty_t *tty = tty_get_active();
@@ -787,7 +753,6 @@ int tty_ioctl(devfs_dev_t *dev, unsigned long req, void *arg) {
     }
 }
 
-// Copy the TTY's termios settings into a user-space struct termios.
 int tty_getattr(tty_t *tty, struct termios_user *u) {
     if (!tty || !u) return -1;
 
@@ -802,7 +767,6 @@ int tty_getattr(tty_t *tty, struct termios_user *u) {
     return 0;
 }
 
-// Apply user-space termios settings and discard all pending input.
 int tty_setattr(tty_t *tty, const struct termios_user *u) {
     if (!tty || !u) return -1;
 
@@ -821,7 +785,6 @@ int tty_setattr(tty_t *tty, const struct termios_user *u) {
     return 0;
 }
 
-// Report the TTY's character grid dimensions.
 int tty_getinfo(tty_t *tty, struct ttyinfo *info) {
     if (!tty || !info) return -1;
     info->rows = tty->max_rows;

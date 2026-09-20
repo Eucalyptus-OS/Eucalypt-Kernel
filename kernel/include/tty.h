@@ -64,6 +64,7 @@ struct tty {
     void (*push_char)(tty_t *tty, char c);
     uint8_t    active;
     struct tcb *waiter;       // Process asleep in tty_read for this TTY.
+    int        eof_pending;   // A ^D terminated the current line; return EOF on next read.
 
     // Cursor position and the visible grid in character cells.
     uint32_t   col;

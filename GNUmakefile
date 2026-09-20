@@ -10,6 +10,16 @@ QEMUFLAGS := -m 2G -d int -device isa-debugcon,chardev=debug -chardev stdio,id=d
 
 override IMAGE_NAME := eucalypt
 
+# Userland initramfs (ustar archive) loaded by Limine as a module so the kernel
+# can run /ram/bin/init and drop the CPU to ring 3. Built in eucalypt-userland.
+USERLAND_DIR ?= ../eucalypt-userland
+USERSPACE_TAR := $(USERLAND_DIR)/userspace.tar
+
+ifeq ($(wildcard $(USERSPACE_TAR)),)
+    # Clear hint instead of a bare "No rule to make target" failure.
+    $(error Userland archive $(USERSPACE_TAR) not found -- make create_archive in $(USERLAND_DIR) first)
+endif
+
 # Toolchain for building the 'limine' executable for the host.
 HOST_CC := cc
 HOST_CFLAGS := -g -O2 -pipe
@@ -163,6 +173,7 @@ $(IMAGE_NAME).iso: limine-binary/limine kernel
 	rm -rf iso_root
 	mkdir -p iso_root/boot
 	cp -v kernel/bin-$(ARCH)/kernel iso_root/boot/
+	cp -v $(USERSPACE_TAR) iso_root/
 	mkdir -p iso_root/boot/limine
 	cp -v limine.conf iso_root/boot/limine/
 	mkdir -p iso_root/EFI/BOOT
@@ -218,6 +229,7 @@ endif
 	mformat -i $(IMAGE_NAME).hdd@@1M
 	mmd -i $(IMAGE_NAME).hdd@@1M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 	mcopy -i $(IMAGE_NAME).hdd@@1M kernel/bin-$(ARCH)/kernel ::/boot
+	mcopy -i $(IMAGE_NAME).hdd@@1M $(USERSPACE_TAR) ::/userspace.tar
 	mcopy -i $(IMAGE_NAME).hdd@@1M limine.conf ::/boot/limine
 ifeq ($(ARCH),x86_64)
 	mcopy -i $(IMAGE_NAME).hdd@@1M limine-binary/limine-bios.sys ::/boot/limine
