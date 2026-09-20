@@ -121,8 +121,8 @@ static uint64_t sys_clock_gettime(int clk, struct timespec *ts) {
 // Report a fixed eucalypt identity so uname(2) has something to return
 static uint64_t sys_uname(struct utsname *u) {
     if (!u) return (uint64_t)-EFAULT;
-    strcpy(u->sysname, "eucalypt");
-    strcpy(u->nodename, "eucalypt");
+    strcpy(u->sysname, "Eucalypt");
+    strcpy(u->nodename, "Eucalypt");
     strcpy(u->release, "0.0.1");
     strcpy(u->version, "eucalypt");
     strcpy(u->machine, "x86_64");
