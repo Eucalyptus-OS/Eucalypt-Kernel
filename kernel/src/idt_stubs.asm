@@ -4,6 +4,7 @@ extern exception_handler
 extern timer_handler
 extern ahci_handler
 extern keyboard_handler
+extern mouse_handler
 extern syscall_handler
 extern current_tcb
 
@@ -11,6 +12,7 @@ global ahci_stub
 global isr_stub_table
 global apic_stub
 global keyboard_stub
+global mouse_stub
 global int128_handler
 global syscall_entry_stub
 
@@ -227,6 +229,39 @@ keyboard_stub:
     push r14
     push r15
     call keyboard_handler
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rsi
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+
+; IRQ 0x23 (PS/2 mouse): dispatch to mouse_handler.
+mouse_stub:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+    push rsi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    call mouse_handler
     pop r15
     pop r14
     pop r13

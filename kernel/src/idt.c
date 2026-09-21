@@ -18,6 +18,7 @@ extern void* isr_stub_table[];
 extern void apic_stub();
 extern void ahci_stub();
 extern void keyboard_stub();
+extern void mouse_stub();
 extern void int128_handler();
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -92,6 +93,7 @@ void idt_init() {
     idt_set_descriptor(0x20, apic_stub, 0x8E);
     idt_set_descriptor(0x21, ahci_stub, 0x8E);
     idt_set_descriptor(0x22, keyboard_stub, 0x8E);
+    idt_set_descriptor(0x23, mouse_stub, 0x8E);
     idt_set_descriptor(0x80, int128_handler, 0xEE);
 
     __asm__ volatile ("lidt %0" : : "m"(idtr));

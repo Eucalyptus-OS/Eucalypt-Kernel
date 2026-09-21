@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <input/input.h>
 #include <input/keyboard.h>
+#include <input/mouse.h>
+#include <input/evdev.h>
 #include <tty.h>
 
 // Ring-buffer capacity for the global input queue.
@@ -188,6 +190,8 @@ void input_init() {
     input_head = 0;
     input_tail = 0;
     input_count = 0;
+    evdev_init();
     keyboard_set_event_cb(input_handle_event);
     keyboard_init();
+    mouse_init();
 }

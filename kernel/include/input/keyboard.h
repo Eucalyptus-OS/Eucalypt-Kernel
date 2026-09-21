@@ -22,6 +22,7 @@
 
 // Callback invoked per decoded scancode event (key, make/break, mods, locks).
 typedef void (*keyboard_event_cb_t)(uint8_t key, uint8_t make, uint8_t mods, uint8_t locks);
+extern uint8_t scancode;
 
 void keyboard_init();                             // Reset and configure the PS/2 keyboard.
 void keyboard_set_event_cb(keyboard_event_cb_t cb); // Install the event callback.

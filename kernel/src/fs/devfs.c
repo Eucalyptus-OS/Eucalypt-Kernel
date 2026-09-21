@@ -11,6 +11,7 @@
 #include <storage/disk_writer.h>
 #include <fs/vfs.h>
 #include <fs/devfs.h>
+#include <input/keyboard.h>
 
 #define DEV_BLOCK_SIZE 512
 

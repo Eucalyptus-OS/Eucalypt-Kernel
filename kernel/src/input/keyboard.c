@@ -3,6 +3,7 @@
 #include <apic.h>
 #include <logging/print.h>
 #include <input/keyboard.h>
+#include <input/evdev.h>
 
 // PS/2 controller registers.
 #define KB_DATA_PORT   0x60
@@ -130,13 +131,14 @@ static void keyboard_process_scancode(uint8_t scancode) {
     // E0-prefixed codes select the right-side modifier and GUI keys.
     if (kb_e0) {
         switch (code) {
-            case 0x1D: kb_mods = make ? (kb_mods | KB_MOD_RCTRL) : (kb_mods & ~KB_MOD_RCTRL); break;
-            case 0x38: kb_mods = make ? (kb_mods | KB_MOD_RALT)  : (kb_mods & ~KB_MOD_RALT);  break;
-            case 0x5B: kb_mods = make ? (kb_mods | KB_MOD_LGUI)  : (kb_mods & ~KB_MOD_LGUI);  break;
-            case 0x5C: kb_mods = make ? (kb_mods | KB_MOD_RGUI)  : (kb_mods & ~KB_MOD_RGUI);  break;
+            case 0x1D: kb_mods = make ? (kb_mods | KB_MOD_RCTRL) : (kb_mods & ~KB_MOD_RCTRL); evdev_report(0x1D | KB_KEY_EXTENDED, make); break;
+            case 0x38: kb_mods = make ? (kb_mods | KB_MOD_RALT)  : (kb_mods & ~KB_MOD_RALT);  evdev_report(0x38 | KB_KEY_EXTENDED, make); break;
+            case 0x5B: kb_mods = make ? (kb_mods | KB_MOD_LGUI)  : (kb_mods & ~KB_MOD_LGUI);  evdev_report(0x5B | KB_KEY_EXTENDED, make); break;
+            case 0x5C: kb_mods = make ? (kb_mods | KB_MOD_RGUI)  : (kb_mods & ~KB_MOD_RGUI);  evdev_report(0x5C | KB_KEY_EXTENDED, make); break;
             default:
                 if (kb_event_cb)
                     kb_event_cb(code | KB_KEY_EXTENDED, make, kb_mods, kb_locks);
+                evdev_report(code | KB_KEY_EXTENDED, make);
                 break;
         }
         kb_e0 = 0;
@@ -145,16 +147,17 @@ static void keyboard_process_scancode(uint8_t scancode) {
 
     // Plain (non-extended) modifier keys and lock toggles.
     switch (code) {
-        case 0x1D: kb_mods = make ? (kb_mods | KB_MOD_LCTRL) : (kb_mods & ~KB_MOD_LCTRL); break;
-        case 0x2A: kb_mods = make ? (kb_mods | KB_MOD_LSHIFT) : (kb_mods & ~KB_MOD_LSHIFT); break;
-        case 0x36: kb_mods = make ? (kb_mods | KB_MOD_RSHIFT) : (kb_mods & ~KB_MOD_RSHIFT); break;
-        case 0x38: kb_mods = make ? (kb_mods | KB_MOD_LALT) : (kb_mods & ~KB_MOD_LALT); break;
-        case 0x3A: if (make) kb_locks ^= KB_LOCK_CAPS; break;
-        case 0x45: if (make) kb_locks ^= KB_LOCK_NUM; break;
-        case 0x46: if (make) kb_locks ^= KB_LOCK_SCROLL; break;
+        case 0x1D: kb_mods = make ? (kb_mods | KB_MOD_LCTRL) : (kb_mods & ~KB_MOD_LCTRL); evdev_report(0x1D, make); break;
+        case 0x2A: kb_mods = make ? (kb_mods | KB_MOD_LSHIFT) : (kb_mods & ~KB_MOD_LSHIFT); evdev_report(0x2A, make); break;
+        case 0x36: kb_mods = make ? (kb_mods | KB_MOD_RSHIFT) : (kb_mods & ~KB_MOD_RSHIFT); evdev_report(0x36, make); break;
+        case 0x38: kb_mods = make ? (kb_mods | KB_MOD_LALT) : (kb_mods & ~KB_MOD_LALT); evdev_report(0x38, make); break;
+        case 0x3A: if (make) kb_locks ^= KB_LOCK_CAPS; evdev_report(0x3A, make); break;
+        case 0x45: if (make) kb_locks ^= KB_LOCK_NUM; evdev_report(0x45, make); break;
+        case 0x46: if (make) kb_locks ^= KB_LOCK_SCROLL; evdev_report(0x46, make); break;
         default:
             if (kb_event_cb)
                 kb_event_cb(code, make, kb_mods, kb_locks);
+            evdev_report(code, make);
             break;
     }
 }
@@ -164,12 +167,17 @@ void keyboard_set_event_cb(keyboard_event_cb_t cb) {
     kb_event_cb = cb;
 }
 
+uint8_t scancode;
+
 // Keyboard IRQ handler: acknowledge the interrupt, then read and decode a scancode.
 void keyboard_handler() {
     apic_eoi();
 
-    uint8_t scancode = inb(KB_DATA_PORT);
-    keyboard_process_scancode(scancode);
+    uint8_t status = inb(KB_CMD_PORT);
+    if ((status & 0x21) == 0x01) {               // output full, from keyboard
+        scancode = inb(KB_DATA_PORT);
+        keyboard_process_scancode(scancode);
+    }
 }
 
 // Reset the controller and device, select scan set 1, and enable the IRQ.
