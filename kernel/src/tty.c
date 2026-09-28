@@ -27,7 +27,7 @@ static uint32_t *tty_fb(tty_t *tty) {
     return tty->backbuf;
 }
 
-static uint32_t tty_fb_stride(void) {
+static uint32_t tty_fb_stride() {
     return framebuffer_request.response->framebuffers[0]->pitch / 4;
 }
 

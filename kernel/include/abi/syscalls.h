@@ -55,9 +55,16 @@
 #define SYS_SETPGID          51
 #define SYS_GETPGID          52
 #define SYS_GETPGRP          53
+#define SYS_REBOOT           54
+#define SYS_NANOSLEEP        56
 
 // One past the highest syscall number: usable as a table size or bounds check
-#define SYS_MAX             54
+#define SYS_MAX             57
+
+// Commands for SYS_REBOOT, matching Linux's reboot(2) argument
+#define RB_POWER_OFF  0x4321fedc
+#define RB_AUTOBOOT   0x01234567
+#define RB_HALT_SYSTEM 0xcdef0123
 
 // Sub-commands for the arch_prctl syscall
 #define ARCH_SET_FS         1

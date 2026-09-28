@@ -78,6 +78,14 @@ static void sig_default_action(struct pcb *p, int sig) {
                 } while (it != t);
             }
             p->exit_code = 128 + sig;
+            p->wait_events |= WAIT_EVT_EXITED;
+            if (p->ppcb) {
+                // Notify the parent, waking it if it is blocked in waitpid()
+                sig_queue(p->ppcb, SIGCHLD);
+                if (!p->ppcb->stopped) {
+                    wake_threads(p->ppcb);
+                }
+            }
             // The dying process switches away here and must never come back
             if (p == sched_current_proc()) {
                 schedule();

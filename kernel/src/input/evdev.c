@@ -3,6 +3,7 @@
 #include <mm/memory.h>
 #include <input/keyboard.h>
 #include <fs/devfs.h>
+#include <fs/vfs.h>
 #include <multitasking/sched.h>
 #include <multitasking/thread.h>
 #include <abi/errno.h>
@@ -147,28 +148,9 @@ void evdev_report(uint8_t key, uint8_t value) {
     evdev_emit(EVDEV_KBD, EV_SYN, SYN_REPORT, 0);
 }
 
-// Pop queued events into the caller's buffer, blocking until at least one is
-// available. Only whole 24-byte events are delivered.
-static ssize_t evdev_read(devfs_dev_t *dev, void *buf, size_t count) {
-    struct evdev_dev *d = (struct evdev_dev *)dev->priv;
-    if (!buf || count == 0)
-        return -1;
-
-    while (d->count == 0) {
-        struct pcb *p = current_tcb ? current_tcb->parent : NULL;
-        if (p && (p->sigstate.pending & ~p->sigstate.blocked))
-            return -EINTR;
-        if (!current_tcb)
-            return 0;
-        asm volatile ("cli");
-        if (d->count > 0) {
-            asm volatile ("sti");
-            break;
-        }
-        d->waiter = current_tcb;
-        block_current();
-    }
-
+// Move up to count worth of queued events into the caller's buffer. Whole
+// 24-byte events only; a short tail stays queued for the next call.
+static ssize_t evdev_drain(struct evdev_dev *d, void *buf, size_t count) {
     uint8_t *out = (uint8_t *)buf;
     size_t n = 0;
     while (n + sizeof(struct input_event) <= count) {
@@ -180,6 +162,52 @@ static ssize_t evdev_read(devfs_dev_t *dev, void *buf, size_t count) {
         n += sizeof(struct input_event);
     }
     return (ssize_t)n;
+}
+
+// Pop queued events into the caller's buffer, blocking until at least one is
+// available. Like the rest of the kernel's syscall backends, a negative return
+// has to be accompanied by a matching errno: the syscall layer translates a
+// failure into -errno by reading the global, not by inspecting our return value.
+static ssize_t evdev_read(devfs_dev_t *dev, void *buf, size_t count) {
+    struct evdev_dev *d = (struct evdev_dev *)dev->priv;
+    if (!buf || count == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    while (d->count == 0) {
+        struct pcb *p = current_tcb ? current_tcb->parent : NULL;
+        if (p && (p->sigstate.pending & ~p->sigstate.blocked)) {
+            errno = EINTR;
+            return -1;
+        }
+        if (!current_tcb)
+            return 0;
+        asm volatile ("cli");
+        if (d->count > 0) {
+            asm volatile ("sti");
+            break;
+        }
+        d->waiter = current_tcb;
+        block_current();
+    }
+
+    return evdev_drain(d, buf, count);
+}
+
+// O_NONBLOCK read: return whatever is queued, or -EAGAIN if the ring is empty.
+// Never sleeps, so a client can poll both devices in one event-loop pass.
+static ssize_t evdev_read_nb(devfs_dev_t *dev, void *buf, size_t count) {
+    struct evdev_dev *d = (struct evdev_dev *)dev->priv;
+    if (!buf || count < sizeof(struct input_event)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (d->count == 0) {
+        errno = EAGAIN;
+        return -1;
+    }
+    return evdev_drain(d, buf, count);
 }
 
 static int evdev_ioctl(devfs_dev_t *dev, unsigned long req, void *arg) {
@@ -227,7 +255,9 @@ void evdev_init() {
         if (devfs_register(devnames[i], evdev_read, NULL, &g_devices[i]) != 0)
             continue;
         devfs_dev_t *dev = devfs_get(devnames[i]);
-        if (dev)
+        if (dev) {
             dev->ioctl = evdev_ioctl;
+            dev->read_nb = evdev_read_nb;
+        }
     }
 }

@@ -360,10 +360,12 @@ syscall_entry_stub:
     mov rcx, [rsp + 88]     ; arg3 = user rdx
     mov r8,  [rsp + 40]     ; arg4 = user r10
     mov r9,  [rsp + 56]     ; arg5 = user r8
+    mov r10, [rsp + 48]     ; arg6 = user r9
     mov rax, rsp
-    push rax
+    push rax                ; ctx, the handler's 8th argument
+    push r10                ; arg6, the handler's 7th (stack-passed) argument
     call syscall_handler
-    add rsp, 8
+    add rsp, 16
     pop r15
     pop r14
     pop r13

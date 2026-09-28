@@ -945,7 +945,13 @@ ssize_t read(int fd, void *buf, size_t count) {
     if (node->type == VFS_NODE_DEV) {
         devfs_dev_t *ddev = (devfs_dev_t *)node->priv;
         if (ddev && !ddev->is_block && ddev->read) {
-            ssize_t n = ddev->read(ddev, buf, count);
+            // A driver that sleeps in read() needs the O_NONBLOCK variant so a
+            // polling reader (the desktop compositor's event loop) is not stuck.
+            ssize_t n;
+            if ((file->flags & O_NONBLOCK) && ddev->read_nb)
+                n = ddev->read_nb(ddev, buf, count);
+            else
+                n = ddev->read(ddev, buf, count);
             if (n > 0) file->offset += n;
             return n;
         }

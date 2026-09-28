@@ -294,6 +294,7 @@ int devfs_register(const char *name, ssize_t (*read)(devfs_dev_t *, void *, size
     dev->ioctl = NULL;
     dev->priv  = priv;
     dev->is_block = 0;
+    dev->mmap_kind = DEVMAP_NONE;
 
     vfs_node_t *node = vfs_node_alloc_pub(name, VFS_NODE_DEV);
     if (node) {
@@ -396,6 +397,13 @@ void devfs_init() {
     g_fb.bpp = lfb->bpp;
     devfs_register("fb0", fb_read, fb_write, &g_fb);
     devfs_get("fb0")->ioctl = fb_ioctl;
+    devfs_get("fb0")->mmap_kind = DEVMAP_FB;
+
+    // Shared-memory regions: the compositor creates one per window and clients
+    // map them with MAP_SHARED to draw directly into their own backing store.
+    if (shm_devfs_init() != 0) {
+        print("devfs: failed to register /dev/shm\n");
+    }
 
     uint8_t drive_count = drive_map_count();
     for (uint8_t i = 0; i < drive_count && i < DEVFS_MAX_DEVS; i++) {

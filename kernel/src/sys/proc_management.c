@@ -14,6 +14,7 @@
 #include <abi/types.h>
 #include <binary_loaders/elf.h>
 #include <signal.h>
+#include <apic.h>
 
 typedef int pid_t;
 
@@ -490,6 +491,43 @@ int pause() {
     current_tcb->state = Ready;
 
     return -1;
+}
+
+// Scheduler tick rate. The LAPIC timer is reloaded with `apic_count` behind a
+// /16 divider, so the period is apic_count * 16 / bus_clock, and the bus clock is
+// not discoverable from inside the guest. This constant was measured instead:
+// a 300 ms nanosleep rounds up to 2 ticks and returned in 63.0 ms, giving
+// 31.5 ms per tick. Re-derive it with a sleep-vs-clock_gettime measurement if
+// the APIC setup ever changes.
+//
+// The consequence to keep in mind: sleep resolution is one whole tick. A sleep
+// shorter than a tick still costs a full tick, and rounding is always up so a
+// request never returns early.
+#define TICKS_PER_SEC 32
+
+#define NSEC_PER_SEC 1000000000LL
+
+// Sleep the calling thread for the interval in `req`. `rem`, when non-NULL,
+// receives the unslept remainder (always 0 here, since there are no signals to
+// interrupt a sleep). Returns 0 on success, negative errno on bad input.
+int sys_nanosleep(const struct timespec *req, struct timespec *rem) {
+    if (!req) return -EFAULT;
+
+    if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= NSEC_PER_SEC)
+        return -EINVAL;
+
+    int64_t ns = req->tv_sec * NSEC_PER_SEC + req->tv_nsec;
+
+    // A zero-length sleep still has to yield the CPU, so always take one tick.
+    uint64_t ticks = (uint64_t)(ns / (NSEC_PER_SEC / TICKS_PER_SEC)) + 1;
+
+    block_current_timeout(system_ticks + ticks);
+
+    if (rem) {
+        rem->tv_sec = 0;
+        rem->tv_nsec = 0;
+    }
+    return 0;
 }
 
 // True if c is a direct child of p

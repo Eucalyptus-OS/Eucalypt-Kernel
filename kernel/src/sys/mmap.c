@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <logging/print.h>
 #include <mm/page.h>
 #include <mm/vmm.h>
 #include <mm/heap.h>
@@ -35,15 +36,49 @@ static uintptr_t mmap_page_frame(uint64_t *pml4_phys, uintptr_t va) {
 // Map memory in the caller's address space: shared device mmap or anonymous zeroed pages
 intptr_t sys_mmap(uintptr_t addr, size_t len, int prot, int flags, int fd, off_t offset) {
     struct pcb *p = sched_current_proc();
-    if (!p) return -1;
+    if (!p) {
+        print("mmap: no current proc (len=%lu flags=%#x fd=%d)\n",
+              (unsigned long)len, flags, fd);
+        return -1;
+    }
     if (len == 0) return -EINVAL;
     // MAP_FIXED (force placement at exactly addr) is not supported yet
     if (flags & MAP_FIXED) return -EINVAL;
 
-    // Device-backed path: MAP_SHARED against a devfs fd (e.g. the framebuffer)
+    // Device-backed path: MAP_SHARED against a mappable devfs fd. /dev/fb0 maps
+    // the whole device; /dev/shm maps one region selected by offset, so the same
+    // physical pages can be handed to several processes independently.
     if ((flags & MAP_SHARED) && !(flags & MAP_ANONYMOUS) && fd >= 0) {
+        if (!p->fd_table[fd]) return -EINVAL;
+        vfs_node_t *node = p->fd_table[fd]->node;
+        if (!node || node->type != VFS_NODE_DEV || !node->priv) return -EINVAL;
+
+        devfs_dev_t *dev = (devfs_dev_t *)node->priv;
+        if (dev->mmap_kind == DEVMAP_NONE) return -EINVAL;
+
+        // Resolve the backing store and the physical base this mapping starts at
+        uintptr_t phys_base;
+        size_t    dev_size;
+        if (dev->mmap_kind == DEVMAP_SHM) {
+            shm_region_t *r = shm_region_by_offset((shm_dev_t *)dev->priv, (uint64_t)offset);
+            if (!r) return -EINVAL;
+            // A region can only be mapped from its start; a partial-region hint
+            // would make the frame index below disagree with the caller's view.
+            if ((uint64_t)offset != (uint64_t)(r - ((shm_dev_t *)dev->priv)->regions) * PAGE_SIZE) {
+                return -EINVAL;
+            }
+            phys_base = r->phys;
+            dev_size  = r->size;
+        } else {
+            fb_info_t *fb = (fb_info_t *)dev->priv;
+            if (fb->phys == 0) return -EINVAL;
+            phys_base = fb->phys;
+            dev_size  = fb->size;
+        }
+
         size_t pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
         size_t map_len = pages * PAGE_SIZE;
+        if (map_len > dev_size) return -EINVAL;
 
         uintptr_t va;
         // Round the hint up to a page; with no hint, keep allocating from the mmap cursor
@@ -53,21 +88,13 @@ intptr_t sys_mmap(uintptr_t addr, size_t len, int prot, int flags, int fd, off_t
             va = p->mmap_cursor;
         }
 
-        if (!p->fd_table[fd]) return -EINVAL;
-        vfs_node_t *node = p->fd_table[fd]->node;
-        if (!node || node->type != VFS_NODE_DEV || !node->priv) return -EINVAL;
-
-        devfs_dev_t *dev = (devfs_dev_t *)node->priv;
-        fb_info_t *fb = (fb_info_t *)dev->priv;
-        if (fb->phys == 0 || map_len > fb->size) return -EINVAL;
-
         // Permissions: always present+user, writable only when requested
         uint64_t f = PAGE_PRESENT | PAGE_USER;
         if (prot & PROT_WRITE) f |= PAGE_WRITABLE;
 
-        // Identity-map the device's physical frame range into the user's space
+        // Identity-map the backing frames into the user's space
         for (size_t i = 0; i < pages; i++) {
-            uintptr_t pa = fb->phys + i * PAGE_SIZE;
+            uintptr_t pa = phys_base + i * PAGE_SIZE;
             paging_map_page((uint64_t *)p->addr_space, (void *)(va + i * PAGE_SIZE), pa, f);
         }
 
@@ -106,6 +133,8 @@ intptr_t sys_mmap(uintptr_t addr, size_t len, int prot, int flags, int fd, off_t
 
     // Map fresh pages and zero them so the region reads as clean anonymous memory
     if (!vmm_map_region((uint64_t *)p->addr_space, (void *)va, f, (int)pages)) {
+        print("mmap: anon failed va=%#lx pages=%lu cursor=%#lx\n",
+              va, (unsigned long)pages, p->mmap_cursor);
         return -ENOMEM;
     }
 

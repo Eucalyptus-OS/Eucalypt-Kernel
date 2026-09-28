@@ -23,6 +23,7 @@ extern void _exit(uint64_t exit_code);
 extern int fork();
 extern int execve(const char *path, char *const argv[], char *const envp[]);
 extern int pause();
+extern int sys_nanosleep(const struct timespec *req, struct timespec *rem);
 extern int dup(int fd);
 extern int setpgid(int pid, int pgid);
 extern int getpgid(int pid);
@@ -30,6 +31,9 @@ extern int getpgrp(void);
 
 // Sentinel result for syscall numbers with no case in the dispatch switch below
 #define UNDEFINED_SYSCALL 10000000
+
+// Power off or restart the machine; never returns on a supported transition
+extern uint64_t sys_reboot(int cmd);
 // Upper bound on fds the flag tables below can address
 #define MAX_FCNTL_FDS 256
 
@@ -167,67 +171,9 @@ static uint64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
 
 // Central syscall entry: dispatch on the number and hand the result back via ctx->rax
 uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3,
-                         uint64_t arg4, uint64_t arg5, user_context_t *ctx) {
+                         uint64_t arg4, uint64_t arg5, uint64_t arg6, user_context_t *ctx) {
     // Default result: a distinctive sentinel, not a silent 0, for unknown numbers
     uint64_t result = UNDEFINED_SYSCALL;
-
-    // Debug aid: dump registers/TLS/stack for pid 2 on every syscall (strace-style)
-    {
-        struct pcb *tp = sched_current_proc();
-        if (tp && tp->pid == 2) {
-            print("STRACE pid2 syscall=%lu\n", num);
-            if (num == SYS_KILL) {
-                print("STRACE pid2 ctx: rax=%#lx rbx=%#lx rcx=%#lx rdx=%#lx\n",
-                      ctx->rax, ctx->rbx, ctx->rcx, ctx->rdx);
-                print("STRACE pid2 ctx: rsi=%#lx rdi=%#lx rbp=%#lx rsp=%#lx\n",
-                      ctx->rsi, ctx->rdi, ctx->rbp, ctx->rsp);
-                print("STRACE pid2 ctx: r8=%#lx r9=%#lx r10=%#lx r11=%#lx\n",
-                      ctx->r8, ctx->r9, ctx->r10, ctx->r11);
-                print("STRACE pid2 ctx: r12=%#lx r13=%#lx r14=%#lx r15=%#lx rip=%#lx\n",
-                      ctx->r12, ctx->r13, ctx->r14, ctx->r15, ctx->rip);
-                print("STRACE pid2 ctx: rflags=%#lx cs=%#lx ss=%#lx\n",
-                      ctx->rflags, ctx->cs, ctx->ss);
-                uint64_t f = current_tcb->fs_base;
-                print("STRACE pid2 fs_base=%#lx tls_curloc=%#lx glob_locale=%#lx\n",
-                      f,
-                      *(uint64_t *)(f - 0x118),
-                      *(uint64_t *)0x4e5e40);
-                print("STRACE pid2 tcb self=%#lx dtvSize=%#lx dtv=%#lx tid=%#lx canary=%#lx\n",
-                      *(uint64_t *)(f + 0x0),
-                      *(uint64_t *)(f + 0x8),
-                      *(uint64_t *)(f + 0x10),
-                      *(uint64_t *)(f + 0x18),
-                      *(uint64_t *)(f + 0x28));
-                print("STRACE pid2 tlsblk: -0x130=%#lx -0x120=%#lx -0x110=%#lx -0x100=%#lx\n",
-                      *(uint64_t *)(f - 0x130),
-                      *(uint64_t *)(f - 0x120),
-                      *(uint64_t *)(f - 0x110),
-                      *(uint64_t *)(f - 0x100));
-                print("STRACE pid2 dotdata: [0]=%#lx [8]=%#lx [0x10]=%#lx [0x18]=%#lx\n",
-                      *(uint64_t *)0x4e5000,
-                      *(uint64_t *)0x4e5008,
-                      *(uint64_t *)0x4e5010,
-                      *(uint64_t *)0x4e5018);
-                uint64_t *lp = (uint64_t *)(*(uint64_t *)0x4e5e40);
-                if ((uint64_t)lp < 0x700000000000ULL) {
-                    print("STRACE pid2 locate_numeric: +870=%#lx +888=%#lx +8a0=%#lx\n",
-                          *(uint64_t *)&((uint8_t *)lp)[0x870],
-                          *(uint64_t *)&((uint8_t *)lp)[0x888],
-                          *(uint64_t *)&((uint8_t *)lp)[0x8a0]);
-                }
-                uint64_t *sp = (uint64_t *)ctx->rsp;
-                for (int i = 0; i < 180; i++) {
-                    if (i % 4 == 0)
-                        print("\nSTRACE pid2 stack[%d..]:", i);
-                    if ((uint64_t)(sp + i) < 0x700000000000ULL)
-                        print(" %#lx", sp[i]);
-                    else
-                        print(" <bad>");
-                }
-                print("\n");
-            }
-        }
-    }
 
     switch (num) {
         case SYS_READ:
@@ -268,7 +214,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
 
         case SYS_MMAP:
             result = (uint64_t)sys_mmap((uintptr_t)arg1, (size_t)arg2, (int)arg3,
-                                        (int)arg4, (int)arg5, 0);
+                                        (int)arg4, (int)arg5, (off_t)arg6);
             break;
 
         case SYS_MPROTECT:
@@ -369,6 +315,11 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
             result = (uint64_t)getpgrp();
             break;
 
+        case SYS_REBOOT:
+            // Does not return unless the requested transition is unsupported
+            result = sys_reboot((int)arg1);
+            break;
+
         case SYS_UNAME:
             result = sys_uname((struct utsname *)arg1);
             break;
@@ -441,6 +392,10 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t ar
             result = pause();
             break;
         }
+
+        case SYS_NANOSLEEP:
+            result = sys_nanosleep((struct timespec *)arg1, (struct timespec *)arg2);
+            break;
 
         case SYS_TCGETATTR: {
             struct termios_user *u = (struct termios_user *)arg1;
