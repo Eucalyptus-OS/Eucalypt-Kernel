@@ -83,6 +83,8 @@ static void init_thread_entry() {
 
 // Load /ram/bin/init into a fresh process and pass control to the scheduler.
 static void run_init() {
+    // This is to disable print
+    enabled = 0;
     int fd = open("/ram/bin/init", O_RDONLY);
     if (fd < 0) {
         print("open(/ram/bin/init) failed errno=%d\n", errno);

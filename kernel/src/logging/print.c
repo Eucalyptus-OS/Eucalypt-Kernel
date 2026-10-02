@@ -11,6 +11,8 @@
 // Serializes console output so lines never interleave across CPUs.
 static spinlock_t print_lock = 0;
 
+int enabled = 1;
+
 // Emit one character to the debug port, expanding LF into CRLF.
 static void putchar(char c) {
     if (c == '\n')
@@ -40,6 +42,10 @@ static void print_uint(uint64_t n) {
 
 // Print "file:line: caller(): message" atomically to the debug port.
 void print_impl(const char *file, const char *caller, int line, const char *fmt, ...) {
+    if (!enabled) {
+        return;
+    }
+
     uint64_t flags = spinlock_acquire_irqsave(&print_lock);
 
     print_string(file);
